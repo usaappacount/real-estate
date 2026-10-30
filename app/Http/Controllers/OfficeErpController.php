@@ -1,0 +1,709 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Auth;
+
+class OfficeErpController extends Controller
+{
+    /**
+     * معرفة رقم المكتب الحالي (سواء دخل بحساب المكتب أو دخل الأدمن العام لمعاينته)
+     */
+    private function getCurrentOfficeId(): ?int
+    {
+        $user = Auth::user();
+        if ($user->user_type === 'company_admin' && session()->has('impersonate_office_id')) {
+            return (int) session('impersonate_office_id');
+        }
+        return $user->office_id ? (int) $user->office_id : null;
+    }
+
+    public function dashboard(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        if (!$officeId) {
+            return redirect()->route('erp.dashboard')->withErrors(['يرجى اختيار مكتب عقار لمعاينته أولاً.']);
+        }
+
+        $office = DB::table('offices')->where('id', $officeId)->first();
+        if (!$office) {
+            return redirect()->route('erp.dashboard');
+        }
+
+        // التأكد من جاهزية جداول أنواع الحسابات والحقول الديناميكية
+        app(CompanyErpController::class)->ensureDynamicPropertyTables();
+        app(CompanyErpController::class)->ensureDynamicAccountTables();
+
+        $tab = $request->get('tab', 'overview');
+
+        // 1. جلب ملاك العقارات التابعين لهذا المكتب
+        $owners = DB::table('owners')
+            ->leftJoin('users', function ($join) {
+                $join->on('owners.id', '=', 'users.owner_id')
+                     ->where('users.user_type', '=', 'owner');
+            })
+            ->where('owners.office_id', $officeId)
+            ->select('owners.*', 'users.username as owner_username')
+            ->orderBy('owners.id', 'desc')
+            ->get();
+
+        // 2. جلب أنواع العقارات والمتطلبات الديناميكية
+        $propertyTypes = DB::table('property_types')->where('is_active', 1)->get();
+        $allAttributes = DB::table('property_type_attributes')->get();
+
+        // 3. جلب العقارات والصكوك التابعة للمكتب
+        $properties = DB::table('properties')
+            ->join('owners', 'properties.owner_id', '=', 'owners.id')
+            ->join('property_types', 'properties.property_type_id', '=', 'property_types.id')
+            ->where('properties.office_id', $officeId)
+            ->select(
+                'properties.*',
+                'owners.name as owner_name',
+                'property_types.name as type_name',
+                'property_types.category as type_category',
+                'property_types.has_units'
+            )
+            ->orderBy('properties.id', 'desc')
+            ->get();
+
+        // 4. جلب الوحدات العقارية
+        $units = DB::table('property_units')
+            ->join('properties', 'property_units.property_id', '=', 'properties.id')
+            ->where('properties.office_id', $officeId)
+            ->select('property_units.*', 'properties.title as property_title')
+            ->orderBy('property_units.id', 'desc')
+            ->get();
+
+        // 5. جلب المستأجرين وعقود الإيجار
+        $tenants = DB::table('tenants')->where('office_id', $officeId)->orderBy('id', 'desc')->get();
+
+        $contracts = DB::table('lease_contracts')
+            ->join('properties', 'lease_contracts.property_id', '=', 'properties.id')
+            ->join('owners', 'lease_contracts.owner_id', '=', 'owners.id')
+            ->join('tenants', 'lease_contracts.tenant_id', '=', 'tenants.id')
+            ->leftJoin('property_units', 'lease_contracts.property_unit_id', '=', 'property_units.id')
+            ->where('lease_contracts.office_id', $officeId)
+            ->select(
+                'lease_contracts.*',
+                'properties.title as property_title',
+                'properties.deed_number',
+                'owners.name as owner_name',
+                'tenants.name as tenant_name',
+                'tenants.phone as tenant_phone',
+                'property_units.unit_number'
+            )
+            ->orderBy('lease_contracts.id', 'desc')
+            ->get();
+
+        // 6. شجرة الحسابات والسندات الخاصة بهذا المكتب فقط (معزولة تماماً بـ office_id)
+        $accountTypes = DB::table('custom_account_types')->orderBy('id')->get();
+        $accounts = DB::table('accounts')->where('office_id', $officeId)->orderBy('code')->get();
+
+        $vouchers = DB::table('vouchers')
+            ->where('vouchers.office_id', $officeId)
+            ->leftJoin('accounts as debit_acc', 'vouchers.debit_account_id', '=', 'debit_acc.id')
+            ->leftJoin('accounts as credit_acc', 'vouchers.credit_account_id', '=', 'credit_acc.id')
+            ->leftJoin('owners', 'vouchers.owner_id', '=', 'owners.id')
+            ->leftJoin('tenants', 'vouchers.tenant_id', '=', 'tenants.id')
+            ->select(
+                'vouchers.*',
+                'debit_acc.name as debit_name',
+                'debit_acc.code as debit_code',
+                'credit_acc.name as credit_name',
+                'credit_acc.code as credit_code',
+                'owners.name as owner_name',
+                'tenants.name as tenant_name'
+            )
+            ->orderBy('vouchers.id', 'desc')
+            ->get();
+
+        // 7. موظفو المكتب وصلاحياتهم
+        $staff = DB::table('users')
+            ->where('office_id', $officeId)
+            ->whereIn('user_type', ['office_admin', 'office_staff'])
+            ->orderBy('id')
+            ->get();
+
+        $stats = [
+            'owners_count' => $owners->count(),
+            'properties_count' => $properties->count(),
+            'units_count' => $units->count(),
+            'vacant_units' => $units->where('status', 'vacant')->count(),
+            'rented_units' => $units->where('status', 'rented')->count(),
+            'active_contracts' => $contracts->where('status', 'active')->count(),
+            'total_rent_value' => $contracts->sum('total_rent_amount'),
+            'company_due_fees' => $contracts->sum('company_fee_amount'),
+            'total_receipts' => $vouchers->where('voucher_type', 'receipt')->sum('amount'),
+        ];
+
+        return view('office_dashboard', compact(
+            'office', 'tab', 'owners', 'propertyTypes', 'allAttributes',
+            'properties', 'units', 'tenants', 'contracts', 'accountTypes',
+            'accounts', 'vouchers', 'staff', 'stats'
+        ));
+    }
+
+    // =========================================================================
+    // 1. إدارة الملاك (Owners)
+    // =========================================================================
+    public function storeOwner(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+
+        $request->validate([
+            'name' => 'required',
+            'national_id' => 'required',
+            'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
+            'username' => 'required|unique:users,username',
+        ], [
+            'phone.regex' => 'رقم جوال المالك يجب أن يتكون من 10 أرقام ويبدأ بـ 05.',
+            'username.unique' => 'اسم المستخدم للمالك مسجل مسبقاً، اختر اسماً آخر.'
+        ]);
+
+        $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+
+        DB::transaction(function () use ($request, $officeId, $formattedPhone) {
+            $ownerId = DB::table('owners')->insertGetId([
+                'office_id' => $officeId,
+                'name' => trim($request->name),
+                'national_id' => trim($request->national_id),
+                'phone' => $formattedPhone,
+                'email' => trim($request->username) . '@owner.local',
+                'iban' => trim($request->iban),
+                'bank_name' => trim($request->bank_name),
+                'office_management_fee_rate' => $request->office_management_fee_rate ?? 5.00,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('users')->insert([
+                'name' => trim($request->name),
+                'username' => trim($request->username),
+                'phone' => $formattedPhone,
+                'email' => trim($request->username) . '@owner.local',
+                'national_id' => trim($request->national_id),
+                'password' => Hash::make($request->password ?: '123456'),
+                'user_type' => 'owner',
+                'office_id' => $officeId,
+                'owner_id' => $ownerId,
+                'is_active' => 1,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'owners'])
+            ->with('success', 'تم تسجيل المالك وإنشاء حساب الدخول الخاص به بنجاح.');
+    }
+
+    public function updateOwner(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $request->validate([
+            'name' => 'required',
+            'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
+        ]);
+
+        $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+
+        DB::table('owners')->where('id', $id)->where('office_id', $officeId)->update([
+            'name' => trim($request->name),
+            'national_id' => trim($request->national_id),
+            'phone' => $formattedPhone,
+            'iban' => trim($request->iban),
+            'bank_name' => trim($request->bank_name),
+            'office_management_fee_rate' => $request->office_management_fee_rate ?? 5,
+            'updated_at' => now(),
+        ]);
+
+        DB::table('users')->where('owner_id', $id)->where('user_type', 'owner')->update([
+            'name' => trim($request->name),
+            'phone' => $formattedPhone,
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'owners'])
+            ->with('success', 'تم تحديث بيانات المالك بنجاح.');
+    }
+
+    public function deleteOwner($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('owners')->where('id', $id)->where('office_id', $officeId)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'owners'])
+            ->with('success', 'تم حذف سجل المالك.');
+    }
+
+    // =========================================================================
+    // 2. إدارة العقارات والصكوك والوحدات (Properties & Units)
+    // =========================================================================
+    public function storeProperty(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+
+        $request->validate([
+            'owner_id' => 'required',
+            'property_type_id' => 'required',
+            'title' => 'required',
+            'deed_number' => 'required',
+            'total_area' => 'required|numeric',
+            'city' => 'required',
+            'district' => 'required',
+        ]);
+
+        $customAttrs = $request->input('custom_attrs', []);
+
+        DB::table('properties')->insert([
+            'office_id' => $officeId,
+            'owner_id' => $request->owner_id,
+            'property_type_id' => $request->property_type_id,
+            'title' => trim($request->title),
+            'deed_number' => trim($request->deed_number),
+            'deed_date' => $request->deed_date ?: null,
+            'total_area' => $request->total_area,
+            'estimated_value' => $request->estimated_value ?: 0,
+            'city' => trim($request->city),
+            'district' => trim($request->district),
+            'street' => trim($request->street),
+            'building_number' => trim($request->building_number),
+            'postal_code' => trim($request->postal_code),
+            'additional_number' => trim($request->additional_number),
+            'custom_attributes' => json_encode($customAttrs, JSON_UNESCAPED_UNICODE),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'properties'])
+            ->with('success', 'تم تسجيل العقار وبيانات الصك والمتطلبات بنجاح.');
+    }
+
+    public function deleteProperty($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('properties')->where('id', $id)->where('office_id', $officeId)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'properties'])
+            ->with('success', 'تم حذف العقار بنجاح.');
+    }
+
+    public function storeUnit(Request $request)
+    {
+        $request->validate([
+            'property_id' => 'required',
+            'unit_number' => 'required',
+            'default_rent_price' => 'required|numeric',
+        ]);
+
+        $property = DB::table('properties')->where('id', $request->property_id)->first();
+
+        DB::table('property_units')->insert([
+            'property_id' => $request->property_id,
+            'property_type_id' => $property->property_type_id,
+            'unit_number' => trim($request->unit_number),
+            'floor_number' => $request->floor_number ?: 0,
+            'area' => $request->area ?: 0,
+            'electricity_meter' => trim($request->electricity_meter),
+            'water_meter' => trim($request->water_meter),
+            'default_rent_price' => $request->default_rent_price,
+            'status' => 'vacant',
+            'custom_attributes' => json_encode([
+                'rooms' => $request->rooms ?? '',
+                'unit_kind' => $request->unit_kind ?? 'شقة',
+            ], JSON_UNESCAPED_UNICODE),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'properties'])
+            ->with('success', 'تم إضافة الوحدة العقارية (' . $request->unit_number . ') بنجاح.');
+    }
+
+    public function deleteUnit($id)
+    {
+        DB::table('property_units')->where('id', $id)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'properties'])
+            ->with('success', 'تم حذف الوحدة العقارية.');
+    }
+
+    // =========================================================================
+    // 3. إدارة المستأجرين وعقود الإيجار (منصة إيجار - Ejar)
+    // =========================================================================
+    public function storeTenant(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+
+        $request->validate([
+            'name' => 'required',
+            'id_number' => 'required',
+            'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
+        ], [
+            'phone.regex' => 'رقم جوال المستأجر يجب أن يتكون من 10 أرقام ويبدأ بـ 05.'
+        ]);
+
+        $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+
+        DB::table('tenants')->insert([
+            'office_id' => $officeId,
+            'name' => trim($request->name),
+            'id_type' => $request->id_type ?: 'national_id',
+            'id_number' => trim($request->id_number),
+            'phone' => $formattedPhone,
+            'email' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'contracts'])
+            ->with('success', 'تم تسجيل بيانات المستأجر بنجاح.');
+    }
+
+    public function storeContract(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $office = DB::table('offices')->where('id', $officeId)->first();
+
+        $request->validate([
+            'property_id' => 'required',
+            'tenant_id' => 'required',
+            'start_date' => 'required|date',
+            'end_date' => 'required|date',
+            'total_rent_amount' => 'required|numeric',
+        ]);
+
+        $property = DB::table('properties')->where('id', $request->property_id)->first();
+        $owner = DB::table('owners')->where('id', $property->owner_id)->first();
+
+        $companyFee = 0;
+        if (in_array($office->billing_type, ['per_property_percentage', 'hybrid']) && $office->company_commission_rate > 0) {
+            $companyFee = ($request->total_rent_amount * $office->company_commission_rate) / 100;
+        }
+
+        $officeCommission = $request->filled('office_commission')
+            ? $request->office_commission
+            : (($request->total_rent_amount * ($owner->office_management_fee_rate ?? 5)) / 100);
+
+        $contractNumber = 'CNT-' . date('Y') . '-' . rand(10000, 99999);
+
+        DB::transaction(function () use ($request, $officeId, $property, $contractNumber, $officeCommission, $companyFee) {
+            DB::table('lease_contracts')->insert([
+                'contract_number' => $contractNumber,
+                'ejar_contract_number' => $request->ejar_contract_number ?: null,
+                'ejar_status' => $request->filled('ejar_contract_number') ? 'active' : 'not_sent',
+                'office_id' => $officeId,
+                'property_id' => $property->id,
+                'property_unit_id' => $request->property_unit_id ?: null,
+                'owner_id' => $property->owner_id,
+                'tenant_id' => $request->tenant_id,
+                'start_date' => $request->start_date,
+                'end_date' => $request->end_date,
+                'payment_cycle' => $request->payment_cycle ?: 'annual',
+                'total_rent_amount' => $request->total_rent_amount,
+                'security_deposit' => $request->security_deposit ?: 0,
+                'office_commission' => $officeCommission,
+                'company_fee_amount' => $companyFee,
+                'status' => 'active',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            if ($request->filled('property_unit_id')) {
+                DB::table('property_units')->where('id', $request->property_unit_id)->update(['status' => 'rented']);
+            }
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'contracts'])
+            ->with('success', 'تم إبرام عقد الإيجار رقم (' . $contractNumber . ') بنجاح.');
+    }
+
+    public function syncWithEjar($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $ejarUnifiedNo = 'EJR-' . rand(1000000000, 9999999999);
+
+        DB::table('lease_contracts')
+            ->where('id', $id)
+            ->where('office_id', $officeId)
+            ->update([
+                'ejar_contract_number' => $ejarUnifiedNo,
+                'ejar_status' => 'active',
+                'updated_at' => now(),
+            ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'contracts'])
+            ->with('success', 'تم إرسال وتوثيق العقد في شبكة إيجار برقم موحد: (' . $ejarUnifiedNo . ')');
+    }
+
+    // =========================================================================
+    // 4. شجرة الحسابات المتفرعة والسندات المستقلة للمكتب (بنفس فكرة شجرة الأدمن)
+    // =========================================================================
+    public function storeOfficeAccountType(Request $request)
+    {
+        $request->validate(['name' => 'required']);
+        DB::table('custom_account_types')->insert([
+            'name' => trim($request->name),
+            'code_prefix' => $request->code_prefix ?: (string) (DB::table('custom_account_types')->count() + 1),
+            'color' => $request->color ?: 'emerald',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])->with('success', 'تم إضافة نوع الحساب الجديد بنجاح.');
+    }
+
+    public function updateOfficeAccountType(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $old = DB::table('custom_account_types')->where('id', $id)->first();
+        if ($old) {
+            DB::table('accounts')->where('office_id', $officeId)->where('type', $old->name)->update(['type' => trim($request->name)]);
+            DB::table('custom_account_types')->where('id', $id)->update([
+                'name' => trim($request->name),
+                'code_prefix' => $request->code_prefix ?: $old->code_prefix,
+                'updated_at' => now(),
+            ]);
+        }
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])->with('success', 'تم تعديل نوع الحساب بنجاح.');
+    }
+
+    public function deleteOfficeAccountType($id)
+    {
+        DB::table('custom_account_types')->where('id', $id)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])->with('success', 'تم حذف نوع الحساب.');
+    }
+
+    public function seedOfficeAccounts()
+    {
+        $officeId = $this->getCurrentOfficeId();
+        if (DB::table('accounts')->where('office_id', $officeId)->count() > 0) {
+            return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+                ->with('success', 'شجرة الحسابات الخاصة بالمكتب مفعلة مسبقاً.');
+        }
+
+        $tree = [
+            [
+                'code' => '1000', 'name' => 'الأصول (صناديق وبنوك المكتب)', 'type' => 'الأصول',
+                'children' => [
+                    ['code' => '1101', 'name' => 'صندوق وخزينة المكتب', 'is_group' => 0],
+                    ['code' => '1102', 'name' => 'حساب المكتب البنكي (تحصيل الإيجارات)', 'is_group' => 0],
+                    ['code' => '1103', 'name' => 'ذمم المستأجرين (إيجارات مستحقة)', 'is_group' => 0],
+                ]
+            ],
+            [
+                'code' => '2000', 'name' => 'الخصوم والأمانات', 'type' => 'الخصوم والالتزامات',
+                'children' => [
+                    ['code' => '2101', 'name' => 'حساب أمانات الملاك (صافي الإيجارات المحصلة)', 'is_group' => 0],
+                    ['code' => '2102', 'name' => 'تأمينات المستأجرين المستردة', 'is_group' => 0],
+                    ['code' => '2103', 'name' => 'مستحقات الشركة الأم (نسب العقود والاشتراك)', 'is_group' => 0],
+                ]
+            ],
+            [
+                'code' => '4000', 'name' => 'إيرادات المكتب العقاري', 'type' => 'الإيرادات',
+                'children' => [
+                    ['code' => '4101', 'name' => 'إيرادات عمولات إدارة الأملاك', 'is_group' => 0],
+                    ['code' => '4102', 'name' => 'إيرادات السعي وتوثيق عقود إيجار', 'is_group' => 0],
+                ]
+            ],
+            [
+                'code' => '5000', 'name' => 'مصروفات المكتب والصيانة', 'type' => 'المصروفات التشغيلية',
+                'children' => [
+                    ['code' => '5101', 'name' => 'مصروفات صيانة العقارات والوحدات', 'is_group' => 0],
+                    ['code' => '5102', 'name' => 'مصروفات رواتب موظفي المكتب', 'is_group' => 0],
+                ]
+            ],
+        ];
+
+        foreach ($tree as $root) {
+            $parentId = DB::table('accounts')->insertGetId([
+                'office_id' => $officeId,
+                'parent_id' => null,
+                'code' => $root['code'],
+                'name' => $root['name'],
+                'type' => $root['type'],
+                'is_group' => 1,
+                'balance' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            foreach ($root['children'] as $child) {
+                DB::table('accounts')->insert([
+                    'office_id' => $officeId,
+                    'parent_id' => $parentId,
+                    'code' => $child['code'],
+                    'name' => $child['name'],
+                    'type' => $root['type'],
+                    'is_group' => $child['is_group'],
+                    'balance' => 0,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+            ->with('success', 'تم تأسيس شجرة الحسابات العقارية المتفرعة الخاصة بالمكتب بنجاح.');
+    }
+
+    /**
+     * إضافة حساب أو عدة فروع دفعة واحدة داخل شجرة المكتب فقط (مع توليد تلقائي للكود)
+     */
+    public function storeOfficeAccount(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $parentId = $request->parent_id ?: null;
+        $parent = $parentId ? DB::table('accounts')->where('office_id', $officeId)->where('id', $parentId)->first() : null;
+        $type = $parent ? $parent->type : ($request->type ?: 'الأصول');
+
+        $names = $request->input('names', [$request->name]);
+        $codes = $request->input('codes', [$request->code]);
+        $isGroups = $request->input('is_groups', [$request->has('is_group') ? 1 : 0]);
+
+        foreach ($names as $idx => $accName) {
+            if (empty(trim($accName))) continue;
+
+            $code = trim($codes[$idx] ?? '');
+            if (empty($code)) {
+                if ($parent) {
+                    $siblingsCount = DB::table('accounts')->where('office_id', $officeId)->where('parent_id', $parent->id)->count();
+                    $code = $parent->code . str_pad($siblingsCount + 1, 2, '0', STR_PAD_LEFT);
+                } else {
+                    $rootsCount = DB::table('accounts')->where('office_id', $officeId)->whereNull('parent_id')->count();
+                    $code = ($rootsCount + 1) . '000';
+                }
+            }
+
+            DB::table('accounts')->insert([
+                'office_id' => $officeId,
+                'parent_id' => $parentId,
+                'code' => $code,
+                'name' => trim($accName),
+                'type' => $type,
+                'is_group' => isset($isGroups[$idx]) && $isGroups[$idx] == 1 ? 1 : 0,
+                'balance' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+            ->with('success', 'تمت إضافة الحسابات والفروع إلى شجرة المكتب بنجاح.');
+    }
+
+    public function updateOfficeAccount(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+
+        DB::table('accounts')->where('office_id', $officeId)->where('id', $id)->update([
+            'code' => trim($request->code),
+            'name' => trim($request->name),
+            'type' => $request->type,
+            'parent_id' => $request->parent_id ?: null,
+            'is_group' => $request->has('is_group') ? 1 : 0,
+            'updated_at' => now(),
+        ]);
+
+        DB::table('accounts')->where('office_id', $officeId)->where('parent_id', $id)->update(['type' => $request->type]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+            ->with('success', 'تم تعديل الحساب في شجرة المكتب بنجاح.');
+    }
+
+    public function deleteOfficeAccount($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $hasChildren = DB::table('accounts')->where('office_id', $officeId)->where('parent_id', $id)->exists();
+
+        if ($hasChildren) {
+            return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+                ->withErrors(['لا يمكن حذف مجلد رئيسي بداخله حسابات فرعية، قم بحذف أو نقل الفروع أولاً.']);
+        }
+
+        DB::table('accounts')->where('office_id', $officeId)->where('id', $id)->delete();
+
+        return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+            ->with('success', 'تم حذف الحساب من شجرة المكتب بنجاح.');
+    }
+
+    public function storeOfficeVoucher(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $prefix = $request->voucher_type === 'receipt' ? 'ORV-' : 'OPV-';
+        $voucherNumber = $prefix . date('Y') . '-' . rand(10000, 99999);
+
+        DB::transaction(function () use ($request, $officeId, $voucherNumber) {
+            DB::table('vouchers')->insert([
+                'voucher_number' => $voucherNumber,
+                'voucher_type' => $request->voucher_type,
+                'office_id' => $officeId,
+                'debit_account_id' => $request->debit_account_id,
+                'credit_account_id' => $request->credit_account_id,
+                'owner_id' => $request->owner_id ?: null,
+                'tenant_id' => $request->tenant_id ?: null,
+                'amount' => $request->amount,
+                'payment_method' => $request->payment_method ?: 'bank_transfer',
+                'voucher_date' => $request->voucher_date ?: date('Y-m-d'),
+                'notes' => trim($request->notes),
+                'created_by' => Auth::id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('accounts')->where('office_id', $officeId)->where('id', $request->debit_account_id)->increment('balance', $request->amount);
+            DB::table('accounts')->where('office_id', $officeId)->where('id', $request->credit_account_id)->decrement('balance', $request->amount);
+        });
+
+        if ($request->filled('stay_in_accounting')) {
+            return redirect()->route('office.dashboard', ['tab' => 'accounting'])
+                ->with('success', 'تم إصدار السند المالي رقم (' . $voucherNumber . ') وتحديث رصيد الحساب في شجرة المكتب فوراً.');
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'vouchers'])
+            ->with('success', 'تم إصدار السند المالي للمكتب رقم (' . $voucherNumber . ') وترحيل القيد بنجاح.');
+    }
+
+    // =========================================================================
+    // 5. إدارة موظفي المكتب وصلاحياتهم
+    // =========================================================================
+    public function storeStaff(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+
+        $request->validate([
+            'name' => 'required',
+            'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
+            'username' => 'required|unique:users,username',
+        ], [
+            'phone.regex' => 'رقم جوال الموظف يجب أن يتكون من 10 أرقام ويبدأ بـ 05.',
+            'username.unique' => 'اسم المستخدم مستخدم مسبقاً.'
+        ]);
+
+        $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+        $perms = $request->input('permissions', []);
+
+        DB::table('users')->insert([
+            'name' => trim($request->name),
+            'username' => trim($request->username),
+            'phone' => $formattedPhone,
+            'email' => trim($request->username) . '@staff.local',
+            'password' => Hash::make($request->password ?: '123456'),
+            'user_type' => 'office_staff',
+            'office_id' => $officeId,
+            'is_active' => 1,
+            'custom_permissions' => json_encode($perms, JSON_UNESCAPED_UNICODE),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'staff'])
+            ->with('success', 'تم إضافة الموظف وتخصيص صلاحياته بنجاح.');
+    }
+
+    public function deleteStaff($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('users')->where('id', $id)->where('office_id', $officeId)->where('user_type', 'office_staff')->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'staff'])
+            ->with('success', 'تم حذف حساب الموظف.');
+    }
+}
