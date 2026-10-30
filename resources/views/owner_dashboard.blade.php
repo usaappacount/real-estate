@@ -345,10 +345,14 @@
                                             <span class="px-2.5 py-1 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-bold">📤 تحويل للمالك / مصروفات</span>
                                         @endif
                                     </td>
-                                    <td class="py-4 px-5">{{ $v->tenant_name ?: '-' }}</td>
-                                    <td class="py-4 px-5 font-bold text-slate-900">{{ number_format($v->amount, 2) }} ر.س</td>
-                                    <td class="py-4 px-5 text-xs">{{ $v->payment_method }}</td>
-                                    <td class="py-4 px-5 text-xs text-slate-500">{{ $v->notes }} ({{ $v->voucher_date }})</td>
+                                    <td class="py-4 px-5 font-semibold">{{ $v->tenant_name ?: '-' }}</td>
+                                    <td class="py-4 px-5 font-bold text-emerald-700">{{ number_format($v->amount, 2) }} ر.س</td>
+                                    <td class="py-4 px-5">
+                                        <span class="px-2.5 py-1 rounded-xl bg-slate-100 text-slate-800 text-xs font-bold">
+                                            {{ \App\Http\Controllers\CompanyErpController::translatePaymentMethod($v->payment_method) }}
+                                        </span>
+                                    </td>
+                                    <td class="py-4 px-5 text-xs text-slate-600">{{ $v->notes }} <span class="font-mono text-slate-400">({{ $v->voucher_date }})</span></td>
                                 </tr>
                             @empty
                                 <tr><td colspan="6" class="py-8 text-center text-slate-400">لا توجد حركات مالية أو سندات مسجلة حتى الآن.</td></tr>

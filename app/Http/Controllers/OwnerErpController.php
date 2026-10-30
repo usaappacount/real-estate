@@ -10,59 +10,68 @@ use Illuminate\Support\Facades\Auth;
 class OwnerErpController extends Controller
 {
     /**
-     * معرفة رقم المالك الحالي (سواء دخل المالك نفسه، أو فرد من عائلته، أو معاينة من المكتب/الأدمن)
+     * معرفة رقم المالك الحالي (يدخل المالك نفسه أو فرد عائلته، أو معاينة سرية حصرية لمالك المنصة company_admin فقط)
      */
     private function getCurrentOwnerId(): ?int
     {
         $user = Auth::user();
-        if (in_array($user->user_type, ['company_admin', 'office_admin', 'office_staff']) && session()->has('impersonate_owner_id')) {
+        // المعاينة السرية مسموحة فقط لمالك المنصة (company_admin) وغير مسموحة لمكاتب العقار
+        if ($user->user_type === 'company_admin' && session()->has('impersonate_owner_id')) {
             return (int) session('impersonate_owner_id');
         }
         return $user->owner_id ? (int) $user->owner_id : null;
     }
 
     /**
-     * فحص هل المستخدم الحالي يملك صلاحية معينة؟ (المالك الأصيل يملك كل الصلاحيات، بينما فرد العائلة حسب ما حُدد له)
+     * فحص هل المستخدم الحالي يملك صلاحية معينة؟
      */
     public static function hasOwnerPermission(string $permKey): bool
     {
         $user = Auth::user();
         if ($user->user_type !== 'owner_family') {
-            return true; // المالك الأصيل أو المشرف له كامل الصلاحية
+            return true;
         }
         $perms = json_decode($user->custom_permissions ?? '[]', true) ?: [];
-        return in_array($permKey, $perms);
+        return in_array($permKey,$perms);
     }
 
     /**
-     * الدخول المباشر لمعاينة بوابة المالك من داخل مكتب العقار
+     * الدخول السري لمعاينة بوابة المالك (حصري فقط للأدمن مالك المنصة company_admin)
      */
     public function switchToOwner($id)
     {
+        if (Auth::user()->user_type !== 'company_admin') {
+            abort(403, 'غير مصرح لمكاتب العقار بالاطلاع على بوابة المالك الخاصة.');
+        }
+
         session(['impersonate_owner_id' => $id]);
-        return redirect()->route('owner.dashboard')->with('success', 'تم فتح بوابة المالك بنجاح (وضع المعاينة).');
+        return redirect()->route('owner.dashboard')->with('success', 'تم فتح بوابة المالك بنجاح (وضع المعاينة السرية لمالك المنصة).');
     }
 
     public function returnToOffice()
     {
+        if (Auth::user()->user_type !== 'company_admin') {
+            abort(403);
+        }
+
         session()->forget('impersonate_owner_id');
         return redirect()->route('office.dashboard', ['tab' => 'owners']);
     }
 
     public function dashboard(Request $request)
     {
-        $ownerId = $this->getCurrentOwnerId();
+        $ownerId =$this->getCurrentOwnerId();
         if (!$ownerId) {
-            return redirect()->route('login')->with('error', 'لم يتم العثور على سجل مالك مرتبط بهذا الحساب.');
+            return redirect()->route('login')->with('error', 'غير مصرح بالدخول أو لم يتم العثور على سجل مالك مرتبط بهذا الحساب.');
         }
 
-        $owner = DB::table('owners')->where('id', $ownerId)->first();
+        $owner = DB::table('owners')->where('id',$ownerId)->first();
         if (!$owner) {
             return redirect()->route('login');
         }
 
-        $office = DB::table('offices')->where('id', $owner->office_id)->first();
-        $tab = $request->get('tab', 'overview');
+        $office = DB::table('offices')->where('id',$owner->office_id)->first();
+        $tab =$request->get('tab', 'overview');
 
         // 1. جلب عقارات المالك وصكوكه
         $properties = DB::table('properties')
@@ -78,7 +87,7 @@ class OwnerErpController extends Controller
             ->get();
 
         // 2. جلب جميع الوحدات التابعة لعقارات هذا المالك
-        $propertyIds = $properties->pluck('id')->toArray();
+        $propertyIds =$properties->pluck('id')->toArray();
         $units = count($propertyIds) > 0
             ? DB::table('property_units')
                 ->join('properties', 'property_units.property_id', '=', 'properties.id')
@@ -104,7 +113,7 @@ class OwnerErpController extends Controller
             ->orderBy('lease_contracts.id', 'desc')
             ->get();
 
-        // 4. جلب السندات المالية المرتبطة بالمالك (مقبوضات الإيجارات أو التحويلات والمصروفات)
+        // 4. جلب السندات المالية المرتبطة بالمالك
         $vouchers = DB::table('vouchers')
             ->where('vouchers.owner_id', $ownerId)
             ->leftJoin('accounts as debit_acc', 'vouchers.debit_account_id', '=', 'debit_acc.id')
@@ -126,10 +135,7 @@ class OwnerErpController extends Controller
             ->orderBy('id', 'desc')
             ->get();
 
-        // حساب الإحصائيات المالية للمالك
-        $grossRent = $contracts->sum('total_rent_amount');
-        $officeCommissionTotal = $contracts->sum('office_commission');
-        $netExpectedIncome = $grossRent - $officeCommissionTotal;
+        $grossRent = $contracts->sum('total_rent_amount');$officeCommissionTotal = $contracts->sum('office_commission');$netExpectedIncome = $grossRent -$officeCommissionTotal;
 
         $stats = [
             'properties_count' => $properties->count(),
@@ -150,13 +156,10 @@ class OwnerErpController extends Controller
         ));
     }
 
-    /**
-     * إضافة فرد من العائلة أو وكيل شرعي مع تخصيص صلاحياته
-     */
     public function storeFamilyMember(Request $request)
     {
-        $ownerId = $this->getCurrentOwnerId();
-        $owner = DB::table('owners')->where('id', $ownerId)->first();
+        $ownerId =$this->getCurrentOwnerId();
+        $owner = DB::table('owners')->where('id',$ownerId)->first();
 
         $request->validate([
             'name' => 'required',
@@ -168,7 +171,7 @@ class OwnerErpController extends Controller
         ]);
 
         $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
-        $perms = $request->input('permissions', ['view_properties']);
+        $perms =$request->input('permissions', ['view_properties']);
 
         DB::table('users')->insert([
             'name' => trim($request->name) . ' (' . ($request->relation ?: 'فرد عائلة') . ')',
@@ -189,10 +192,10 @@ class OwnerErpController extends Controller
             ->with('success', 'تم إضافة فرد العائلة / الوكيل وتخصيص صلاحياته بنجاح.');
     }
 
-    public function updateFamilyMember(Request $request, $id)
+    public function updateFamilyMember(Request $request,$id)
     {
-        $ownerId = $this->getCurrentOwnerId();
-        $perms = $request->input('permissions', []);
+        $ownerId =$this->getCurrentOwnerId();
+        $perms =$request->input('permissions', []);
 
         $updateData = [
             'name' => trim($request->name),
@@ -217,7 +220,7 @@ class OwnerErpController extends Controller
 
     public function deleteFamilyMember($id)
     {
-        $ownerId = $this->getCurrentOwnerId();
+        $ownerId =$this->getCurrentOwnerId();
         DB::table('users')
             ->where('id', $id)
             ->where('owner_id', $ownerId)

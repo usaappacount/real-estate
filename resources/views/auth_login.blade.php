@@ -12,13 +12,11 @@
 </head>
 <body class="bg-slate-950 min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
 
-    <!-- خلفية جمالية عصرية هادئة -->
     <div class="absolute -top-40 -right-40 w-96 h-96 bg-emerald-600/20 rounded-full blur-3xl pointer-events-none"></div>
     <div class="absolute -bottom-40 -left-40 w-96 h-96 bg-teal-500/15 rounded-full blur-3xl pointer-events-none"></div>
 
     <div class="w-full max-w-md bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-3xl shadow-2xl p-8 relative z-10">
         
-        <!-- شعار النظام -->
         <div class="text-center mb-8">
             <div class="w-16 h-16 bg-gradient-to-tr from-emerald-600 to-teal-400 rounded-2xl mx-auto flex items-center justify-center shadow-lg shadow-emerald-600/30 mb-4">
                 <svg class="w-9 h-9 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -26,10 +24,9 @@
                 </svg>
             </div>
             <h1 class="text-2xl font-bold text-white tracking-tight">بوابة الدخول الموحد</h1>
-            <p class="text-slate-400 text-sm mt-1">  مكاتب العقار  </p>
+            <p class="text-slate-400 text-sm mt-1">الإدارة المركزية • مكاتب العقار • الملاك</p>
         </div>
 
-        <!-- رسائل الخطأ والتنبيهات -->
         @if(session('error'))
             <div class="mb-5 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-medium">
                 {{ session('error') }}
@@ -41,34 +38,39 @@
             </div>
         @endif
 
-        <!-- الحالة 1: إدخال كود التحقق المرسل للواتساب -->
+        <!-- الحالة 1: إدخال كود التحقق المرسل للواتساب (تركيز تلقائي + دخول تلقائي فور كتابة 4 أرقام) -->
         @if(session('otp_step'))
             <div id="otpSection">
                 <div class="mb-5 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm">
-                    <p class="font-semibold">تم تحويل الرقم إلى الصيغة الدولية ({{ session('formatted_phone') }})</p>
-                    <p class="text-xs text-slate-300 mt-1">أدخل كود التحقق المرسل إلى الواتساب الخاص بك.</p>
+                    <p class="font-semibold">تم إرسال كود التحقق إلى ({{ session('formatted_phone') }})</p>
+                    <p class="text-xs text-slate-300 mt-1">بمجرد كتابة الأرقام الأربعة سيتم تسجيل دخولك تلقائياً.</p>
                     @if(session('dev_otp_hint'))
                         <div class="mt-3 p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-300 text-xs">
-                            <strong>تنبيه البيئة التجريبية (قبل ربط WhatsApp API):</strong><br>
-                            كود التحقق لتجربة الدخول الآن هو: <span class="text-base font-bold underline">{{ session('dev_otp_hint') }}</span>
+                            <strong>كود التحقق المباشر (بيئة التجربة):</strong>
+                            <span class="text-base font-bold underline font-mono mr-1">{{ session('dev_otp_hint') }}</span>
                         </div>
                     @endif
                 </div>
 
-                <form action="{{ route('auth.verify_otp') }}" method="POST" class="space-y-5">
+                <form id="otpVerifyForm" action="{{ route('auth.verify_otp') }}" method="POST" class="space-y-5">
                     @csrf
                     <input type="hidden" name="formatted_phone" value="{{ session('formatted_phone') }}">
                     <input type="hidden" name="local_phone" value="{{ session('local_phone') }}">
 
                     <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-2">كود التحقق (OTP)</label>
-                        <input type="text" name="otp_code" maxlength="4" required autofocus
-                               oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 4);"
+                        <label class="block text-xs font-semibold text-slate-300 mb-2 text-center">أدخل كود التحقق (4 أرقام)</label>
+                        <input type="tel" name="otp_code" id="otpCodeInput" maxlength="4" required autofocus autocomplete="one-time-code"
+                               oninput="handleOtpInput(this)"
                                placeholder="----"
-                               class="w-full text-center tracking-[1em] text-2xl font-bold bg-slate-800/90 border border-slate-700 text-white rounded-2xl py-3.5 focus:outline-none focus:border-emerald-500">
+                               dir="ltr"
+                               class="w-full text-center tracking-[1em] text-2xl font-bold bg-slate-800/90 border-2 border-emerald-500/60 text-white rounded-2xl py-3.5 focus:outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/20">
                     </div>
 
-                    <button type="submit" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold rounded-2xl shadow-lg shadow-emerald-600/25 transition">
+                    <div id="otpLoadingMsg" class="hidden text-center text-xs text-emerald-400 font-bold animate-pulse">
+                        ⏳ جاري التحقق وتسجيل الدخول تلقائياً...
+                    </div>
+
+                    <button type="submit" id="otpSubmitBtn" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold rounded-2xl shadow-lg shadow-emerald-600/25 transition">
                         تأكيد الكود والدخول للنظام
                     </button>
                 </form>
@@ -87,23 +89,23 @@
                 @csrf
                 <div>
                     <div class="flex justify-between items-center mb-2">
-                        <label class="text-xs font-semibold text-slate-300">رقم الجوال</label>
+                        <label class="text-xs font-semibold text-slate-300">رقم الجوال (10 أرقام)</label>
                     </div>
                     <div class="relative">
-                        <input type="tel" name="phone" id="phoneInput" maxlength="10" required
+                        <input type="tel" name="phone" id="phoneInput" maxlength="10" required autofocus
                                value="0500000000"
                                oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10); updateIntlPreview(this.value);"
-                               placeholder="05X XXXX XXX"
+                               placeholder="05XXXXXXXX"
                                dir="ltr"
                                class="w-full text-left font-mono text-lg tracking-wider bg-slate-800/80 border border-slate-700 text-white rounded-2xl px-4 py-3.5 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20">
                     </div>
                     <p id="intlPreview" class="text-xs text-slate-400 mt-2">
-                        سيتم إرسال كود تحقق 4 ارقام الى  : <span class="text-emerald-400 font-mono font-semibold" dir="ltr">+966500000000</span>
+                        سيتم إرسال كود تحقق 4 أرقام إلى: <span class="text-emerald-400 font-mono font-semibold" dir="ltr">+966500000000</span>
                     </p>
                 </div>
 
                 <button type="submit" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold rounded-2xl shadow-lg shadow-emerald-600/25 transition flex items-center justify-center gap-2">
-                    <span>إستلام كود التحقق عبر واتساب</span>
+                    <span>استلام كود التحقق عبر واتساب</span>
                 </button>
             </form>
 
@@ -148,6 +150,33 @@
     </div>
 
     <script>
+        // تركيز المؤشر فوراً على خانة كود التحقق عند ظهورها
+        window.addEventListener('DOMContentLoaded', function() {
+            const otpInput = document.getElementById('otpCodeInput');
+            if (otpInput) {
+                otpInput.focus();
+                otpInput.select();
+            }
+        });
+
+        // التحقق والدخول التلقائي فور كتابة 4 أرقام
+        let otpSubmitted = false;
+        function handleOtpInput(el) {
+            el.value = el.value.replace(/[^0-9]/g, '').slice(0, 4);
+            if (el.value.length === 4 && !otpSubmitted) {
+                otpSubmitted = true;
+                const loadingMsg = document.getElementById('otpLoadingMsg');
+                const submitBtn = document.getElementById('otpSubmitBtn');
+                if (loadingMsg) loadingMsg.classList.remove('hidden');
+                if (submitBtn) {
+                    submitBtn.disabled = true;
+                    submitBtn.innerText = 'جاري الدخول...';
+                }
+                el.readOnly = true;
+                document.getElementById('otpVerifyForm').submit();
+            }
+        }
+
         function updateIntlPreview(val) {
             const preview = document.getElementById('intlPreview');
             if (val.length > 0) {
