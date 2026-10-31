@@ -24,7 +24,7 @@
                 </svg>
             </div>
             <h1 class="text-2xl font-bold text-white tracking-tight">بوابة الدخول الموحد</h1>
-            <p class="text-slate-400 text-sm mt-1">الإدارة المركزية • مكاتب العقار • الملاك</p>
+            <p class="text-slate-400 text-sm mt-1">نظام ادارة العقار</p>
         </div>
 
         @if(session('error'))
@@ -43,7 +43,6 @@
             <div id="otpSection">
                 <div class="mb-5 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm">
                     <p class="font-semibold">تم إرسال كود التحقق إلى ({{ session('formatted_phone') }})</p>
-                    <p class="text-xs text-slate-300 mt-1">بمجرد كتابة الأرقام الأربعة سيتم تسجيل دخولك تلقائياً.</p>
                     @if(session('dev_otp_hint'))
                         <div class="mt-3 p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-300 text-xs">
                             <strong>كود التحقق المباشر (بيئة التجربة):</strong>
@@ -93,14 +92,14 @@
                     </div>
                     <div class="relative">
                         <input type="tel" name="phone" id="phoneInput" maxlength="10" required autofocus
-                               value="0500000000"
+                               value=""
                                oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10); updateIntlPreview(this.value);"
-                               placeholder="05XXXXXXXX"
+                               placeholder="05X XXX XXXX"
                                dir="ltr"
                                class="w-full text-left font-mono text-lg tracking-wider bg-slate-800/80 border border-slate-700 text-white rounded-2xl px-4 py-3.5 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20">
                     </div>
                     <p id="intlPreview" class="text-xs text-slate-400 mt-2">
-                        سيتم إرسال كود تحقق 4 أرقام إلى: <span class="text-emerald-400 font-mono font-semibold" dir="ltr">+966500000000</span>
+                        سيتم إرسال كود تحقق 4 أرقام إلى: <span class="text-emerald-400 font-mono font-semibold" dir="ltr"></span>
                     </p>
                 </div>
 
@@ -181,7 +180,7 @@
             const preview = document.getElementById('intlPreview');
             if (val.length > 0) {
                 let clean = val.startsWith('0') ? val.substring(1) : val;
-                preview.innerHTML = 'سيتم إرسال كود الواتساب إلى: <span class="text-emerald-400 font-mono font-semibold" dir="ltr">+966' + clean + '</span>';
+                preview.innerHTML = 'سيتم ارسال كود تحقق 4 ارقام الى : <span class="text-emerald-400 font-mono font-semibold" dir="ltr">+966' + clean + '</span>';
             } else {
                 preview.innerHTML = 'أدخل 10 أرقام تبدأ بـ 05';
             }

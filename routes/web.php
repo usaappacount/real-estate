@@ -5,6 +5,9 @@ use App\Http\Controllers\CompanyErpController;
 use App\Http\Controllers\OfficeErpController;
 use App\Http\Controllers\OwnerErpController;
 
+// الواجهة الرئيسية التعريفية للمنصة وخدماتها (Landing Page)
+Route::get('/', [CompanyErpController::class, 'showLandingPage'])->name('landing');
+
 // مسارات تسجيل الدخول الموحد (واتساب OTP + اسم المستخدم وكلمة المرور)
 Route::get('/login', [CompanyErpController::class, 'showLogin'])->name('login');
 Route::post('/auth/send-otp', [CompanyErpController::class, 'sendOtp'])->name('auth.send_otp');
@@ -14,8 +17,9 @@ Route::post('/logout', [CompanyErpController::class, 'logout'])->name('logout');
 
 // مسارات النظام المحمية بتسجيل الدخول
 Route::middleware('auth')->group(function () {
-    // اللوحة الرئيسية للشركة الأم (الأدمن - مالك المنصة)
-    Route::get('/', [CompanyErpController::class, 'dashboard'])->name('erp.dashboard');
+   // اللوحة الرئيسية للشركة الأم (الأدمن - مالك المنصة)
+    Route::get('/admin/dashboard', [CompanyErpController::class, 'dashboard'])->name('erp.dashboard');
+    Route::post('/admin/landing-settings/save', [CompanyErpController::class, 'saveLandingSettings'])->name('erp.landing.save');
 
     // ميزة دخول الأدمن لمعاينة وإدارة أي مكتب عقار بضغطة زر
     Route::get('/admin/switch-to-office/{id}', [CompanyErpController::class, 'switchToOffice'])->name('erp.switch_office');
@@ -74,6 +78,24 @@ Route::middleware('auth')->group(function () {
     Route::post('/vouchers/{id}/whatsapp', [CompanyErpController::class, 'sendVoucherWhatsApp'])->name('erp.vouchers.whatsapp');
     Route::post('/vouchers/{id}/send-whatsapp', [CompanyErpController::class, 'sendVoucherWhatsApp'])->name('erp.vouchers.send_whatsapp');
 
+   // مسارات القيود اليومية وكشف الحساب والقوائم المالية (للشركة الأم)
+    Route::post('/journal-entries/store', [CompanyErpController::class, 'storeJournalEntry'])->name('erp.journal.store');
+    Route::post('/journal-entries/{id}/update', [CompanyErpController::class, 'updateJournalEntry'])->name('erp.journal.update');
+    Route::post('/journal-entries/{id}/delete', [CompanyErpController::class, 'deleteJournalEntry'])->name('erp.journal.delete');
+
+    // مسارات الفوترة الضريبية للشركة الأم (الأدمن)
+    Route::post('/tax-profile/save', [CompanyErpController::class, 'saveCompanyTaxProfile'])->name('erp.tax_profile.save');
+    Route::post('/invoices/store', [CompanyErpController::class, 'storeCompanyInvoice'])->name('erp.invoices.store');
+    Route::post('/invoices/{id}/whatsapp', [CompanyErpController::class, 'sendCompanyInvoiceWhatsapp'])->name('erp.invoices.whatsapp');
+    Route::post('/invoices/{id}/delete', [CompanyErpController::class, 'deleteCompanyInvoice'])->name('erp.invoices.delete');
+    Route::post('/offices/{id}/toggle-owner-invoicing', [CompanyErpController::class, 'toggleOfficeOwnerInvoicing'])->name('erp.offices.toggle_owner_invoicing');
+
+    // مسارات سجل الأخطاء، الفحص الأوتوماتيكي الشامل لكل البوابات، والنسخ الاحتياطي (للأدمن)
+    Route::post('/admin/system/run-diagnostics', [CompanyErpController::class, 'runSystemDiagnostics'])->name('erp.system.diagnostics');
+    Route::post('/admin/system/clear-logs', [CompanyErpController::class, 'clearSystemLogs'])->name('erp.system.clear_logs');
+    Route::get('/admin/system/backup', [CompanyErpController::class, 'downloadSystemBackup'])->name('erp.system.backup');
+    Route::post('/admin/system/restore', [CompanyErpController::class, 'restoreSystemBackup'])->name('erp.system.restore');
+
     // =========================================================================
     // مسارات بوابة مكتب العقار (Office Portal Routes)
     // =========================================================================
@@ -89,8 +111,10 @@ Route::middleware('auth')->group(function () {
         Route::post('/owners/{id}/delete', [OfficeErpController::class, 'deleteOwner'])->name('owners.delete');
 
         Route::post('/properties/store', [OfficeErpController::class, 'storeProperty'])->name('properties.store');
+        Route::post('/properties/{id}/update', [OfficeErpController::class, 'updateProperty'])->name('properties.update');
         Route::post('/properties/{id}/delete', [OfficeErpController::class, 'deleteProperty'])->name('properties.delete');
         Route::post('/units/store', [OfficeErpController::class, 'storeUnit'])->name('units.store');
+        Route::post('/units/{id}/update', [OfficeErpController::class, 'updateUnit'])->name('units.update');
         Route::post('/units/{id}/delete', [OfficeErpController::class, 'deleteUnit'])->name('units.delete');
 
         Route::post('/tenants/store', [OfficeErpController::class, 'storeTenant'])->name('tenants.store');
@@ -98,6 +122,8 @@ Route::middleware('auth')->group(function () {
         Route::post('/tenants/{id}/delete', [OfficeErpController::class, 'deleteTenant'])->name('tenants.delete');
 
         Route::post('/contracts/store', [OfficeErpController::class, 'storeContract'])->name('contracts.store');
+        Route::post('/contracts/{id}/update', [OfficeErpController::class, 'updateContract'])->name('contracts.update');
+        Route::post('/contracts/{id}/delete', [OfficeErpController::class, 'deleteContract'])->name('contracts.delete');
         Route::post('/contracts/{id}/sync-ejar', [OfficeErpController::class, 'syncWithEjar'])->name('contracts.sync_ejar');
 
         Route::post('/account-types/store', [OfficeErpController::class, 'storeOfficeAccountType'])->name('account_types.store');
@@ -115,11 +141,30 @@ Route::middleware('auth')->group(function () {
         Route::post('/vouchers/{id}/whatsapp', [OfficeErpController::class, 'sendOfficeVoucherWhatsapp'])->name('vouchers.whatsapp');
         Route::post('/vouchers/{id}/send-whatsapp', [OfficeErpController::class, 'sendOfficeVoucherWhatsapp'])->name('vouchers.send_whatsapp');
 
+        // إدارة طرق الدفع والقيود اليومية الخاصة بالمكتب
+        Route::post('/payment-methods/store', [OfficeErpController::class, 'storeOfficePaymentMethod'])->name('payment_methods.store');
+        Route::post('/payment-methods/{id}/update', [OfficeErpController::class, 'updateOfficePaymentMethod'])->name('payment_methods.update');
+        Route::post('/payment-methods/{id}/delete', [OfficeErpController::class, 'deleteOfficePaymentMethod'])->name('payment_methods.delete');
+
+        Route::post('/journal-entries/store', [OfficeErpController::class, 'storeOfficeJournalEntry'])->name('journal.store');
+        Route::post('/journal-entries/{id}/update', [OfficeErpController::class, 'updateOfficeJournalEntry'])->name('journal.update');
+        Route::post('/journal-entries/{id}/delete', [OfficeErpController::class, 'deleteOfficeJournalEntry'])->name('journal.delete');
+
         Route::post('/staff/store', [OfficeErpController::class, 'storeStaff'])->name('staff.store');
+        Route::post('/staff/{id}/update', [OfficeErpController::class, 'updateStaff'])->name('staff.update');
         Route::post('/staff/{id}/delete', [OfficeErpController::class, 'deleteStaff'])->name('staff.delete');
 
         Route::post('/whatsapp/update', [OfficeErpController::class, 'updateOfficeWhatsappSettings'])->name('whatsapp.update');
         Route::post('/whatsapp-settings/update', [OfficeErpController::class, 'updateOfficeWhatsappSettings'])->name('whatsapp_settings.update');
+        Route::post('/whatsapp/run-reminders', [OfficeErpController::class, 'triggerLeaseReminders'])->name('whatsapp.run_reminders');
+
+        // مسارات الفوترة الضريبية وحفظ الرقم الضريبي لمرة واحدة (للمكتب والمالك والمستأجر)
+        Route::post('/tax-profile/save', [OfficeErpController::class, 'saveOfficeTaxProfile'])->name('tax_profile.save');
+        Route::post('/owners/{id}/tax-save', [OfficeErpController::class, 'saveOwnerTaxProfile'])->name('owners.tax_save');
+        Route::post('/tenants/{id}/tax-save', [OfficeErpController::class, 'saveTenantTaxProfile'])->name('tenants.tax_save');
+        Route::post('/invoices/store', [OfficeErpController::class, 'storeOfficeInvoice'])->name('invoices.store');
+        Route::post('/invoices/{id}/whatsapp', [OfficeErpController::class, 'sendOfficeInvoiceWhatsapp'])->name('invoices.whatsapp');
+        Route::post('/invoices/{id}/delete', [OfficeErpController::class, 'deleteOfficeInvoice'])->name('invoices.delete');
     });
 
     // =========================================================================

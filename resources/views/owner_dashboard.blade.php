@@ -10,6 +10,123 @@
         body { font-family: 'Readex Pro', sans-serif; background-color: #f8fafc; }
         .owner-sidebar { background: linear-gradient(180deg, #1e1b4b 0%, #0f172a 100%); }
     </style>
+    
+    <style id="modern-minimal-ui">
+    /* 1. توحيد الخلفية والخطوط بهدوء بصري */
+    body {
+        background-color: #f8fafc !important;
+        color: #0f172a !important;
+        letter-spacing: -0.01em;
+    }
+
+    /* 2. توحيد القوائم الجانبية بلون كحلي داكن رسمي بدون تدرجات صارخة */
+    .glass-sidebar, .office-sidebar, .owner-sidebar {
+        background: #0f172a !important;
+        border-left: 1px solid #1e293b !important;
+        box-shadow: none !important;
+    }
+
+    /* تنسيق روابط القائمة الجانبية النشطة */
+    aside nav a.from-emerald-600,
+    aside nav a.from-amber-500,
+    aside nav a.bg-white {
+        background: #1e293b !important;
+        background-image: none !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+        border-right: 3px solid #38bdf8 !important;
+        border-radius: 8px !important;
+    }
+    aside nav a {
+        border-radius: 8px !important;
+    }
+
+    /* 3. تحويل البطاقات والحاويات والـ Modals إلى زوايا عصرية ناعمة وحدود رفيعة */
+    .rounded-3xl, .rounded-2xl {
+        border-radius: 10px !important;
+    }
+    .shadow-2xl, .shadow-lg, .shadow-md, .shadow-sm {
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
+    }
+
+    /* 4. ترتيب وتحديث جميع الجداول لتصبح نظيفة وعصرية */
+    table {
+        border-collapse: separate !important;
+        border-spacing: 0 !important;
+        width: 100% !important;
+    }
+    table thead tr {
+        background-color: #f1f5f9 !important;
+        color: #475569 !important;
+    }
+    table thead th {
+        background-color: #f1f5f9 !important;
+        color: #475569 !important;
+        font-weight: 600 !important;
+        font-size: 0.78rem !important;
+        padding: 12px 16px !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+    }
+    table tbody td {
+        padding: 12px 16px !important;
+        border-bottom: 1px solid #f1f5f9 !important;
+        color: #1e293b !important;
+        font-size: 0.85rem !important;
+        vertical-align: middle !important;
+    }
+    table tbody tr:hover {
+        background-color: #f8fafc !important;
+    }
+
+    /* 5. توحيد الأزرار وإلغاء تدرجات الألوان المزعجة */
+    button[class*="bg-gradient"],
+    a[class*="bg-gradient"],
+    button.bg-emerald-600,
+    button.bg-indigo-600,
+    a.bg-emerald-600 {
+        background: #0f172a !important;
+        background-image: none !important;
+        color: #ffffff !important;
+        border: 1px solid #0f172a !important;
+        border-radius: 8px !important;
+        box-shadow: none !important;
+        transition: all 0.15s ease !important;
+    }
+    button[class*="bg-gradient"]:hover,
+    a[class*="bg-gradient"]:hover,
+    button.bg-emerald-600:hover,
+    button.bg-indigo-600:hover,
+    a.bg-emerald-600:hover {
+        background: #334155 !important;
+        border-color: #334155 !important;
+    }
+
+    /* أزرار الإجراءات الفرعية داخل الجداول */
+    td button, td a {
+        border-radius: 6px !important;
+        box-shadow: none !important;
+    }
+
+    /* 6. تهدئة الملصقات (Badges) لتكون رسمية وغير مزدحمة بالألوان */
+    span.rounded-full, span.rounded-xl, span.rounded-lg {
+        border-radius: 6px !important;
+        font-weight: 500 !important;
+        box-shadow: none !important;
+    }
+
+    /* 7. تحسين حقول الإدخال والبحث (Inputs & Selects) */
+    input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+        border-radius: 8px !important;
+        border-color: #cbd5e1 !important;
+        box-shadow: none !important;
+    }
+    input:focus, select:focus, textarea:focus {
+        border-color: #0f172a !important;
+        outline: none !important;
+        ring: 0 !important;
+    }
+</style>
+
 </head>
 <body class="text-slate-800 flex min-h-screen">
 
@@ -467,11 +584,15 @@
                                                 @endforeach
                                             </div>
                                         </td>
-                                        <td class="py-4 px-5 text-center">
-                                            <form action="{{ route('owner.family.delete', $fm->id) }}" method="POST" onsubmit="return confirm('إلغاء حساب فرد العائلة؟');">
-                                                @csrf
-                                                <button type="submit" class="px-3 py-1.5 rounded-xl bg-red-50 text-red-600 text-xs font-bold">حذف</button>
-                                            </form>
+                                       <td class="py-4 px-5 text-center">
+                                            <div class="flex items-center justify-center gap-1.5">
+                                                <button type="button" onclick="document.getElementById('editFamilyModal_{{ $fm->id }}').classList.remove('hidden'); document.getElementById('editFamilyModal_{{ $fm->id }}').classList.add('flex');"
+                                                        class="px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold">تعديل</button>
+                                                <form action="{{ route('owner.family.delete', $fm->id) }}" method="POST" onsubmit="return confirm('إلغاء حساب فرد العائلة؟');">
+                                                    @csrf
+                                                    <button type="submit" class="px-3 py-1.5 rounded-xl bg-red-50 text-red-600 text-xs font-bold">حذف</button>
+                                                </form>
+                                            </div>
                                         </td>
                                     </tr>
                                 @empty
@@ -481,6 +602,53 @@
                         </table>
                     </div>
                 </div>
+
+                @foreach($familyMembers as $fm)
+                    @php
+                        $fPerms = json_decode($fm->custom_permissions ?? '[]', true) ?: [];
+                        $fmLocalPhone = \App\Http\Controllers\CompanyErpController::toLocalPhone($fm->phone);
+                    @endphp
+                    <div id="editFamilyModal_{{ $fm->id }}" class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+                            <div class="flex items-center justify-between pb-3 border-b mb-4">
+                                <h3 class="font-bold text-base text-slate-900">تعديل بيانات وصلاحيات: {{ $fm->name }}</h3>
+                                <button type="button" onclick="document.getElementById('editFamilyModal_{{ $fm->id }}').classList.add('hidden'); document.getElementById('editFamilyModal_{{ $fm->id }}').classList.remove('flex');" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <form action="{{ route('owner.family.update', $fm->id) }}" method="POST" class="space-y-3.5">
+                                @csrf
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-700 mb-1">الاسم والصفة *</label>
+                                    <input type="text" name="name" value="{{ $fm->name }}" required class="w-full rounded-xl border px-3.5 py-2 text-sm font-bold">
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-semibold text-slate-700 mb-1">رقم الجوال *</label>
+                                        <input type="tel" name="phone" value="{{ $fmLocalPhone }}" maxlength="10" required dir="ltr" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold text-slate-700 mb-1">اسم المستخدم *</label>
+                                        <input type="text" name="username" value="{{ $fm->username }}" required class="w-full rounded-xl border px-3 py-2 text-xs">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-700 mb-1">كلمة مرور جديدة (اتركها فارغة لعدم التغيير)</label>
+                                    <input type="text" name="password" placeholder="أدخل كلمة مرور جديدة فقط عند الرغبة" class="w-full rounded-xl border px-3.5 py-2 text-xs">
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-indigo-50/60 border border-indigo-200 space-y-2">
+                                    <div class="text-xs font-bold text-indigo-900">تعديل الصلاحيات الممنوحة:</div>
+                                    <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="permissions[]" value="view_properties" {{ in_array('view_properties', $fPerms) ? 'checked' : '' }}> الاطلاع على العقارات والصكوك</label>
+                                    <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="permissions[]" value="view_contracts" {{ in_array('view_contracts', $fPerms) ? 'checked' : '' }}> الاطلاع على العقود والمستأجرين</label>
+                                    <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="permissions[]" value="view_financials" {{ in_array('view_financials', $fPerms) ? 'checked' : '' }}> الاطلاع على المبالغ وكشف الحساب</label>
+                                    <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="permissions[]" value="manage_family" {{ in_array('manage_family', $fPerms) ? 'checked' : '' }}> إدارة أفراد العائلة</label>
+                                </div>
+                                <div class="flex justify-end gap-2 pt-3 border-t">
+                                    <button type="button" onclick="document.getElementById('editFamilyModal_{{ $fm->id }}').classList.add('hidden'); document.getElementById('editFamilyModal_{{ $fm->id }}').classList.remove('flex');" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-semibold">إلغاء</button>
+                                    <button type="submit" class="px-6 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">حفظ التعديلات</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                @endforeach
             @endif
 
             <!-- 6. إعدادات الحساب الشخصي للمالك أو فرد العائلة -->

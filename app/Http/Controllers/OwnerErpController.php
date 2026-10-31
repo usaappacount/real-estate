@@ -192,18 +192,24 @@ class OwnerErpController extends Controller
             ->with('success', 'تم إضافة فرد العائلة / الوكيل وتخصيص صلاحياته بنجاح.');
     }
 
-    public function updateFamilyMember(Request $request,$id)
+    public function updateFamilyMember(Request $request, $id)
     {
-        $ownerId =$this->getCurrentOwnerId();
-        $perms =$request->input('permissions', []);
+        $ownerId = $this->getCurrentOwnerId();
+        $perms = $request->input('permissions', []);
 
         $updateData = [
             'name' => trim($request->name),
             'custom_permissions' => json_encode($perms, JSON_UNESCAPED_UNICODE),
-            'is_active' => $request->has('is_active') ? 1 : 0,
+            'is_active' => 1,
             'updated_at' => now(),
         ];
 
+        if ($request->filled('phone')) {
+            $updateData['phone'] = CompanyErpController::formatSaudiPhone($request->phone);
+        }
+        if ($request->filled('username')) {
+            $updateData['username'] = trim($request->username);
+        }
         if ($request->filled('password')) {
             $updateData['password'] = Hash::make($request->password);
         }
@@ -215,7 +221,7 @@ class OwnerErpController extends Controller
             ->update($updateData);
 
         return redirect()->route('owner.dashboard', ['tab' => 'family'])
-            ->with('success', 'تم تحديث صلاحيات وبيانات فرد العائلة بنجاح.');
+            ->with('success', 'تم تحديث بيانات وصلاحيات فرد العائلة بنجاح.');
     }
 
     public function deleteFamilyMember($id)

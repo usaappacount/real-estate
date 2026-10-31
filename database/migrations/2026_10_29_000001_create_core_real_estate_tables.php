@@ -18,7 +18,7 @@ return new class extends Migration
             $table->string('email')->unique();
             $table->text('address')->nullable();
             
-            // نوع الاتفاق المالي مع الشركة الأم
+            // نوع الاشتراك المالي مع الشركة 
             $table->enum('billing_type', ['annual_subscription', 'per_property_percentage', 'hybrid'])->default('annual_subscription');
             $table->decimal('annual_fee', 12, 2)->default(0); // قيمة الاشتراك السنوي
             $table->decimal('company_commission_rate', 5, 2)->default(0); // نسبة الشركة الأم من كل عقار/عقد (%)
