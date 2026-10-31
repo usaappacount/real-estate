@@ -2038,7 +2038,7 @@
                                         </div>
                                         <div class="md:col-span-2">
                                             <label class="block text-[11px] font-bold text-emerald-700 mb-1">المبلغ المدين</label>
-                                            <input type="number" step="0.01" name="debits[]" value="500" required class="w-full rounded-xl border border-slate-300 px-2.5 py-2 text-xs bg-white font-bold text-emerald-700">
+                                            <input type="number" step="0.01" name="debits[]" value="0" required class="w-full rounded-xl border border-slate-300 px-2.5 py-2 text-xs bg-white font-bold text-emerald-700">
                                         </div>
                                         <div class="md:col-span-2">
                                             <label class="block text-[11px] font-bold text-amber-700 mb-1">المبلغ الدائن</label>
@@ -2079,7 +2079,7 @@
                                         </div>
                                         <div class="md:col-span-2">
                                             <label class="block text-[11px] font-bold text-amber-700 mb-1">المبلغ الدائن</label>
-                                            <input type="number" step="0.01" name="credits[]" value="500" required class="w-full rounded-xl border border-slate-300 px-2.5 py-2 text-xs bg-white font-bold text-amber-700">
+                                            <input type="number" step="0.01" name="credits[]" value="0" required class="w-full rounded-xl border border-slate-300 px-2.5 py-2 text-xs bg-white font-bold text-amber-700">
                                         </div>
                                         <div class="md:col-span-1">
                                             <label class="block text-[11px] font-bold text-slate-600 mb-1">الضريبة</label>

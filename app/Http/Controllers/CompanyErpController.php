@@ -1089,6 +1089,65 @@ class CompanyErpController extends Controller
                     $table->decimal('credit_balance', 15, 2)->default(0);
                 }
             });
+
+            // فك قيد CHECK القديم عن عمود type في جدول accounts بقاعدة بيانات SQLite
+            $this->unlockAccountsTypeConstraint();
+        }
+    }
+
+    /**
+     * إزالة قيد CHECK عن عمود type في جدول accounts ليقبل المسميات العربية والمخصصة
+     */
+    public function unlockAccountsTypeConstraint(): void
+    {
+        if (!Schema::hasTable('accounts')) {
+            return;
+        }
+
+        try {
+            $master = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'");
+            if ($master && isset($master->sql) && stripos($master->sql, 'check') !== false && stripos($master->sql, 'type') !== false) {
+                DB::statement('PRAGMA foreign_keys = OFF;');
+                DB::transaction(function () {
+                    Schema::create('accounts_unlocked_tmp', function (Blueprint $table) {
+                        $table->id();
+                        $table->unsignedBigInteger('office_id')->nullable();
+                        $table->unsignedBigInteger('parent_id')->nullable();
+                        $table->string('code');
+                        $table->string('name');
+                        $table->string('type')->default('الأصول');
+                        $table->boolean('is_group')->default(false);
+                        $table->decimal('balance', 15, 2)->default(0);
+                        $table->decimal('debit_balance', 15, 2)->default(0);
+                        $table->decimal('credit_balance', 15, 2)->default(0);
+                        $table->timestamps();
+                    });
+
+                    $oldRows = DB::table('accounts')->get();
+                    foreach ($oldRows as $row) {
+                        DB::table('accounts_unlocked_tmp')->insert([
+                            'id' => $row->id,
+                            'office_id' => $row->office_id ?? null,
+                            'parent_id' => $row->parent_id ?? null,
+                            'code' => $row->code,
+                            'name' => $row->name,
+                            'type' => $row->type ?? 'الأصول',
+                            'is_group' => $row->is_group ?? 0,
+                            'balance' => $row->balance ?? 0,
+                            'debit_balance' => $row->debit_balance ?? 0,
+                            'credit_balance' => $row->credit_balance ?? 0,
+                            'created_at' => $row->created_at ?? now(),
+                            'updated_at' => $row->updated_at ?? now(),
+                        ]);
+                    }
+
+                    Schema::drop('accounts');
+                    Schema::rename('accounts_unlocked_tmp', 'accounts');
+                });
+                DB::statement('PRAGMA foreign_keys = ON;');
+            }
+        } catch (\Throwable $e) {
+            try { DB::statement('PRAGMA foreign_keys = ON;'); } catch (\Throwable $ignore) {}
         }
     }
 
