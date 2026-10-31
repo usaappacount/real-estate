@@ -31,7 +31,7 @@ COPY . /var/www/html
 
 # العمل داخل مجلد المشروع وتثبيت الحزم عبر Composer
 WORKDIR /var/www/html
-RUN composer install --no-dev --optimize-autoloader
+RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs
 
 # تعيين صلاحيات المجلدات (خصوصاً storage و bootstrap/cache)
 RUN chown -R www-data:www-data /var/www/html \
