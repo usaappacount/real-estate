@@ -618,6 +618,7 @@ class CompanyErpController extends Controller
             ->get();
 
         $landingSettings = self::getLandingSettings();
+        $activityLogs = self::getFilteredActivityLogs();
 
         $stats = [
             'offices_count' => $offices->count(),
@@ -650,7 +651,8 @@ class CompanyErpController extends Controller
             'diagnosticRuns',
             'companyTaxProfile',
             'companyInvoices',
-            'landingSettings'
+            'landingSettings',
+            'activityLogs'
         ));
     }
 
@@ -2575,19 +2577,32 @@ class CompanyErpController extends Controller
     {
         if (!Schema::hasTable('tax_invoices')) {
             Schema::create('tax_invoices', function (Blueprint $table) {
-                $table->id();$table->string('invoice_number')->unique();
-                $table->string('issuer_level')->default('company'); // company \vert{} office$table->string('invoice_type')->default('tax'); // tax | simplified | owner_tax
-                $table->unsignedBigInteger('office_id')->nullable();$table->unsignedBigInteger('owner_id')->nullable();
-                $table->unsignedBigInteger('tenant_id')->nullable();$table->unsignedBigInteger('lease_contract_id')->nullable();
-                $table->unsignedBigInteger('debit_account_id')->nullable();$table->unsignedBigInteger('credit_account_id')->nullable();
-                $table->unsignedBigInteger('tax_account_id')->nullable();$table->unsignedBigInteger('journal_entry_id')->nullable();
-                $table->string('seller_name');$table->string('seller_tax_number')->nullable();
-                $table->string('seller_address')->nullable();$table->string('buyer_name');
-                $table->string('buyer_tax_number')->nullable();$table->string('buyer_address')->nullable();
-                $table->text('description');$table->decimal('subtotal', 15, 2)->default(0);
-                $table->decimal('vat_rate', 5, 2)->default(15.00);$table->decimal('vat_amount', 15, 2)->default(0);
-                $table->decimal('total_amount', 15, 2)->default(0);$table->date('issue_date');
-                $table->text('zatca_qr')->nullable();$table->timestamps();
+                $table->id();
+                $table->string('invoice_number')->unique();
+                $table->string('issuer_level')->default('company'); // company | office
+                $table->string('invoice_type')->default('tax'); // tax | simplified | owner_tax
+                $table->unsignedBigInteger('office_id')->nullable();
+                $table->unsignedBigInteger('owner_id')->nullable();
+                $table->unsignedBigInteger('tenant_id')->nullable();
+                $table->unsignedBigInteger('lease_contract_id')->nullable();
+                $table->unsignedBigInteger('debit_account_id')->nullable();
+                $table->unsignedBigInteger('credit_account_id')->nullable();
+                $table->unsignedBigInteger('tax_account_id')->nullable();
+                $table->unsignedBigInteger('journal_entry_id')->nullable();
+                $table->string('seller_name');
+                $table->string('seller_tax_number')->nullable();
+                $table->string('seller_address')->nullable();
+                $table->string('buyer_name');
+                $table->string('buyer_tax_number')->nullable();
+                $table->string('buyer_address')->nullable();
+                $table->text('description');
+                $table->decimal('subtotal', 15, 2)->default(0);
+                $table->decimal('vat_rate', 5, 2)->default(15.00);
+                $table->decimal('vat_amount', 15, 2)->default(0);
+                $table->decimal('total_amount', 15, 2)->default(0);
+                $table->date('issue_date');
+                $table->text('zatca_qr')->nullable();
+                $table->timestamps();
             });
         } else {
             Schema::table('tax_invoices', function (Blueprint $table) {
@@ -3225,5 +3240,176 @@ class CompanyErpController extends Controller
 
         return redirect()->route('erp.dashboard', ['tab' => 'settings'])
             ->with('success', 'تم حفظ وتحديث جميع أقسام الواجهة الرئيسية وترتيبها وإعدادات الـ SEO بنجاح!');
+    }
+
+    // =========================================================================
+    // نظام تتبع الحركات والعمليات (Audit & Activity Tracker) + IP & MAC Address
+    // =========================================================================
+    public static function ensureActivityLogsTable(): void
+    {
+        if (!Schema::hasTable('activity_logs')) {
+            Schema::create('activity_logs', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id')->nullable()->index();
+                $table->string('user_name')->nullable();
+                $table->string('user_type')->nullable()->index();
+                $table->unsignedBigInteger('office_id')->nullable()->index();
+                $table->unsignedBigInteger('owner_id')->nullable()->index();
+                $table->string('action_type')->nullable(); // إضافة | تعديل | حذف | عملية
+                $table->string('action_label')->nullable();
+                $table->text('details')->nullable();
+                $table->string('ip_address', 64)->nullable();
+                $table->string('mac_address', 120)->nullable();
+                $table->string('user_agent')->nullable();
+                $table->timestamps();
+            });
+        }
+    }
+
+    public static function detectClientIpAndMac(Request $request): array
+    {
+        $ip = $request->header('CF-Connecting-IP')
+           ?: $request->header('X-Forwarded-For')
+           ?: $request->ip()
+           ?: '127.0.0.1';
+        if (str_contains($ip, ',')) {
+            $ip = trim(explode(',', $ip)[0]);
+        }
+
+        $mac = $request->header('X-Device-MAC') ?: $request->input('_client_mac');
+
+        // محاولة قراءة الـ MAC الحقيقي من جدول ARP في حال الشبكة المحلية / السيرفر المحلي
+        if (empty($mac) && function_exists('shell_exec')) {
+            try {
+                $arpOut = @shell_exec("arp -a " . escapeshellarg($ip));
+                if ($arpOut && preg_match('/([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/', $arpOut, $matches)) {
+                    $mac = strtoupper(str_replace('-', ':', $matches[0]));
+                }
+            } catch (\Throwable $e) {}
+        }
+
+        // في حال الاتصال عبر الإنترنت السحابي (حيث يحجب الراوتر الـ MAC)، نولد بصمة MAC ثابتة للجهاز والمتصفح
+        if (empty($mac)) {
+            $ua = (string) $request->userAgent();
+            $hash = strtoupper(substr(md5($ip . '|' . $ua), 0, 12));
+            $mac = implode(':', str_split($hash, 2)) . ' (بصمة جهاز)';
+        }
+
+        return ['ip' => $ip, 'mac' => $mac];
+    }
+
+    public static function recordCurrentRequestActivity(): void
+    {
+        try {
+            $req = request();
+            if (!$req || !$req->isMethod('post') || !Auth::check()) {
+                return;
+            }
+
+            $path = $req->path();
+            if (str_contains($path, 'logout') || str_contains($path, 'login')) {
+                return;
+            }
+
+            self::ensureActivityLogsTable();
+            $user = Auth::user();
+
+            $actionType = 'عملية';
+            if (str_contains($path, 'store') || str_contains($path, 'seed')) {
+                $actionType = 'إضافة';
+            } elseif (str_contains($path, 'update') || str_contains($path, 'save') || str_contains($path, 'toggle')) {
+                $actionType = 'تعديل';
+            } elseif (str_contains($path, 'delete') || str_contains($path, 'clear')) {
+                $actionType = 'حذف';
+            }
+
+            $sectionMap = [
+                'offices' => 'مكاتب العقار',
+                'owners' => 'الملاك',
+                'properties' => 'العقارات والصكوك',
+                'units' => 'الوحدات العقارية',
+                'tenants' => 'المستأجرين',
+                'contracts' => 'عقود الإيجار',
+                'accounts' => 'شجرة الحسابات',
+                'account-types' => 'أنواع الحسابات',
+                'vouchers' => 'سندات القبض والصرف',
+                'journal-entries' => 'القيود اليومية',
+                'invoices' => 'الفواتير الضريبية',
+                'staff' => 'موظفي المكتب',
+                'family' => 'أفراد العائلة والوكلاء',
+                'property-types' => 'أنواع العقارات',
+                'property-categories' => 'تصنيفات العقارات',
+                'property-attributes' => 'متطلبات العقارات',
+                'payment-methods' => 'طرق الدفع',
+                'whatsapp' => 'إعدادات واتساب',
+                'tax-profile' => 'الإعدادات الضريبية',
+                'profile' => 'البيانات الشخصية',
+            ];
+
+            $sectionLabel = 'النظام العام';
+            foreach ($sectionMap as $key => $label) {
+                if (str_contains($path, $key)) {
+                    $sectionLabel = $label;
+                    break;
+                }
+            }
+
+            $actionLabel = "{$actionType} في قسم ({$sectionLabel})";
+
+            $ignoredKeys = ['_token', 'password', 'api_token', 'whatsapp_api_token', '_client_mac'];
+            $inputs = collect($req->except($ignoredKeys))
+                ->filter(fn($v) => !is_null($v) && $v !== '')
+                ->map(function ($v, $k) {
+                    if (is_array($v)) {
+                        return $k . ': [' . implode('، ', array_slice(array_filter($v), 0, 4)) . ']';
+                    }
+                    return $k . ': ' . mb_substr((string) $v, 0, 60);
+                })->values()->implode(' | ');
+
+            $netInfo = self::detectClientIpAndMac($req);
+
+            $effectiveOfficeId = session('impersonate_office_id') ?: $user->office_id;
+            $effectiveOwnerId  = session('impersonate_owner_id') ?: $user->owner_id;
+
+            DB::table('activity_logs')->insert([
+                'user_id' => $user->id,
+                'user_name' => $user->name . ' (' . ($user->username ?: $user->phone) . ')',
+                'user_type' => $user->user_type,
+                'office_id' => $effectiveOfficeId,
+                'owner_id' => $effectiveOwnerId,
+                'action_type' => $actionType,
+                'action_label' => $actionLabel,
+                'details' => $inputs ?: "المسار: /{$path}",
+                'ip_address' => $netInfo['ip'],
+                'mac_address' => $netInfo['mac'],
+                'user_agent' => mb_substr((string) $req->userAgent(), 0, 180),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // تجاهل أي خطأ لعدم تعطيل العملية الأساسية
+        }
+    }
+
+    /**
+     * جلب سجل التتبع حسب الصلاحيات المطلوبة بدقة:
+     * 1. الأدمن (company_admin): يرى الجميع + يرى الـ IP والـ MAC Address.
+     * 2. المكتب (office_admin / office_staff): يرى موظفي مكتبه فقط، ولا يرى الملاك أو العائلة.
+     * 3. المالك (owner): يرى أفراد عائلته فقط (owner_family).
+     */
+    public static function getFilteredActivityLogs(?int $officeId = null, ?int $ownerId = null, string $viewerRole = 'company_admin')
+    {
+        self::ensureActivityLogsTable();
+        $query = DB::table('activity_logs')->orderBy('id', 'desc');
+
+        if ($viewerRole === 'office') {
+            $query->where('office_id', $officeId)
+                  ->whereIn('user_type', ['office_admin', 'office_staff']);
+        } elseif ($viewerRole === 'owner') {
+            $query->where('owner_id', $ownerId)
+                  ->where('user_type', 'owner_family');
+        }
+
+        return $query->limit(350)->get();
     }
 }

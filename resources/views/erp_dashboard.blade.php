@@ -209,6 +209,12 @@
                 <span>إعدادات الربط واتساب API</span>
             </a>
 
+            <a href="{{ route('erp.dashboard', ['tab' => 'activity_logs']) }}"
+               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'activity_logs' ? 'bg-gradient-to-l from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25' : 'text-slate-400 hover:bg-slate-800/60 hover:text-white' }}">
+                <span>🛡️</span>
+                <span>سجل التتبع والـ MAC / IP</span>
+            </a>
+
             <a href="{{ route('erp.dashboard', ['tab' => 'settings']) }}"
                class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'settings' ? 'bg-gradient-to-l from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25' : 'text-slate-400 hover:bg-slate-800/60 hover:text-white' }}">
                 <span>⚙️</span>
@@ -3335,6 +3341,63 @@
                 </div>
             @endif
 
+            <!-- صفحة سجل تتبع الحركات الشامل للأدمن (مع الـ IP والـ MAC Address) -->
+            @if($tab == 'activity_logs')
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900">🛡️ سجل تتبع الحركات والعمليات الشامل (للإدارة المركزية فقط)</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">يعرض جميع من قام بالإضافة أو التعديل أو الحذف في كل البوابات (الأدمن، المكاتب، الموظفين، الملاك، والعائلة) مع عنوان IP و MAC Address</p>
+                        </div>
+                        <div class="w-72">
+                            <input type="text" id="adminActivitySearch" oninput="const q=this.value.toLowerCase(); document.querySelectorAll('.adm-act-row').forEach(r=>r.style.display=r.innerText.toLowerCase().includes(q)?'':'none');"
+                                   placeholder="🔍 ابحث بالاسم، العملية، IP، أو MAC..."
+                                   class="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-xs focus:bg-white">
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-right">
+                            <thead class="bg-slate-900 text-white">
+                                <tr>
+                                    <th class="py-3.5 px-4">#</th>
+                                    <th class="py-3.5 px-4">المستخدم والدور</th>
+                                    <th class="py-3.5 px-4">نوع الحركة</th>
+                                    <th class="py-3.5 px-4">العملية والقسم</th>
+                                    <th class="py-3.5 px-4">التفاصيل (كيف وماذا عدّل)</th>
+                                    <th class="py-3.5 px-4 text-center">عنوان IP</th>
+                                    <th class="py-3.5 px-4 text-center">MAC Address / بصمة الجهاز</th>
+                                    <th class="py-3.5 px-4">التاريخ والوقت (متى)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                @forelse(($activityLogs ?? collect()) as $log)
+                                    <tr class="adm-act-row hover:bg-slate-50">
+                                        <td class="py-3 px-4 font-mono font-bold">{{ $log->id }}</td>
+                                        <td class="py-3 px-4">
+                                            <div class="font-bold text-slate-900">{{ $log->user_name }}</div>
+                                            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">{{ $log->user_type }}</span>
+                                        </td>
+                                        <td class="py-3 px-4">
+                                            <span class="px-2.5 py-1 rounded-lg font-bold text-[11px] {{ $log->action_type == 'حذف' ? 'bg-rose-50 text-rose-700' : ($log->action_type == 'إضافة' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700') }}">
+                                                {{ $log->action_type }}
+                                            </span>
+                                        </td>
+                                        <td class="py-3 px-4 font-bold text-slate-800">{{ $log->action_label }}</td>
+                                        <td class="py-3 px-4 max-w-md break-words text-slate-600 font-mono text-[11px]">{{ $log->details }}</td>
+                                        <td class="py-3 px-4 text-center font-mono font-bold text-emerald-700" dir="ltr">{{ $log->ip_address }}</td>
+                                        <td class="py-3 px-4 text-center font-mono font-bold text-indigo-700" dir="ltr">{{ $log->mac_address }}</td>
+                                        <td class="py-3 px-4 font-mono text-slate-500" dir="ltr">{{ $log->created_at }}</td>
+                                    </tr>
+                                @empty
+                                    <tr><td colspan="8" class="py-12 text-center text-slate-400">لا توجد حركات مسجلة حتى الآن. ستظهر أي عملية إضافة أو تعديل أو حذف هنا فوراً.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
             <!-- 7. إعدادات الحساب الشخصي + إعدادات نسبة الضريبة المركزية -->
             @if($tab == 'settings')
                 @php
@@ -4549,11 +4612,153 @@
             </form>
         </div>
     </div>
+<!-- محرك القوائم الذكية المدمجة بالبحث (Searchable Select) + التحديثات الشاملة للوحة الأدمن -->
+    <style>
+        .smart-select-wrapper { position: relative; width: 100%; }
+        .smart-select-input {
+            width: 100%; cursor: pointer; background-color: #ffffff;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: left 0.65rem center; background-size: 0.9rem;
+            padding-left: 2rem !important;
+        }
+        .smart-select-dropdown {
+            position: absolute; top: calc(100% + 4px); right: 0; left: 0; z-index: 9999;
+            background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
+            max-height: 210px; overflow-y: auto; box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.18);
+            display: none;
+        }
+        .smart-select-item {
+            padding: 8px 12px; font-size: 0.78rem; color: #1e293b; cursor: pointer;
+            border-bottom: 1px solid #f8fafc; transition: background 0.1s;
+        }
+        .smart-select-item:hover, .smart-select-item.active-item {
+            background-color: #ecfdf5; color: #047857; font-weight: 700;
+        }
+        .smart-select-empty {
+            padding: 10px; font-size: 0.75rem; color: #94a3b8; text-align: center;
+        }
+    </style>
 
-    <!-- محرك التحديثات الذكية الشامل للوحة الأدمن (بحث الشجرة + بحث النوافذ + تعديل القيود + السند الطبيعي) -->
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // 1. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات
+        // 1. دالة تحويل أي قائمة Select إلى زر خيارات مدمج بالبحث الذكي الفوري
+        window.upgradeSelectsToSmartCombobox = function(root = document) {
+            root.querySelectorAll('select').forEach(sel => {
+                // تجاهل القوائم المرقاة مسبقاً أو الصغيرة جداً غير المناسبة
+                if (sel.dataset.smartUpgraded === '1') return;
+                if (sel.options.length <= 2 && !sel.closest('.fixed')) return;
+                if (['seo_robots', 'plan_highlights[]'].includes(sel.name)) return;
+
+                sel.dataset.smartUpgraded = '1';
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'smart-select-wrapper';
+
+                const displayInput = document.createElement('input');
+                displayInput.type = 'text';
+                displayInput.autocomplete = 'off';
+                displayInput.className = (sel.className || 'w-full rounded-xl border px-3 py-2 text-xs') + ' smart-select-input';
+                displayInput.placeholder = '🔍 اختر أو اكتب للبحث...';
+
+                const dropdown = document.createElement('div');
+                dropdown.className = 'smart-select-dropdown';
+
+                // إخفاء الـ Select الأصلي مع إبقائه فاعلاً لإرسال البيانات في الفورم
+                sel.style.display = 'none';
+                sel.parentNode.insertBefore(wrapper, sel);
+                wrapper.appendChild(displayInput);
+                wrapper.appendChild(dropdown);
+                wrapper.appendChild(sel);
+
+                function syncInputWithSelect() {
+                    const selectedOpt = sel.options[sel.selectedIndex];
+                    if (selectedOpt && selectedOpt.value !== '') {
+                        displayInput.value = selectedOpt.text.trim();
+                    } else {
+                        displayInput.value = '';
+                        if (selectedOpt) displayInput.placeholder = '🔍 ' + selectedOpt.text.replace(/--/g, '').trim();
+                    }
+                }
+
+                function renderList(filterText = '') {
+                    dropdown.innerHTML = '';
+                    const q = filterText.trim().toLowerCase();
+                    let matchCount = 0;
+
+                    Array.from(sel.options).forEach((opt) => {
+                        if (opt.hidden) return;
+                        const text = opt.text.trim();
+                        if (opt.value === '' && q !== '') return;
+
+                        if (q === '' || text.toLowerCase().includes(q)) {
+                            matchCount++;
+                            const item = document.createElement('div');
+                            item.className = 'smart-select-item' + (sel.value === opt.value && opt.value !== '' ? ' active-item' : '');
+                            item.textContent = text;
+                            item.addEventListener('mousedown', function(e) {
+                                e.preventDefault();
+                                sel.value = opt.value;
+                                syncInputWithSelect();
+                                dropdown.style.display = 'none';
+                                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            });
+                            dropdown.appendChild(item);
+                        }
+                    });
+
+                    if (matchCount === 0) {
+                        const empty = document.createElement('div');
+                        empty.className = 'smart-select-empty';
+                        empty.textContent = 'لا توجد نتائج مطابقة لـ "' + filterText + '"';
+                        dropdown.appendChild(empty);
+                    }
+                }
+
+                syncInputWithSelect();
+
+                displayInput.addEventListener('focus', function() {
+                    displayInput.select();
+                    renderList('');
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('click', function() {
+                    renderList('');
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('input', function() {
+                    renderList(this.value);
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        const firstItem = dropdown.querySelector('.smart-select-item');
+                        if (firstItem && dropdown.style.display === 'block') {
+                            e.preventDefault();
+                            firstItem.dispatchEvent(new Event('mousedown'));
+                        }
+                    } else if (e.key === 'Escape') {
+                        dropdown.style.display = 'none';
+                        syncInputWithSelect();
+                    }
+                });
+
+                displayInput.addEventListener('blur', function() {
+                    setTimeout(() => {
+                        dropdown.style.display = 'none';
+                        syncInputWithSelect();
+                    }, 180);
+                });
+
+                sel.addEventListener('change', syncInputWithSelect);
+            });
+        };
+
+        upgradeSelectsToSmartCombobox();
+
+        // 2. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات
         const accHeader = document.querySelector('button[onclick*="manageAccountTypesModal"]')?.parentElement;
         if (accHeader && !document.getElementById('treeInstantSearch')) {
             const searchInput = document.createElement('input');
@@ -4564,49 +4769,47 @@
             searchInput.addEventListener('input', function() {
                 const q = this.value.trim().toLowerCase();
                 document.querySelectorAll('.border-2.border-slate-200.rounded-3xl').forEach(rootBox => {
-                    const text = rootBox.innerText.toLowerCase();
-                    rootBox.style.display = text.includes(q) ? '' : 'none';
+                    rootBox.style.display = rootBox.innerText.toLowerCase().includes(q) ? '' : 'none';
                 });
             });
             accHeader.prepend(searchInput);
         }
 
-        // 2. إضافة خانة بحث تلقائية لكل قائمة اختيار (Select) داخل النوافذ المنبثقة (Modals) التي تضم أكثر من 3 خيارات
-        function attachSearchToSelects(root = document) {
-            root.querySelectorAll('.fixed select').forEach(sel => {
-                if (sel.dataset.searchableAttached || sel.options.length <= 3) return;
-                sel.dataset.searchableAttached = '1';
-                const searchBox = document.createElement('input');
-                searchBox.type = 'text';
-                searchBox.placeholder = '🔍 ابحث هنا لتصفية القائمة بالأسفل...';
-                searchBox.className = 'w-full mb-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] focus:bg-white';
-                searchBox.addEventListener('input', function() {
-                    const term = this.value.trim().toLowerCase();
-                    Array.from(sel.options).forEach((opt, idx) => {
-                        if (idx === 0 && opt.value === '') { opt.hidden = false; return; }
-                        opt.hidden = !opt.text.toLowerCase().includes(term);
-                    });
-                    const firstVisible = Array.from(sel.options).find(o => !o.hidden && o.value !== '');
-                    if (term && firstVisible) {
-                        sel.value = firstVisible.value;
-                        sel.dispatchEvent(new Event('change'));
-                    }
-                });
-                sel.parentNode.insertBefore(searchBox, sel);
+        // Helper لتنظيف السطور المنسوخة وإعادة تفعيل القائمة المدمجة عليها
+        function cleanClonedSmartSelects(cloneContainer) {
+            cloneContainer.querySelectorAll('.smart-select-wrapper').forEach(w => {
+                const origSel = w.querySelector('select');
+                if (origSel) {
+                    delete origSel.dataset.smartUpgraded;
+                    origSel.style.display = '';
+                    w.parentNode.insertBefore(origSel, w);
+                }
+                w.remove();
             });
+            upgradeSelectsToSmartCombobox(cloneContainer);
         }
-        attachSearchToSelects();
 
-        // 3. السماح بإضافة جداول جديدة وحذفها عند (تعديل قيد يومي)
+        // تحديث دالة إضافة جدول في قيد يومي جديد لدعم القائمة المدمجة
+        const origAddJournalBlock = window.addMoreJournalTableBlock;
+        if (typeof origAddJournalBlock === 'function') {
+            window.addMoreJournalTableBlock = function() {
+                origAddJournalBlock();
+                const container = document.getElementById('journalTablesContainer');
+                if (container && container.lastElementChild) {
+                    cleanClonedSmartSelects(container.lastElementChild);
+                }
+            };
+        }
+
+        // السماح بإضافة جداول جديدة وحذفها عند (تعديل قيد يومي) في لوحة الأدمن
         document.querySelectorAll('div[id^="editJournalModal_"]').forEach(modal => {
             const form = modal.querySelector('form');
             const rowsContainer = form?.querySelector('.space-y-2\\.5');
             if (!form || !rowsContainer || modal.dataset.enhancedEditJournal) return;
             modal.dataset.enhancedEditJournal = '1';
 
-            // إضافة زر حذف لكل سطر حالي في التعديل
             rowsContainer.querySelectorAll('.grid.grid-cols-12').forEach(row => {
-                row.classList.add('edit-journal-item-row', 'relative');
+                row.classList.add('edit-journal-item-row');
                 if (!row.querySelector('.del-edit-jrow')) {
                     const delBtn = document.createElement('button');
                     delBtn.type = 'button';
@@ -4623,7 +4826,6 @@
                 }
             });
 
-            // زر إضافة جدول/سطر جديد داخل نافذة تعديل القيد
             const addRowBtn = document.createElement('button');
             addRowBtn.type = 'button';
             addRowBtn.className = 'w-full py-2.5 my-2 rounded-xl border-2 border-dashed border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold transition';
@@ -4632,11 +4834,6 @@
                 const firstRow = rowsContainer.querySelector('.edit-journal-item-row');
                 if (!firstRow) return;
                 const clone = firstRow.cloneNode(true);
-                clone.querySelectorAll('input[type="text"][placeholder*="ابحث"]').forEach(el => el.remove());
-                clone.querySelectorAll('select').forEach(s => {
-                    delete s.dataset.searchableAttached;
-                    Array.from(s.options).forEach(o => o.hidden = false);
-                });
                 clone.querySelectorAll('input').forEach(inp => {
                     if (inp.name === 'debits[]' || inp.name === 'credits[]' || inp.name === 'taxes[]') inp.value = '0';
                     else inp.value = '';
@@ -4652,65 +4849,10 @@
                     };
                 }
                 rowsContainer.appendChild(clone);
-                attachSearchToSelects(clone);
+                cleanClonedSmartSelects(clone);
             };
             rowsContainer.after(addRowBtn);
         });
-
-        // 4. تحديث شكل السند في نافذة المعاينة ليكون طبيعياً وتقليدياً (دفتر سندات رسمي)
-        const printableArea = document.getElementById('printableVoucherArea');
-        if (printableArea && document.getElementById('pdf_voucher_no')) {
-            printableArea.className = 'p-8 bg-[#fffdf9] border-4 border-double border-slate-800 rounded-lg text-slate-900 space-y-5 shadow-inner';
-            printableArea.innerHTML = `
-                <div class="flex items-start justify-between border-b-2 border-slate-800 pb-4">
-                    <div class="space-y-1">
-                        <h2 id="pdf_issuer" class="text-lg font-extrabold text-slate-900">الإدارة المركزية - منظومة العقارات</h2>
-                        <p class="text-xs text-slate-600">الإدارة المالية وقسم الحسابات</p>
-                    </div>
-                    <div class="text-center px-8 py-2 border-2 border-slate-900 bg-white rounded shadow-sm">
-                        <div id="pdf_voucher_title" class="text-xl font-black tracking-wide text-slate-900">سند قبض</div>
-                        <div id="pdf_voucher_no" class="font-mono text-xs font-bold text-red-700 mt-1" dir="ltr">سند القبض 2026-00001</div>
-                    </div>
-                    <div class="text-left text-xs space-y-1.5 font-semibold">
-                        <div>التاريخ: <span id="pdf_date" class="font-mono font-bold border-b border-dotted border-slate-500 px-2"></span></div>
-                        <div>طريقة الدفع: <span id="pdf_method" class="font-bold border-b border-dotted border-slate-500 px-2"></span></div>
-                    </div>
-                </div>
-
-                <div class="flex items-center gap-3 py-2">
-                    <span class="text-sm font-bold text-slate-800">المبلغ رقماً:</span>
-                    <div class="px-6 py-2 border-2 border-slate-800 bg-white rounded font-mono text-xl font-black text-slate-900 shadow-sm">
-                        #<span id="pdf_amount">0.00</span># <span class="text-xs font-normal">ريال سعودي</span>
-                    </div>
-                </div>
-
-                <div class="space-y-4 text-sm leading-loose bg-white p-5 rounded border border-slate-300">
-                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
-                        <span class="font-bold text-slate-700 shrink-0">استلمنا من / يصرف إلى المكرم:</span>
-                        <span id="pdf_party" class="font-extrabold text-slate-900 text-base flex-1 px-2"></span>
-                    </div>
-                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
-                        <span class="font-bold text-slate-700 shrink-0">وذلك مقابل (البيان):</span>
-                        <span id="pdf_notes" class="font-bold text-slate-900 flex-1 px-2"></span>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-3 gap-6 pt-8 text-center text-xs font-bold text-slate-700">
-                    <div>
-                        <p class="mb-8">توقيع المستلم</p>
-                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
-                    </div>
-                    <div>
-                        <p class="mb-8">أمين الصندوق / المحاسب</p>
-                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
-                    </div>
-                    <div>
-                        <p class="mb-8">الختم والاعتماد</p>
-                        <p class="border-t border-slate-400 pt-1 mx-4 text-emerald-700">معتمد إلكترونياً ✔</p>
-                    </div>
-                </div>
-            `;
-        }
     });
     </script>
 </body>

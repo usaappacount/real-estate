@@ -205,6 +205,7 @@ class OfficeErpController extends Controller
             ->get();
 
         $defaultVatRate = (float) CompanyErpController::getSetting('default_vat_rate', '15');
+        $activityLogs = CompanyErpController::getFilteredActivityLogs($officeId, null, 'office');
 
         $stats = [
             'owners_count' => $owners->count(),
@@ -225,7 +226,7 @@ class OfficeErpController extends Controller
             'accounts', 'vouchers', 'journalEntries', 'journalItems', 'journalItemsByEntry',
             'staff', 'stats', 'defaultTenantParentAcc', 'defaultOwnerParentAcc',
             'companyAdminPhone', 'nextReceiptNo', 'nextPaymentNo',
-            'paymentMethods', 'officeInvoices', 'defaultVatRate'
+            'paymentMethods', 'officeInvoices', 'defaultVatRate', 'activityLogs'
         ));
     }
 

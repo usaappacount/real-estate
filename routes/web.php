@@ -15,8 +15,12 @@ Route::post('/auth/verify-otp', [CompanyErpController::class, 'verifyOtp'])->nam
 Route::post('/auth/login-password', [CompanyErpController::class, 'loginWithPassword'])->name('auth.login_password');
 Route::post('/logout', [CompanyErpController::class, 'logout'])->name('logout');
 
-// مسارات النظام المحمية بتسجيل الدخول
-Route::middleware('auth')->group(function () {
+// مسارات النظام المحمية بتسجيل الدخول + التتبع الفوري للعمليات (Audit Log)
+Route::middleware([
+    'auth',
+    \App\Http\Middleware\RecordRequestActivity::class,
+])->group(function () {
+
    // اللوحة الرئيسية للشركة الأم (الأدمن - مالك المنصة)
     Route::get('/admin/dashboard', [CompanyErpController::class, 'dashboard'])->name('erp.dashboard');
     Route::post('/admin/landing-settings/save', [CompanyErpController::class, 'saveLandingSettings'])->name('erp.landing.save');

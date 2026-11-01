@@ -209,6 +209,11 @@
                 <span> الموظفين والصلاحيات </span>
             </a>
 
+            <a href="{{ route('office.dashboard', ['tab' => 'activity_logs']) }}"
+               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'activity_logs' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                <span>🕵️ سجل تتبع حركات الموظفين</span>
+            </a>
+
             <a href="{{ route('office.dashboard', ['tab' => 'whatsapp']) }}"
                class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'whatsapp' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
                 <span>إعدادات الربط مع واتساب</span>
@@ -1086,6 +1091,8 @@
                                                 <span class="text-[10px] px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">كشف حساب ({{ $tnVouchers->count() }})</span>
                                             </button>
                                         </td>
+                                        <td class="py-4 px-5 font-mono text-xs text-slate-700">{{ $tn->id_number }}</td>
+                                        <td class="py-4 px-5 font-mono text-xs font-bold text-emerald-700" dir="ltr">{{ $tn->phone }}</td>
                                         <td class="py-4 px-5">
                                             <span class="font-bold text-emerald-700">{{ number_format($tnReceipts, 2) }} ر.س</span>
                                         </td>
@@ -3741,6 +3748,55 @@
                 @endforeach
             @endif
 
+            <!-- سجل تتبع حركات موظفي المكتب فقط (لا يعرض الملاك ولا يعرض MAC/IP) -->
+            @if($tab == 'activity_logs')
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="font-bold text-base text-slate-900">🕵️ سجل تتبع عمليات وحركات موظفي المكتب</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">يعرض جميع العمليات والتعديلات التي قام بها موظفو المكتب وتوقيتها بالتفصيل</p>
+                        </div>
+                        <div class="w-72">
+                            <input type="text" oninput="const q=this.value.toLowerCase(); document.querySelectorAll('.off-act-row').forEach(r=>r.style.display=r.innerText.toLowerCase().includes(q)?'':'none');"
+                                   placeholder="🔍 ابحث باسم الموظف أو العملية..."
+                                   class="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-2 text-xs focus:bg-white">
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-right">
+                            <thead class="bg-slate-50 text-slate-600 border-b">
+                                <tr>
+                                    <th class="py-3.5 px-4">#</th>
+                                    <th class="py-3.5 px-4">اسم الموظف</th>
+                                    <th class="py-3.5 px-4">نوع العملية</th>
+                                    <th class="py-3.5 px-4">القسم / الإجراء</th>
+                                    <th class="py-3.5 px-4">تفاصيل التعديل / الإضافة</th>
+                                    <th class="py-3.5 px-4">التاريخ والوقت</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                @forelse(($activityLogs ?? collect()) as $idx => $log)
+                                    <tr class="off-act-row hover:bg-slate-50">
+                                        <td class="py-3 px-4 font-mono font-bold">{{ $idx + 1 }}</td>
+                                        <td class="py-3 px-4 font-bold text-slate-900">{{ $log->user_name }}</td>
+                                        <td class="py-3 px-4">
+                                            <span class="px-2.5 py-1 rounded-lg font-bold {{ $log->action_type == 'حذف' ? 'bg-rose-50 text-rose-700' : ($log->action_type == 'إضافة' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700') }}">
+                                                {{ $log->action_type }}
+                                            </span>
+                                        </td>
+                                        <td class="py-3 px-4 font-bold text-slate-800">{{ $log->action_label }}</td>
+                                        <td class="py-3 px-4 max-w-md break-words text-slate-600">{{ $log->details }}</td>
+                                        <td class="py-3 px-4 font-mono text-slate-500" dir="ltr">{{ $log->created_at }}</td>
+                                    </tr>
+                                @empty
+                                    <tr><td colspan="6" class="py-10 text-center text-slate-400">لا توجد حركات مسجلة لموظفي المكتب حتى الآن.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
             <!-- 8. تبويب إعدادات الربط مع واتساب API والبيانات الضريبية للمكتب -->
             @if($tab == 'whatsapp')
                 @php
@@ -4293,20 +4349,159 @@
         });
     </script>
 
-    <!-- محرك التحديثات الذكية الشامل لبوابة المكتب -->
+    <!-- محرك القوائم الذكية المدمجة بالبحث (Searchable Select) + التحديثات الشاملة لبوابة المكتب -->
+    <style>
+        .smart-select-wrapper { position: relative; width: 100%; }
+        .smart-select-input {
+            width: 100%; cursor: pointer; background-color: #ffffff;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: left 0.65rem center; background-size: 0.9rem;
+            padding-left: 2rem !important;
+        }
+        .smart-select-dropdown {
+            position: absolute; top: calc(100% + 4px); right: 0; left: 0; z-index: 9999;
+            background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px;
+            max-height: 210px; overflow-y: auto; box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.18);
+            display: none;
+        }
+        .smart-select-item {
+            padding: 8px 12px; font-size: 0.78rem; color: #1e293b; cursor: pointer;
+            border-bottom: 1px solid #f8fafc; transition: background 0.1s;
+        }
+        .smart-select-item:hover, .smart-select-item.active-item {
+            background-color: #ecfdf5; color: #047857; font-weight: 700;
+        }
+        .smart-select-empty {
+            padding: 10px; font-size: 0.75rem; color: #94a3b8; text-align: center;
+        }
+    </style>
+
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         const isCompanyAdmin = {{ auth()->user()->user_type === 'company_admin' ? 'true' : 'false' }};
         const officeUnitsData = @json($units ?? []);
 
-        // 1. منع صاحب المكتب من تعديل المدين والدائن في شجرة الحسابات (يسمح للأدمن فقط)
+        // 1. دالة تحويل جميع القوائم المنسدلة (Select) إلى أزرار مدمجة بالبحث المباشر (Searchable Combobox)
+        window.upgradeSelectsToSmartCombobox = function(root = document) {
+            root.querySelectorAll('select').forEach(sel => {
+                if (sel.dataset.smartUpgraded === '1') return;
+                if (sel.options.length <= 2 && !sel.closest('.fixed')) return;
+                if (['is_groups[]'].includes(sel.name)) return;
+
+                sel.dataset.smartUpgraded = '1';
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'smart-select-wrapper';
+
+                const displayInput = document.createElement('input');
+                displayInput.type = 'text';
+                displayInput.autocomplete = 'off';
+                displayInput.className = (sel.className || 'w-full rounded-xl border px-3 py-2 text-xs') + ' smart-select-input';
+                displayInput.placeholder = '🔍 اختر أو اكتب للبحث...';
+
+                const dropdown = document.createElement('div');
+                dropdown.className = 'smart-select-dropdown';
+
+                sel.style.display = 'none';
+                sel.parentNode.insertBefore(wrapper, sel);
+                wrapper.appendChild(displayInput);
+                wrapper.appendChild(dropdown);
+                wrapper.appendChild(sel);
+
+                function syncInputWithSelect() {
+                    const selectedOpt = sel.options[sel.selectedIndex];
+                    if (selectedOpt && selectedOpt.value !== '') {
+                        displayInput.value = selectedOpt.text.trim();
+                    } else {
+                        displayInput.value = '';
+                        if (selectedOpt) displayInput.placeholder = '🔍 ' + selectedOpt.text.replace(/--/g, '').trim();
+                    }
+                }
+
+                function renderList(filterText = '') {
+                    dropdown.innerHTML = '';
+                    const q = filterText.trim().toLowerCase();
+                    let matchCount = 0;
+
+                    Array.from(sel.options).forEach((opt) => {
+                        if (opt.hidden) return;
+                        const text = opt.text.trim();
+                        if (opt.value === '' && q !== '') return;
+
+                        if (q === '' || text.toLowerCase().includes(q)) {
+                            matchCount++;
+                            const item = document.createElement('div');
+                            item.className = 'smart-select-item' + (sel.value === opt.value && opt.value !== '' ? ' active-item' : '');
+                            item.textContent = text;
+                            item.addEventListener('mousedown', function(e) {
+                                e.preventDefault();
+                                sel.value = opt.value;
+                                syncInputWithSelect();
+                                dropdown.style.display = 'none';
+                                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            });
+                            dropdown.appendChild(item);
+                        }
+                    });
+
+                    if (matchCount === 0) {
+                        const empty = document.createElement('div');
+                        empty.className = 'smart-select-empty';
+                        empty.textContent = 'لا توجد نتائج مطابقة لـ "' + filterText + '"';
+                        dropdown.appendChild(empty);
+                    }
+                }
+
+                syncInputWithSelect();
+
+                displayInput.addEventListener('focus', function() {
+                    displayInput.select();
+                    renderList('');
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('click', function() {
+                    renderList('');
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('input', function() {
+                    renderList(this.value);
+                    dropdown.style.display = 'block';
+                });
+
+                displayInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        const firstItem = dropdown.querySelector('.smart-select-item');
+                        if (firstItem && dropdown.style.display === 'block') {
+                            e.preventDefault();
+                            firstItem.dispatchEvent(new Event('mousedown'));
+                        }
+                    } else if (e.key === 'Escape') {
+                        dropdown.style.display = 'none';
+                        syncInputWithSelect();
+                    }
+                });
+
+                displayInput.addEventListener('blur', function() {
+                    setTimeout(() => {
+                        dropdown.style.display = 'none';
+                        syncInputWithSelect();
+                    }, 180);
+                });
+
+                sel.addEventListener('change', syncInputWithSelect);
+            });
+        };
+
+        // 2. منع صاحب المكتب من تعديل المدين والدائن في شجرة الحسابات (حصري للأدمن فقط)
         if (!isCompanyAdmin) {
             document.querySelectorAll('div[id^="editAccModal_"]').forEach(modal => {
                 const debitInput = modal.querySelector('input[name="debit_balance"]');
                 const creditInput = modal.querySelector('input[name="credit_balance"]');
                 if (debitInput) {
                     debitInput.readOnly = true;
-                    debitInput.classList.add('bg-slate-100', 'cursor-not-allowed', ' opacity-70');
+                    debitInput.classList.add('bg-slate-100', 'cursor-not-allowed', 'opacity-70');
                 }
                 if (creditInput) {
                     creditInput.readOnly = true;
@@ -4322,7 +4517,7 @@
             });
         }
 
-        // 2. وضع سعر الوحدة تلقائياً (مثلاً 25,000) عند اختيار الوحدة في نافذة إبرام أو تعديل عقد إيجار + فلترة الوحدات حسب العقار
+        // 3. وضع سعر الوحدة تلقائياً (مثلاً 25,000) في خانة السعر عند اختيار الوحدة في عقد الإيجار
         const unitPriceMap = {};
         officeUnitsData.forEach(u => {
             unitPriceMap[String(u.id)] = {
@@ -4337,7 +4532,6 @@
             const rentInput = form.querySelector('input[name="total_rent_amount"]');
             const propSelect = form.querySelector('select[name="property_id"]');
 
-            // عند تغيير العقار يتم إظهار وحدات هذا العقار فقط
             if (propSelect) {
                 propSelect.addEventListener('change', function() {
                     const selectedPropId = String(this.value || '');
@@ -4351,10 +4545,10 @@
                         }
                     });
                     unitSelect.value = '';
+                    unitSelect.dispatchEvent(new Event('change'));
                 });
             }
 
-            // عند اختيار الوحدة يتم وضع سعرها تلقائياً في خانة السعر
             unitSelect.addEventListener('change', function() {
                 const selectedUnitId = String(this.value || '');
                 const uInfo = unitPriceMap[selectedUnitId];
@@ -4362,15 +4556,18 @@
                     rentInput.value = uInfo.price;
                     rentInput.classList.add('ring-2', 'ring-emerald-500');
                     setTimeout(() => rentInput.classList.remove('ring-2', 'ring-emerald-500'), 1200);
-                    // إذا لم يكن العقار محدداً، يتم تحديد عقار هذه الوحدة تلقائياً
                     if (propSelect && !propSelect.value) {
                         propSelect.value = uInfo.property_id;
+                        propSelect.dispatchEvent(new Event('change'));
                     }
                 }
             });
         });
 
-        // 3. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات للمكتب
+        // تشغيل القوائم المدمجة بالبحث على كل الصفحة والنوافذ
+        upgradeSelectsToSmartCombobox();
+
+        // 4. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات للمكتب
         const accHeader = document.querySelector('button[onclick*="manageAccountTypesModal"]')?.parentElement;
         if (accHeader && !document.getElementById('officeTreeInstantSearch')) {
             const searchInput = document.createElement('input');
@@ -4381,41 +4578,35 @@
             searchInput.addEventListener('input', function() {
                 const q = this.value.trim().toLowerCase();
                 document.querySelectorAll('.border-2.border-slate-200.rounded-3xl').forEach(rootBox => {
-                    const text = rootBox.innerText.toLowerCase();
-                    rootBox.style.display = text.includes(q) ? '' : 'none';
+                    rootBox.style.display = rootBox.innerText.toLowerCase().includes(q) ? '' : 'none';
                 });
             });
             accHeader.prepend(searchInput);
         }
 
-        // 4. إضافة خانة بحث تلقائية داخل جميع النوافذ والأزرار (عند إضافة عقار، مستأجر، عقد، سند، قيد يومي)
-        function attachSearchToOfficeSelects(root = document) {
-            root.querySelectorAll('.fixed select').forEach(sel => {
-                if (sel.dataset.searchableAttached || sel.options.length <= 2) return;
-                // استثناء القوائم الصغيرة الثابتة مثل نعم/لا أو نوع الهوية
-                if (['id_type', 'payment_cycle', 'status', 'voucher_type', 'is_groups[]'].includes(sel.name)) return;
-
-                sel.dataset.searchableAttached = '1';
-                const searchBox = document.createElement('input');
-                searchBox.type = 'text';
-                searchBox.placeholder = '🔍 ابحث هنا بالاسم أو الرقم لتصفية القائمة...';
-                searchBox.className = 'w-full mb-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] focus:bg-white';
-                searchBox.addEventListener('input', function() {
-                    const term = this.value.trim().toLowerCase();
-                    Array.from(sel.options).forEach((opt, idx) => {
-                        if (idx === 0 && opt.value === '') { opt.hidden = false; return; }
-                        opt.hidden = !opt.text.toLowerCase().includes(term);
-                    });
-                    const firstVisible = Array.from(sel.options).find(o => !o.hidden && o.value !== '');
-                    if (term && firstVisible) {
-                        sel.value = firstVisible.value;
-                        sel.dispatchEvent(new Event('change'));
-                    }
-                });
-                sel.parentNode.insertBefore(searchBox, sel);
+        function cleanClonedSmartSelects(cloneContainer) {
+            cloneContainer.querySelectorAll('.smart-select-wrapper').forEach(w => {
+                const origSel = w.querySelector('select');
+                if (origSel) {
+                    delete origSel.dataset.smartUpgraded;
+                    origSel.style.display = '';
+                    w.parentNode.insertBefore(origSel, w);
+                }
+                w.remove();
             });
+            upgradeSelectsToSmartCombobox(cloneContainer);
         }
-        attachSearchToOfficeSelects();
+
+        const origAddJournalBlock = window.addMoreJournalTableBlock;
+        if (typeof origAddJournalBlock === 'function') {
+            window.addMoreJournalTableBlock = function() {
+                origAddJournalBlock();
+                const container = document.getElementById('journalTablesContainer');
+                if (container && container.lastElementChild) {
+                    cleanClonedSmartSelects(container.lastElementChild);
+                }
+            };
+        }
 
         // 5. السماح بإضافة جداول جديدة وحذفها عند (تعديل قيد يومي) في بوابة المكتب
         document.querySelectorAll('div[id^="editJournalModal_"]').forEach(modal => {
@@ -4450,11 +4641,6 @@
                 const firstRow = rowsContainer.querySelector('.edit-journal-item-row');
                 if (!firstRow) return;
                 const clone = firstRow.cloneNode(true);
-                clone.querySelectorAll('input[type="text"][placeholder*="ابحث"]').forEach(el => el.remove());
-                clone.querySelectorAll('select').forEach(s => {
-                    delete s.dataset.searchableAttached;
-                    Array.from(s.options).forEach(o => o.hidden = false);
-                });
                 clone.querySelectorAll('input').forEach(inp => {
                     if (inp.name === 'debits[]' || inp.name === 'credits[]' || inp.name === 'taxes[]') inp.value = '0';
                     else inp.value = '';
@@ -4470,7 +4656,7 @@
                     };
                 }
                 rowsContainer.appendChild(clone);
-                attachSearchToOfficeSelects(clone);
+                cleanClonedSmartSelects(clone);
             };
             rowsContainer.after(addRowBtn);
         });
@@ -4494,14 +4680,12 @@
                         <div>طريقة الدفع: <b id="pv_method" class="text-slate-900 border-b border-dotted border-slate-500 px-2"></b></div>
                     </div>
                 </div>
-
                 <div class="flex items-center gap-3 py-2">
                     <span class="text-sm font-bold text-slate-800">المبلغ رقماً:</span>
                     <div class="px-6 py-2 border-2 border-slate-800 bg-white rounded font-mono text-xl font-black text-slate-900 shadow-sm">
                         #<span id="pv_amount"></span># <span class="text-xs font-normal">ريال سعودي</span>
                     </div>
                 </div>
-
                 <div class="space-y-4 text-sm leading-loose bg-white p-5 rounded border border-slate-300">
                     <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
                         <span class="font-bold text-slate-700 shrink-0">استلمنا من / يصرف إلى المكرم:</span>
@@ -4512,7 +4696,6 @@
                         <span id="pv_notes" class="font-bold text-slate-900 flex-1 px-2"></span>
                     </div>
                 </div>
-
                 <div class="grid grid-cols-3 gap-6 pt-8 text-center text-xs font-bold text-slate-700">
                     <div>
                         <p class="mb-8">توقيع المستلم</p>

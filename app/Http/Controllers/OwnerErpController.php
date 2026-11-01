@@ -150,9 +150,11 @@ class OwnerErpController extends Controller
             'total_paid_vouchers' => $vouchers->where('voucher_type', 'payment')->sum('amount'),
         ];
 
+        $activityLogs = CompanyErpController::getFilteredActivityLogs($owner->office_id, $ownerId, 'owner');
+
         return view('owner_dashboard', compact(
             'owner', 'office', 'tab', 'properties', 'units',
-            'contracts', 'vouchers', 'familyMembers', 'stats'
+            'contracts', 'vouchers', 'familyMembers', 'stats', 'activityLogs'
         ));
     }
 

@@ -190,6 +190,12 @@
                     <span>👨‍👩‍👧‍👦</span>
                     <span>أفراد العائلة والوكلاء ({{ $familyMembers->count() }})</span>
                 </a>
+
+                <a href="{{ route('owner.dashboard', ['tab' => 'activity_logs']) }}"
+                   class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'activity_logs' ? 'bg-gradient-to-l from-amber-500 to-yellow-500 text-slate-950 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                    <span>🕵️</span>
+                    <span>سجل تتبع العائلة والوكلاء</span>
+                </a>
             @endif
 
             <a href="{{ route('owner.dashboard', ['tab' => 'settings']) }}"
@@ -649,6 +655,48 @@
                         </div>
                     </div>
                 @endforeach
+            @endif
+
+            <!-- سجل تتبع حركات أفراد العائلة والوكلاء فقط (بدون IP وبدون MAC) -->
+            @if($tab == 'activity_logs' && $canManageFamily)
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="font-bold text-base text-slate-900">🕵️ سجل تتبع حركات أفراد العائلة والوكلاء</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">يعرض جميع العمليات والتعديلات التي قام بها أفراد العائلة أو الوكلاء المضافون في محفظتك</p>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-right">
+                            <thead class="bg-slate-50 text-slate-600 border-b">
+                                <tr>
+                                    <th class="py-3.5 px-4">#</th>
+                                    <th class="py-3.5 px-4">فرد العائلة / الوكيل</th>
+                                    <th class="py-3.5 px-4">نوع الحركة</th>
+                                    <th class="py-3.5 px-4">الإجراء</th>
+                                    <th class="py-3.5 px-4">التفاصيل</th>
+                                    <th class="py-3.5 px-4">التاريخ والوقت</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                @forelse(($activityLogs ?? collect()) as $idx => $log)
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="py-3 px-4 font-mono font-bold">{{ $idx + 1 }}</td>
+                                        <td class="py-3 px-4 font-bold text-slate-900">{{ $log->user_name }}</td>
+                                        <td class="py-3 px-4">
+                                            <span class="px-2.5 py-1 rounded-lg font-bold bg-indigo-50 text-indigo-700">{{ $log->action_type }}</span>
+                                        </td>
+                                        <td class="py-3 px-4 font-bold text-slate-800">{{ $log->action_label }}</td>
+                                        <td class="py-3 px-4 text-slate-600">{{ $log->details }}</td>
+                                        <td class="py-3 px-4 font-mono text-slate-500" dir="ltr">{{ $log->created_at }}</td>
+                                    </tr>
+                                @empty
+                                    <tr><td colspan="6" class="py-10 text-center text-slate-400">لا توجد حركات مسجلة لأفراد العائلة حتى الآن.</td></tr>
+                                @endforelse
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             @endif
 
             <!-- 6. إعدادات الحساب الشخصي للمالك أو فرد العائلة -->
