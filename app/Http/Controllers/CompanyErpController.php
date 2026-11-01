@@ -119,6 +119,20 @@ class CompanyErpController extends Controller
             });
         }
 
+        if (Schema::hasTable('tenants')) {
+            Schema::table('tenants', function (Blueprint $table) {
+                if (!Schema::hasColumn('tenants', 'account_id')) {
+                    $table->unsignedBigInteger('account_id')->nullable();
+                }
+                if (!Schema::hasColumn('tenants', 'tax_number')) {
+                    $table->string('tax_number')->nullable();
+                }
+                if (!Schema::hasColumn('tenants', 'national_address')) {
+                    $table->string('national_address')->nullable();
+                }
+            });
+        }
+
         self::ensureSystemSettingsTable();
 
         $admin = DB::table('users')

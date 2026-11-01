@@ -881,7 +881,6 @@
                                     <th class="py-4 px-5 w-14 text-center">#</th>
                                     <th class="py-4 px-5">نوع العقار</th>
                                     <th class="py-4 px-5 text-center">التصنيف</th>
-                                    <th class="py-4 px-5 text-center">رقم الحساب </th>
                                     <th class="py-4 px-5 text-center">نظام الوحدات الفرعية</th>
                                     <th class="py-4 px-5 text-center">المتطلبات والحقول المربوطة</th>
                                     <th class="py-4 px-5 text-center">إجراءات</th>
@@ -899,15 +898,6 @@
                                         <td class="py-4 px-5 font-bold text-slate-900 text-sm">{{ $type->name }}</td>
                                         <td class="py-4 px-5 text-center">
                                             <span class="px-3 py-1 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200/60">{{ $arabicCat }}</span>
-                                        </td>
-                                        <td class="py-4 px-5 text-center">
-                                            @if(!empty($type->account_code))
-                                                <span class="px-2.5 py-1 rounded-xl bg-slate-100 text-slate-800 font-mono text-xs font-bold border border-slate-200">
-                                                    {{ $type->account_code }} - {{ $type->account_name }}
-                                                </span>
-                                            @else
-                                                <span class="text-xs text-slate-400">غير مرتبط</span>
-                                            @endif
                                         </td>
                                         <td class="py-4 px-5 text-center">
                                             @if($type->has_units)

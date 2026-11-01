@@ -20,8 +20,9 @@ class OfficeErpController extends Controller
 
    public function dashboard(Request $request)
     {
+        app(CompanyErpController::class)->ensureDefaultAdminExists();
+
         if (!session('erp_fast_boot_done')) {
-            app(CompanyErpController::class)->ensureDefaultAdminExists();
             app(CompanyErpController::class)->ensureDynamicPropertyTables();
             app(CompanyErpController::class)->ensureDynamicAccountTables();
             app(CompanyErpController::class)->ensurePaymentMethodsTable();
