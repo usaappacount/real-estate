@@ -3365,6 +3365,7 @@
                                     <th class="py-3.5 px-4">نوع الحركة</th>
                                     <th class="py-3.5 px-4">العملية والقسم</th>
                                     <th class="py-3.5 px-4">التفاصيل (كيف وماذا عدّل)</th>
+                                    <th class="py-3.5 px-4 text-center">المسار</th>
                                     <th class="py-3.5 px-4 text-center">عنوان IP</th>
                                     <th class="py-3.5 px-4 text-center">MAC Address / بصمة الجهاز</th>
                                     <th class="py-3.5 px-4">التاريخ والوقت (متى)</th>
@@ -3372,6 +3373,12 @@
                             </thead>
                             <tbody class="divide-y divide-slate-100">
                                 @forelse(($activityLogs ?? collect()) as $log)
+                                    @php
+                                        $cleanPath = $log->request_path ?? '';
+                                        if (empty($cleanPath) && str_starts_with($log->details ?? '', 'المسار:')) {
+                                            $cleanPath = ltrim(trim(str_replace('المسار:', '', $log->details)), '/');
+                                        }
+                                    @endphp
                                     <tr class="adm-act-row hover:bg-slate-50">
                                         <td class="py-3 px-4 font-mono font-bold">{{ $log->id }}</td>
                                         <td class="py-3 px-4">
@@ -3384,13 +3391,16 @@
                                             </span>
                                         </td>
                                         <td class="py-3 px-4 font-bold text-slate-800">{{ $log->action_label }}</td>
-                                        <td class="py-3 px-4 max-w-md break-words text-slate-600 font-mono text-[11px]">{{ $log->details }}</td>
+                                        <td class="py-3 px-4 max-w-md break-words text-slate-800 font-semibold text-xs">{{ $log->details }}</td>
+                                        <td class="py-3 px-4 text-center font-mono text-[11px] text-slate-600" dir="ltr">
+                                            <span class="px-2 py-0.5 rounded bg-slate-100 border border-slate-200">{{ $cleanPath ?: '-' }}</span>
+                                        </td>
                                         <td class="py-3 px-4 text-center font-mono font-bold text-emerald-700" dir="ltr">{{ $log->ip_address }}</td>
                                         <td class="py-3 px-4 text-center font-mono font-bold text-indigo-700" dir="ltr">{{ $log->mac_address }}</td>
                                         <td class="py-3 px-4 font-mono text-slate-500" dir="ltr">{{ $log->created_at }}</td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="8" class="py-12 text-center text-slate-400">لا توجد حركات مسجلة حتى الآن. ستظهر أي عملية إضافة أو تعديل أو حذف هنا فوراً.</td></tr>
+                                    <tr><td colspan="9" class="py-12 text-center text-slate-400">لا توجد حركات مسجلة حتى الآن. ستظهر أي عملية إضافة أو تعديل أو حذف هنا فوراً.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>

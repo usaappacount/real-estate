@@ -482,8 +482,8 @@ class CompanyErpController extends Controller
 
         $tab = $request->get('tab', 'overview');
 
+        $this->ensureDynamicPropertyTables();
         if (!session('erp_fast_boot_done')) {
-            $this->ensureDynamicPropertyTables();
             $this->ensureDynamicAccountTables();
             $this->ensurePaymentMethodsTable();
             $this->ensureJournalTables();
@@ -847,6 +847,86 @@ class CompanyErpController extends Controller
                     $table->unsignedBigInteger('account_id')->nullable();
                 }
             });
+
+            // فك قيد CHECK القديم عن عمود category في جدول property_types بقاعدة بيانات SQLite
+            try {
+                $master = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name='property_types'");
+                if ($master && isset($master->sql) && stripos($master->sql, 'check') !== false) {
+                    DB::statement('PRAGMA foreign_keys = OFF;');
+                    DB::transaction(function () {
+                        Schema::create('property_types_unlocked_tmp', function (Blueprint $table) {
+                            $table->id();
+                            $table->string('name');
+                            $table->string('category')->default('سكني');
+                            $table->unsignedBigInteger('account_id')->nullable();
+                            $table->boolean('has_units')->default(true);
+                            $table->boolean('is_active')->default(true);
+                            $table->timestamps();
+                        });
+
+                        $oldRows = DB::table('property_types')->get();
+                        foreach ($oldRows as $row) {
+                            DB::table('property_types_unlocked_tmp')->insert([
+                                'id' => $row->id,
+                                'name' => $row->name,
+                                'category' => $row->category ?? 'سكني',
+                                'account_id' => $row->account_id ?? null,
+                                'has_units' => $row->has_units ?? 1,
+                                'is_active' => $row->is_active ?? 1,
+                                'created_at' => $row->created_at ?? now(),
+                                'updated_at' => $row->updated_at ?? now(),
+                            ]);
+                        }
+
+                        Schema::drop('property_types');
+                        Schema::rename('property_types_unlocked_tmp', 'property_types');
+                    });
+                    DB::statement('PRAGMA foreign_keys = ON;');
+                }
+            } catch (\Throwable $e) {
+                try { DB::statement('PRAGMA foreign_keys = ON;'); } catch (\Throwable $ignore) {}
+            }
+        }
+
+        if (Schema::hasTable('property_type_attributes')) {
+            // فك قيد CHECK القديم عن عمود field_type في جدول property_type_attributes إن وجد
+            try {
+                $attrMaster = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name='property_type_attributes'");
+                if ($attrMaster && isset($attrMaster->sql) && stripos($attrMaster->sql, 'check') !== false) {
+                    DB::statement('PRAGMA foreign_keys = OFF;');
+                    DB::transaction(function () {
+                        Schema::create('property_type_attributes_unlocked_tmp', function (Blueprint $table) {
+                            $table->id();
+                            $table->unsignedBigInteger('property_type_id');
+                            $table->string('attribute_name');
+                            $table->string('field_type')->default('نص (Text)');
+                            $table->text('options')->nullable();
+                            $table->boolean('is_required')->default(true);
+                            $table->timestamps();
+                        });
+
+                        $oldAttrs = DB::table('property_type_attributes')->get();
+                        foreach ($oldAttrs as $row) {
+                            DB::table('property_type_attributes_unlocked_tmp')->insert([
+                                'id' => $row->id,
+                                'property_type_id' => $row->property_type_id,
+                                'attribute_name' => $row->attribute_name,
+                                'field_type' => $row->field_type ?? 'نص (Text)',
+                                'options' => $row->options ?? null,
+                                'is_required' => $row->is_required ?? 1,
+                                'created_at' => $row->created_at ?? now(),
+                                'updated_at' => $row->updated_at ?? now(),
+                            ]);
+                        }
+
+                        Schema::drop('property_type_attributes');
+                        Schema::rename('property_type_attributes_unlocked_tmp', 'property_type_attributes');
+                    });
+                    DB::statement('PRAGMA foreign_keys = ON;');
+                }
+            } catch (\Throwable $e) {
+                try { DB::statement('PRAGMA foreign_keys = ON;'); } catch (\Throwable $ignore) {}
+            }
         }
 
         if (!Schema::hasTable('custom_field_types')) {
@@ -947,6 +1027,8 @@ class CompanyErpController extends Controller
 
     public function storePropertyType(Request $request)
     {
+        $this->ensureDynamicPropertyTables();
+
         $request->validate([
             'name' => 'required',
             'category' => 'required',
@@ -3258,12 +3340,20 @@ class CompanyErpController extends Controller
                 $table->string('action_type')->nullable(); // إضافة | تعديل | حذف | عملية
                 $table->string('action_label')->nullable();
                 $table->text('details')->nullable();
+                $table->string('request_path')->nullable();
                 $table->string('ip_address', 64)->nullable();
                 $table->string('mac_address', 120)->nullable();
                 $table->string('user_agent')->nullable();
                 $table->timestamps();
             });
+            return;
         }
+
+        Schema::table('activity_logs', function (Blueprint $table) {
+            if (!Schema::hasColumn('activity_logs', 'request_path')) {
+                $table->string('request_path')->nullable();
+            }
+        });
     }
 
     public static function detectClientIpAndMac(Request $request): array
@@ -3356,15 +3446,60 @@ class CompanyErpController extends Controller
 
             $actionLabel = "{$actionType} في قسم ({$sectionLabel})";
 
-            $ignoredKeys = ['_token', 'password', 'api_token', 'whatsapp_api_token', '_client_mac'];
-            $inputs = collect($req->except($ignoredKeys))
-                ->filter(fn($v) => !is_null($v) && $v !== '')
-                ->map(function ($v, $k) {
-                    if (is_array($v)) {
-                        return $k . ': [' . implode('، ', array_slice(array_filter($v), 0, 4)) . ']';
-                    }
-                    return $k . ': ' . mb_substr((string) $v, 0, 60);
-                })->values()->implode(' | ');
+            // استخراج الاسم الأول أو اسم المستخدم بشكل نظيف
+            $actorName = trim(explode('(', $user->name)[0]) ?: ($user->username ?: 'المستخدم');
+
+            // التقاط اسم العنصر المضاف أو المعدل (مثل: عمارة سكنية، اسم المكتب، رقم الوحدة، البيان...)
+            $targetItem = $req->input('name')
+                       ?: $req->input('title')
+                       ?: $req->input('unit_number')
+                       ?: $req->input('attribute_name')
+                       ?: $req->input('description')
+                       ?: $req->input('general_notes')
+                       ?: $req->input('notes')
+                       ?: $req->input('legal_name')
+                       ?: $req->input('site_name');
+
+            if (is_array($targetItem)) {
+                $targetItem = implode('، ', array_filter($targetItem));
+            }
+            if (empty($targetItem) && is_array($req->input('names'))) {
+                $targetItem = implode('، ', array_filter($req->input('names')));
+            }
+            if (empty($targetItem) && is_array($req->input('attribute_names'))) {
+                $targetItem = implode('، ', array_filter($req->input('attribute_names')));
+            }
+            $targetItem = trim((string) $targetItem);
+
+            // صياغة جملة عربية مبسطة وواضحة للجميع (الأدمن، المكتب، والمالك)
+            if (str_contains($path, 'contracts') && $actionType === 'إضافة') {
+                $simpleDetails = "{$actorName} أنشأ عقد إيجار جديد" . ($req->input('total_rent_amount') ? " بقيمة {$req->input('total_rent_amount')} ر.س" : "");
+            } elseif (str_contains($path, 'sync-ejar')) {
+                $simpleDetails = "{$actorName} وثّق عقد إيجار في منصة إيجار";
+            } elseif (str_contains($path, 'vouchers') && $actionType === 'إضافة') {
+                $vTypeAr = $req->input('voucher_type') === 'payment' ? 'سند صرف' : 'سند قبض';
+                $simpleDetails = "{$actorName} أصدر {$vTypeAr}" . ($req->input('amount') ? " بمبلغ {$req->input('amount')} ر.س" : "") . ($targetItem ? " ({$targetItem})" : "");
+            } elseif (str_contains($path, 'invoices') && $actionType === 'إضافة') {
+                $simpleDetails = "{$actorName} أصدر فاتورة ضريبية" . ($targetItem ? " ({$targetItem})" : "");
+            } elseif (str_contains($path, 'journal-entries') && $actionType === 'إضافة') {
+                $simpleDetails = "{$actorName} أنشأ قيد يومي" . ($targetItem ? " ({$targetItem})" : "");
+            } elseif (str_contains($path, 'seed')) {
+                $simpleDetails = "{$actorName} قام بتوليد شجرة الحسابات القياسية";
+            } elseif (str_contains($path, 'diagnostics')) {
+                $simpleDetails = "{$actorName} شغّل الفحص الأوتوماتيكي الشامل للنظام";
+            } else {
+                $verb = match ($actionType) {
+                    'إضافة' => 'أضاف',
+                    'تعديل' => 'عدّل',
+                    'حذف'   => 'حذف',
+                    default => 'نفّذ عملية في',
+                };
+                if ($targetItem !== '') {
+                    $simpleDetails = "{$actorName} {$verb} {$targetItem} ({$sectionLabel})";
+                } else {
+                    $simpleDetails = "{$actorName} {$verb} في {$sectionLabel}";
+                }
+            }
 
             $netInfo = self::detectClientIpAndMac($req);
 
@@ -3379,7 +3514,8 @@ class CompanyErpController extends Controller
                 'owner_id' => $effectiveOwnerId,
                 'action_type' => $actionType,
                 'action_label' => $actionLabel,
-                'details' => $inputs ?: "المسار: /{$path}",
+                'details' => $simpleDetails,
+                'request_path' => ltrim($path, '/'),
                 'ip_address' => $netInfo['ip'],
                 'mac_address' => $netInfo['mac'],
                 'user_agent' => mb_substr((string) $req->userAgent(), 0, 180),

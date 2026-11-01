@@ -5,6 +5,7 @@ namespace App\Providers;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\URL;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -21,6 +22,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // إجبار جميع النماذج والروابط على العمل بـ HTTPS في السيرفر السحابي (Render) لمنع رسالة "النموذج غير آمن"
+        if (
+            request()->header('x-forwarded-proto') === 'https' ||
+            str_contains(request()->getHost(), 'onrender.com') ||
+            config('app.env') === 'production'
+        ) {
+            URL::forceScheme('https');
+            request()->server->set('HTTPS', 'on');
+        }
+
         // التأكد التلقائي من وجود ملف قاعدة بيانات SQLite وإنشائه وتشغيل الجداول على Render
         if (config('database.default') === 'sqlite') {
             $dbPath = config('database.connections.sqlite.database', database_path('database.sqlite'));
