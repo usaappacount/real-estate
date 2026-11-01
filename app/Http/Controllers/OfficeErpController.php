@@ -18,13 +18,16 @@ class OfficeErpController extends Controller
         return $user->office_id ? (int) $user->office_id : null;
     }
 
-    public function dashboard(Request $request)
+   public function dashboard(Request $request)
     {
-        app(CompanyErpController::class)->ensureDefaultAdminExists();
-        app(CompanyErpController::class)->ensureDynamicPropertyTables();
-        app(CompanyErpController::class)->ensureDynamicAccountTables();
-        app(CompanyErpController::class)->ensurePaymentMethodsTable();
-        app(CompanyErpController::class)->ensureJournalTables();
+        if (!session('erp_fast_boot_done')) {
+            app(CompanyErpController::class)->ensureDefaultAdminExists();
+            app(CompanyErpController::class)->ensureDynamicPropertyTables();
+            app(CompanyErpController::class)->ensureDynamicAccountTables();
+            app(CompanyErpController::class)->ensurePaymentMethodsTable();
+            app(CompanyErpController::class)->ensureJournalTables();
+            session(['erp_fast_boot_done' => true]);
+        }
 
         $officeId = $this->getCurrentOfficeId();
         if (!$officeId) {
@@ -896,11 +899,13 @@ class OfficeErpController extends Controller
         $acc = DB::table('accounts')->where('office_id', $officeId)->where('id', $id)->first();
         if (!$acc) return back();
 
-        $debit = $request->filled('debit_balance') ? (float) $request->debit_balance : ($acc->debit_balance ?? 0);
-        $credit = $request->filled('credit_balance') ? (float) $request->credit_balance : ($acc->credit_balance ?? 0);
-        $netBalance = ($request->filled('debit_balance') || $request->filled('credit_balance'))
+        $isAdmin = (Auth::user()->user_type === 'company_admin');
+
+        $debit = ($isAdmin && $request->filled('debit_balance')) ? (float) $request->debit_balance : ($acc->debit_balance ?? 0);
+        $credit = ($isAdmin && $request->filled('credit_balance')) ? (float) $request->credit_balance : ($acc->credit_balance ?? 0);
+        $netBalance = ($isAdmin && ($request->filled('debit_balance') || $request->filled('credit_balance')))
             ? ($debit - $credit)
-            : ($request->filled('balance') ? (float) $request->balance : ($acc->balance ?? 0));
+            : ($acc->balance ?? 0);
 
         DB::table('accounts')->where('office_id', $officeId)->where('id', $id)->update([
             'code' => trim($request->code),
@@ -917,7 +922,7 @@ class OfficeErpController extends Controller
         DB::table('accounts')->where('office_id', $officeId)->where('parent_id', $id)->update(['type' => $request->type]);
 
         return redirect()->route('office.dashboard', ['tab' => 'accounting'])
-            ->with('success', 'تم تعديل الحساب وأرصدة المدين والدائن في شجرة المكتب بنجاح.');
+            ->with('success', 'تم تحديث بيانات الحساب في شجرة المكتب بنجاح.');
     }
 
     public function deleteOfficeAccount($id)

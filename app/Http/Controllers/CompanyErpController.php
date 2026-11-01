@@ -482,10 +482,15 @@ class CompanyErpController extends Controller
 
         $tab = $request->get('tab', 'overview');
 
-        $this->ensureDynamicPropertyTables();
-        $this->ensureDynamicAccountTables();
-        $this->ensurePaymentMethodsTable();
-        $this->ensureJournalTables();
+        if (!session('erp_fast_boot_done')) {
+            $this->ensureDynamicPropertyTables();
+            $this->ensureDynamicAccountTables();
+            $this->ensurePaymentMethodsTable();
+            $this->ensureJournalTables();
+            $this->ensureSystemMonitoringTables();
+            $this->ensureTaxInvoicesTable();
+            session(['erp_fast_boot_done' => true]);
+        }
 
         $accountTypes = DB::table('custom_account_types')->orderBy('id')->get();
         $accounts = DB::table('accounts')->whereNull('office_id')->orderBy('code')->get();
@@ -590,7 +595,10 @@ class CompanyErpController extends Controller
         ];
 
         $this->ensureSystemMonitoringTables();
-        $this->syncLaravelLogFileToTable();$this->ensureTaxInvoicesTable();
+        $this->ensureTaxInvoicesTable();
+        if ($request->has('sync_logs')) {
+            $this->syncLaravelLogFileToTable();
+        }
 
         $systemLogs = DB::table('system_error_logs')->orderBy('id', 'desc')->limit(250)->get();$diagnosticRuns = DB::table('system_diagnostic_runs')->orderBy('id', 'desc')->limit(40)->get();
 
@@ -1568,24 +1576,24 @@ class CompanyErpController extends Controller
             ->with('success', 'تم حذف الحساب من الشجرة بنجاح.');
     }
 
-    public static function generateSequentialVoucherNumber(string $voucherType, ?int $officeId = null): string
+   public static function generateSequentialVoucherNumber(string $voucherType, ?int $officeId = null): string
     {
         $year = date('Y');
-        $prefix = $voucherType === 'payment' ? "SA-{$year}-" : "RV-{$year}-";
+        $prefix = $voucherType === 'payment' ? "سند الصرف {$year}-" : "سند القبض {$year}-";
 
         $query = DB::table('vouchers')
             ->where('voucher_type', $voucherType)
             ->where('voucher_number', 'like', $prefix . '%');
 
         if ($officeId === null) {
-            $count = $query->count();
+            $count = $query->whereNull('office_id')->count();
         } else {
             $count = $query->where('office_id', $officeId)->count();
         }
 
         $nextSeq = $count + 1;
         do {
-            $candidate = $prefix . str_pad($nextSeq, 6, '0', STR_PAD_LEFT);
+            $candidate = $prefix . str_pad($nextSeq, 5, '0', STR_PAD_LEFT);
             $exists = DB::table('vouchers')->where('voucher_number', $candidate)->exists();
             $nextSeq++;
         } while ($exists);

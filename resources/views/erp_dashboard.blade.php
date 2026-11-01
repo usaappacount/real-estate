@@ -333,7 +333,6 @@
                                 <tr>
                                     <th class="py-3.5 px-6">اسم المكتب</th>
                                     <th class="py-3.5 px-6">رقم الجوال</th>
-                                    <th class="py-3.5 px-6"> رقم الحساب </th>
                                     <th class="py-3.5 px-6">نوع الاشتراك</th>
                                     <th class="py-3.5 px-6">صافي الربح من المكتب</th>
                                     <th class="py-3.5 px-6">الحالة</th>
@@ -349,7 +348,6 @@
                                     <tr class="hover:bg-slate-50/80 transition">
                                         <td class="py-4 px-6 font-bold text-slate-900">{{ $office->name }}</td>
                                         <td class="py-4 px-6 font-mono text-xs text-emerald-700 font-semibold" dir="ltr">{{ $office->phone }}</td>
-                                        <td class="py-4 px-6 font-mono text-xs">{{ $office->account_code ? $office->account_code . ' - ' . $office->account_name : 'غير مرتبط' }}</td>
                                         <td class="py-4 px-6">
                                             @if($office->billing_type == 'annual_subscription')
                                                 <span class="px-2.5 py-1 rounded-xl text-xs font-semibold bg-blue-50 text-blue-700">اشتراك سنوي ({{ number_format($office->annual_fee, 0) }} ر.س)</span>
@@ -413,7 +411,6 @@
                                 <tr>
                                     <th class="py-4 px-5">المكتب والترخيص (اضغط لكشف الحساب)</th>
                                     <th class="py-4 px-4">الجوال واسم المستخدم</th>
-                                    <th class="py-4 px-4">رقم الحساب</th>
                                     <th class="py-4 px-4">نوع الاشتراك</th>
                                     <th class="py-4 px-4">الاشتراك / النسبة</th>
                                     <th class="py-4 px-4">صافي الربح و% (متغير بالسندات)</th>
@@ -445,15 +442,6 @@
                                         <td class="py-4 px-4">
                                             <div class="font-mono text-xs font-bold text-emerald-700" dir="ltr">{{ $office->phone }}</div>
                                             <div class="text-xs text-slate-500">المستخدم: <span class="font-mono">{{ $office->manager_username }}</span></div>
-                                        </td>
-                                        <td class="py-4 px-4">
-                                            @if($office->account_code)
-                                                <span class="px-2.5 py-1 rounded-xl bg-slate-100 text-slate-800 font-mono text-xs font-bold border border-slate-200">
-                                                    {{ $office->account_code }} - {{ $office->account_name }}
-                                                </span>
-                                            @else
-                                                <span class="text-xs text-slate-400">غير مرتبط</span>
-                                            @endif
                                         </td>
                                         <td class="py-4 px-4">
                                             @if($office->billing_type == 'annual_subscription')
@@ -4561,5 +4549,169 @@
             </form>
         </div>
     </div>
+
+    <!-- محرك التحديثات الذكية الشامل للوحة الأدمن (بحث الشجرة + بحث النوافذ + تعديل القيود + السند الطبيعي) -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // 1. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات
+        const accHeader = document.querySelector('button[onclick*="manageAccountTypesModal"]')?.parentElement;
+        if (accHeader && !document.getElementById('treeInstantSearch')) {
+            const searchInput = document.createElement('input');
+            searchInput.type = 'text';
+            searchInput.id = 'treeInstantSearch';
+            searchInput.placeholder = '🔍 ابحث في شجرة الحسابات بالاسم أو الكود...';
+            searchInput.className = 'w-64 rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-xs focus:bg-white focus:outline-none';
+            searchInput.addEventListener('input', function() {
+                const q = this.value.trim().toLowerCase();
+                document.querySelectorAll('.border-2.border-slate-200.rounded-3xl').forEach(rootBox => {
+                    const text = rootBox.innerText.toLowerCase();
+                    rootBox.style.display = text.includes(q) ? '' : 'none';
+                });
+            });
+            accHeader.prepend(searchInput);
+        }
+
+        // 2. إضافة خانة بحث تلقائية لكل قائمة اختيار (Select) داخل النوافذ المنبثقة (Modals) التي تضم أكثر من 3 خيارات
+        function attachSearchToSelects(root = document) {
+            root.querySelectorAll('.fixed select').forEach(sel => {
+                if (sel.dataset.searchableAttached || sel.options.length <= 3) return;
+                sel.dataset.searchableAttached = '1';
+                const searchBox = document.createElement('input');
+                searchBox.type = 'text';
+                searchBox.placeholder = '🔍 ابحث هنا لتصفية القائمة بالأسفل...';
+                searchBox.className = 'w-full mb-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] focus:bg-white';
+                searchBox.addEventListener('input', function() {
+                    const term = this.value.trim().toLowerCase();
+                    Array.from(sel.options).forEach((opt, idx) => {
+                        if (idx === 0 && opt.value === '') { opt.hidden = false; return; }
+                        opt.hidden = !opt.text.toLowerCase().includes(term);
+                    });
+                    const firstVisible = Array.from(sel.options).find(o => !o.hidden && o.value !== '');
+                    if (term && firstVisible) {
+                        sel.value = firstVisible.value;
+                        sel.dispatchEvent(new Event('change'));
+                    }
+                });
+                sel.parentNode.insertBefore(searchBox, sel);
+            });
+        }
+        attachSearchToSelects();
+
+        // 3. السماح بإضافة جداول جديدة وحذفها عند (تعديل قيد يومي)
+        document.querySelectorAll('div[id^="editJournalModal_"]').forEach(modal => {
+            const form = modal.querySelector('form');
+            const rowsContainer = form?.querySelector('.space-y-2\\.5');
+            if (!form || !rowsContainer || modal.dataset.enhancedEditJournal) return;
+            modal.dataset.enhancedEditJournal = '1';
+
+            // إضافة زر حذف لكل سطر حالي في التعديل
+            rowsContainer.querySelectorAll('.grid.grid-cols-12').forEach(row => {
+                row.classList.add('edit-journal-item-row', 'relative');
+                if (!row.querySelector('.del-edit-jrow')) {
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.innerHTML = '🗑️ حذف السطر';
+                    delBtn.className = 'del-edit-jrow col-span-12 mt-1 py-1 rounded bg-red-50 text-red-600 text-[10px] font-bold hover:bg-red-600 hover:text-white transition';
+                    delBtn.onclick = function() {
+                        if (rowsContainer.querySelectorAll('.edit-journal-item-row').length <= 2) {
+                            alert('يجب أن يحتوي القيد على سطرين على الأقل.');
+                            return;
+                        }
+                        row.remove();
+                    };
+                    row.appendChild(delBtn);
+                }
+            });
+
+            // زر إضافة جدول/سطر جديد داخل نافذة تعديل القيد
+            const addRowBtn = document.createElement('button');
+            addRowBtn.type = 'button';
+            addRowBtn.className = 'w-full py-2.5 my-2 rounded-xl border-2 border-dashed border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold transition';
+            addRowBtn.innerHTML = '+ إضافة جدول عملية جديد في هذا القيد';
+            addRowBtn.onclick = function() {
+                const firstRow = rowsContainer.querySelector('.edit-journal-item-row');
+                if (!firstRow) return;
+                const clone = firstRow.cloneNode(true);
+                clone.querySelectorAll('input[type="text"][placeholder*="ابحث"]').forEach(el => el.remove());
+                clone.querySelectorAll('select').forEach(s => {
+                    delete s.dataset.searchableAttached;
+                    Array.from(s.options).forEach(o => o.hidden = false);
+                });
+                clone.querySelectorAll('input').forEach(inp => {
+                    if (inp.name === 'debits[]' || inp.name === 'credits[]' || inp.name === 'taxes[]') inp.value = '0';
+                    else inp.value = '';
+                });
+                const delBtn = clone.querySelector('.del-edit-jrow');
+                if (delBtn) {
+                    delBtn.onclick = function() {
+                        if (rowsContainer.querySelectorAll('.edit-journal-item-row').length <= 2) {
+                            alert('يجب أن يحتوي القيد على سطرين على الأقل.');
+                            return;
+                        }
+                        clone.remove();
+                    };
+                }
+                rowsContainer.appendChild(clone);
+                attachSearchToSelects(clone);
+            };
+            rowsContainer.after(addRowBtn);
+        });
+
+        // 4. تحديث شكل السند في نافذة المعاينة ليكون طبيعياً وتقليدياً (دفتر سندات رسمي)
+        const printableArea = document.getElementById('printableVoucherArea');
+        if (printableArea && document.getElementById('pdf_voucher_no')) {
+            printableArea.className = 'p-8 bg-[#fffdf9] border-4 border-double border-slate-800 rounded-lg text-slate-900 space-y-5 shadow-inner';
+            printableArea.innerHTML = `
+                <div class="flex items-start justify-between border-b-2 border-slate-800 pb-4">
+                    <div class="space-y-1">
+                        <h2 id="pdf_issuer" class="text-lg font-extrabold text-slate-900">الإدارة المركزية - منظومة العقارات</h2>
+                        <p class="text-xs text-slate-600">الإدارة المالية وقسم الحسابات</p>
+                    </div>
+                    <div class="text-center px-8 py-2 border-2 border-slate-900 bg-white rounded shadow-sm">
+                        <div id="pdf_voucher_title" class="text-xl font-black tracking-wide text-slate-900">سند قبض</div>
+                        <div id="pdf_voucher_no" class="font-mono text-xs font-bold text-red-700 mt-1" dir="ltr">سند القبض 2026-00001</div>
+                    </div>
+                    <div class="text-left text-xs space-y-1.5 font-semibold">
+                        <div>التاريخ: <span id="pdf_date" class="font-mono font-bold border-b border-dotted border-slate-500 px-2"></span></div>
+                        <div>طريقة الدفع: <span id="pdf_method" class="font-bold border-b border-dotted border-slate-500 px-2"></span></div>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-3 py-2">
+                    <span class="text-sm font-bold text-slate-800">المبلغ رقماً:</span>
+                    <div class="px-6 py-2 border-2 border-slate-800 bg-white rounded font-mono text-xl font-black text-slate-900 shadow-sm">
+                        #<span id="pdf_amount">0.00</span># <span class="text-xs font-normal">ريال سعودي</span>
+                    </div>
+                </div>
+
+                <div class="space-y-4 text-sm leading-loose bg-white p-5 rounded border border-slate-300">
+                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
+                        <span class="font-bold text-slate-700 shrink-0">استلمنا من / يصرف إلى المكرم:</span>
+                        <span id="pdf_party" class="font-extrabold text-slate-900 text-base flex-1 px-2"></span>
+                    </div>
+                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
+                        <span class="font-bold text-slate-700 shrink-0">وذلك مقابل (البيان):</span>
+                        <span id="pdf_notes" class="font-bold text-slate-900 flex-1 px-2"></span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-6 pt-8 text-center text-xs font-bold text-slate-700">
+                    <div>
+                        <p class="mb-8">توقيع المستلم</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
+                    </div>
+                    <div>
+                        <p class="mb-8">أمين الصندوق / المحاسب</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
+                    </div>
+                    <div>
+                        <p class="mb-8">الختم والاعتماد</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-emerald-700">معتمد إلكترونياً ✔</p>
+                    </div>
+                </div>
+            `;
+        }
+    });
+    </script>
 </body>
 </html>

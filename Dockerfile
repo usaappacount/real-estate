@@ -18,10 +18,17 @@ RUN docker-php-ext-install pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd
 # تمكين Apache Rewrite Module
 RUN a2enmod rewrite
 
-# ضبط المجلد الجذر ليكون public
+# توجيه أباتشي رسمياً إلى مجلد public الخاص بلارافيل
 ENV APACHE_DOCUMENT_ROOT /var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
 RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
+
+# تعديل ملف إعدادات أباتشي الافتراضي بشكل مباشر لضمان قبول الروابط اللطيفة (AllowOverride All)
+RUN echo '<Directory /var/www/html/public/>\n\
+    Options Indexes FollowSymLinks\n\
+    AllowOverride All\n\
+    Require all granted\n\
+</Directory>' >> /etc/apache2/apache2.conf
 
 # نسخ Composer من الصورة الرسمية
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
@@ -29,12 +36,15 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # نسخ ملفات المشروع إلى السيرفر
 COPY . /var/www/html
 
-# العمل داخل مجلد المشروع وتثبيت الحزم مع تجاهل قيود النسخ والسكربتات التلقائية لتفادي الأخطاء
+# العمل داخل مجلد المشروع وتثبيت الحزم مع تجاهل قيود النسخ والسكربتات التلقائية
 WORKDIR /var/www/html
 RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts
 
-# تعيين صلاحيات المجلدات لـ لاريفيل
-RUN chown -R www-data:www-data /var/www/html \
+# إنشاء مجلد قاعدة البيانات وجلسات لارافيل والتأكد من الصلاحيات المطلوبة
+RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache \
+    && touch database/database.sqlite \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 storage bootstrap/cache database \
     && find /var/www/html -type d -exec chmod 755 {} \; \
     && find /var/www/html -type f -exec chmod 644 {} \;
 

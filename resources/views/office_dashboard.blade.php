@@ -1066,7 +1066,6 @@
                                     <th class="py-3.5 px-5">اسم المستأجر </th>
                                     <th class="py-3.5 px-5">رقم الهوية / الإقامة</th>
                                     <th class="py-3.5 px-5">رقم الجوال</th>
-                                    <th class="py-3.5 px-5">رقم الحساب</th>
                                     <th class="py-3.5 px-5">الرصيد / المسدد</th>
                                     <th class="py-3.5 px-5 text-center">إجراء</th>
                                 </tr>
@@ -1086,15 +1085,6 @@
                                                 <span>👤 {{ $tn->name }}</span>
                                                 <span class="text-[10px] px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">كشف حساب ({{ $tnVouchers->count() }})</span>
                                             </button>
-                                        </td>
-                                        <td class="py-4 px-5 font-mono text-xs">{{ $tn->id_number }}</td>
-                                        <td class="py-4 px-5 font-mono text-xs font-bold text-slate-700" dir="ltr">{{ $tn->phone }}</td>
-                                        <td class="py-4 px-5">
-                                            @if($tnAcc)
-                                                <span class="px-2.5 py-1 rounded-xl bg-slate-100 font-mono text-xs font-bold text-slate-800">{{ $tnAcc->code }} - {{ $tnAcc->name }}</span>
-                                            @else
-                                                <span class="text-xs text-slate-400">غير مرتبط</span>
-                                            @endif
                                         </td>
                                         <td class="py-4 px-5">
                                             <span class="font-bold text-emerald-700">{{ number_format($tnReceipts, 2) }} ر.س</span>
@@ -4301,6 +4291,245 @@
             syncOfficeVoucherAccounts();
             applyStatementFilters();
         });
+    </script>
+
+    <!-- محرك التحديثات الذكية الشامل لبوابة المكتب -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const isCompanyAdmin = {{ auth()->user()->user_type === 'company_admin' ? 'true' : 'false' }};
+        const officeUnitsData = @json($units ?? []);
+
+        // 1. منع صاحب المكتب من تعديل المدين والدائن في شجرة الحسابات (يسمح للأدمن فقط)
+        if (!isCompanyAdmin) {
+            document.querySelectorAll('div[id^="editAccModal_"]').forEach(modal => {
+                const debitInput = modal.querySelector('input[name="debit_balance"]');
+                const creditInput = modal.querySelector('input[name="credit_balance"]');
+                if (debitInput) {
+                    debitInput.readOnly = true;
+                    debitInput.classList.add('bg-slate-100', 'cursor-not-allowed', ' opacity-70');
+                }
+                if (creditInput) {
+                    creditInput.readOnly = true;
+                    creditInput.classList.add('bg-slate-100', 'cursor-not-allowed', 'opacity-70');
+                    const box = creditInput.closest('.grid');
+                    if (box && !box.querySelector('.admin-only-hint')) {
+                        const hint = document.createElement('div');
+                        hint.className = 'admin-only-hint col-span-2 text-[10px] text-rose-600 font-bold mt-1';
+                        hint.innerText = '🔒 تعديل أرصدة المدين والدائن يدوياً متاح للإدارة المركزية (الأدمن) فقط، وتتحدث الأرصدة تلقائياً عبر السندات والقيود.';
+                        box.appendChild(hint);
+                    }
+                }
+            });
+        }
+
+        // 2. وضع سعر الوحدة تلقائياً (مثلاً 25,000) عند اختيار الوحدة في نافذة إبرام أو تعديل عقد إيجار + فلترة الوحدات حسب العقار
+        const unitPriceMap = {};
+        officeUnitsData.forEach(u => {
+            unitPriceMap[String(u.id)] = {
+                price: parseFloat(u.default_rent_price || 0),
+                property_id: String(u.property_id)
+            };
+        });
+
+        document.querySelectorAll('select[name="property_unit_id"]').forEach(unitSelect => {
+            const form = unitSelect.closest('form');
+            if (!form) return;
+            const rentInput = form.querySelector('input[name="total_rent_amount"]');
+            const propSelect = form.querySelector('select[name="property_id"]');
+
+            // عند تغيير العقار يتم إظهار وحدات هذا العقار فقط
+            if (propSelect) {
+                propSelect.addEventListener('change', function() {
+                    const selectedPropId = String(this.value || '');
+                    Array.from(unitSelect.options).forEach(opt => {
+                        if (!opt.value) { opt.hidden = false; return; }
+                        const uInfo = unitPriceMap[String(opt.value)];
+                        if (uInfo && selectedPropId) {
+                            opt.hidden = (uInfo.property_id !== selectedPropId);
+                        } else {
+                            opt.hidden = false;
+                        }
+                    });
+                    unitSelect.value = '';
+                });
+            }
+
+            // عند اختيار الوحدة يتم وضع سعرها تلقائياً في خانة السعر
+            unitSelect.addEventListener('change', function() {
+                const selectedUnitId = String(this.value || '');
+                const uInfo = unitPriceMap[selectedUnitId];
+                if (uInfo && rentInput && uInfo.price > 0) {
+                    rentInput.value = uInfo.price;
+                    rentInput.classList.add('ring-2', 'ring-emerald-500');
+                    setTimeout(() => rentInput.classList.remove('ring-2', 'ring-emerald-500'), 1200);
+                    // إذا لم يكن العقار محدداً، يتم تحديد عقار هذه الوحدة تلقائياً
+                    if (propSelect && !propSelect.value) {
+                        propSelect.value = uInfo.property_id;
+                    }
+                }
+            });
+        });
+
+        // 3. إضافة خانة بحث فورية داخل صفحة شجرة الحسابات للمكتب
+        const accHeader = document.querySelector('button[onclick*="manageAccountTypesModal"]')?.parentElement;
+        if (accHeader && !document.getElementById('officeTreeInstantSearch')) {
+            const searchInput = document.createElement('input');
+            searchInput.type = 'text';
+            searchInput.id = 'officeTreeInstantSearch';
+            searchInput.placeholder = '🔍 ابحث في شجرة الحسابات بالاسم أو الكود...';
+            searchInput.className = 'w-64 rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-xs focus:bg-white focus:outline-none';
+            searchInput.addEventListener('input', function() {
+                const q = this.value.trim().toLowerCase();
+                document.querySelectorAll('.border-2.border-slate-200.rounded-3xl').forEach(rootBox => {
+                    const text = rootBox.innerText.toLowerCase();
+                    rootBox.style.display = text.includes(q) ? '' : 'none';
+                });
+            });
+            accHeader.prepend(searchInput);
+        }
+
+        // 4. إضافة خانة بحث تلقائية داخل جميع النوافذ والأزرار (عند إضافة عقار، مستأجر، عقد، سند، قيد يومي)
+        function attachSearchToOfficeSelects(root = document) {
+            root.querySelectorAll('.fixed select').forEach(sel => {
+                if (sel.dataset.searchableAttached || sel.options.length <= 2) return;
+                // استثناء القوائم الصغيرة الثابتة مثل نعم/لا أو نوع الهوية
+                if (['id_type', 'payment_cycle', 'status', 'voucher_type', 'is_groups[]'].includes(sel.name)) return;
+
+                sel.dataset.searchableAttached = '1';
+                const searchBox = document.createElement('input');
+                searchBox.type = 'text';
+                searchBox.placeholder = '🔍 ابحث هنا بالاسم أو الرقم لتصفية القائمة...';
+                searchBox.className = 'w-full mb-1.5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1 text-[11px] focus:bg-white';
+                searchBox.addEventListener('input', function() {
+                    const term = this.value.trim().toLowerCase();
+                    Array.from(sel.options).forEach((opt, idx) => {
+                        if (idx === 0 && opt.value === '') { opt.hidden = false; return; }
+                        opt.hidden = !opt.text.toLowerCase().includes(term);
+                    });
+                    const firstVisible = Array.from(sel.options).find(o => !o.hidden && o.value !== '');
+                    if (term && firstVisible) {
+                        sel.value = firstVisible.value;
+                        sel.dispatchEvent(new Event('change'));
+                    }
+                });
+                sel.parentNode.insertBefore(searchBox, sel);
+            });
+        }
+        attachSearchToOfficeSelects();
+
+        // 5. السماح بإضافة جداول جديدة وحذفها عند (تعديل قيد يومي) في بوابة المكتب
+        document.querySelectorAll('div[id^="editJournalModal_"]').forEach(modal => {
+            const form = modal.querySelector('form');
+            const rowsContainer = form?.querySelector('.space-y-2\\.5');
+            if (!form || !rowsContainer || modal.dataset.enhancedEditJournal) return;
+            modal.dataset.enhancedEditJournal = '1';
+
+            rowsContainer.querySelectorAll('.grid.grid-cols-12').forEach(row => {
+                row.classList.add('edit-journal-item-row');
+                if (!row.querySelector('.del-edit-jrow')) {
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.innerHTML = '🗑️ حذف السطر';
+                    delBtn.className = 'del-edit-jrow col-span-12 mt-1 py-1 rounded bg-red-50 text-red-600 text-[10px] font-bold hover:bg-red-600 hover:text-white transition';
+                    delBtn.onclick = function() {
+                        if (rowsContainer.querySelectorAll('.edit-journal-item-row').length <= 2) {
+                            alert('يجب أن يحتوي القيد على سطرين على الأقل.');
+                            return;
+                        }
+                        row.remove();
+                    };
+                    row.appendChild(delBtn);
+                }
+            });
+
+            const addRowBtn = document.createElement('button');
+            addRowBtn.type = 'button';
+            addRowBtn.className = 'w-full py-2.5 my-2 rounded-xl border-2 border-dashed border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-xs font-bold transition';
+            addRowBtn.innerHTML = '+ إضافة جدول عملية جديد في هذا القيد';
+            addRowBtn.onclick = function() {
+                const firstRow = rowsContainer.querySelector('.edit-journal-item-row');
+                if (!firstRow) return;
+                const clone = firstRow.cloneNode(true);
+                clone.querySelectorAll('input[type="text"][placeholder*="ابحث"]').forEach(el => el.remove());
+                clone.querySelectorAll('select').forEach(s => {
+                    delete s.dataset.searchableAttached;
+                    Array.from(s.options).forEach(o => o.hidden = false);
+                });
+                clone.querySelectorAll('input').forEach(inp => {
+                    if (inp.name === 'debits[]' || inp.name === 'credits[]' || inp.name === 'taxes[]') inp.value = '0';
+                    else inp.value = '';
+                });
+                const delBtn = clone.querySelector('.del-edit-jrow');
+                if (delBtn) {
+                    delBtn.onclick = function() {
+                        if (rowsContainer.querySelectorAll('.edit-journal-item-row').length <= 2) {
+                            alert('يجب أن يحتوي القيد على سطرين على الأقل.');
+                            return;
+                        }
+                        clone.remove();
+                    };
+                }
+                rowsContainer.appendChild(clone);
+                attachSearchToOfficeSelects(clone);
+            };
+            rowsContainer.after(addRowBtn);
+        });
+
+        // 6. تحويل شكل السند في نافذة المعاينة بالمكتب ليكون أقرب للسند الطبيعي التقليدي
+        const pvArea = document.getElementById('printableVoucherArea');
+        if (pvArea && document.getElementById('pv_number')) {
+            pvArea.className = 'p-8 bg-[#fffdf9] border-4 border-double border-slate-800 rounded-lg text-slate-900 space-y-5 shadow-inner';
+            pvArea.innerHTML = `
+                <div class="flex items-start justify-between border-b-2 border-slate-800 pb-4">
+                    <div class="space-y-1">
+                        <h2 id="pv_issuer" class="text-lg font-extrabold text-slate-900">{{ $office->name }}</h2>
+                        <p class="text-xs text-slate-600">سند مالي رسمي معتمد</p>
+                    </div>
+                    <div class="text-center px-8 py-2 border-2 border-slate-900 bg-white rounded shadow-sm">
+                        <div id="pv_title" class="text-lg font-black text-slate-900">سند قبض</div>
+                        <div id="pv_number" class="text-xs font-mono font-bold text-red-700 mt-1" dir="ltr"></div>
+                    </div>
+                    <div class="text-left text-xs space-y-1.5 font-semibold">
+                        <div>التاريخ: <b id="pv_date" class="font-mono border-b border-dotted border-slate-500 px-2"></b></div>
+                        <div>طريقة الدفع: <b id="pv_method" class="text-slate-900 border-b border-dotted border-slate-500 px-2"></b></div>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-3 py-2">
+                    <span class="text-sm font-bold text-slate-800">المبلغ رقماً:</span>
+                    <div class="px-6 py-2 border-2 border-slate-800 bg-white rounded font-mono text-xl font-black text-slate-900 shadow-sm">
+                        #<span id="pv_amount"></span># <span class="text-xs font-normal">ريال سعودي</span>
+                    </div>
+                </div>
+
+                <div class="space-y-4 text-sm leading-loose bg-white p-5 rounded border border-slate-300">
+                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
+                        <span class="font-bold text-slate-700 shrink-0">استلمنا من / يصرف إلى المكرم:</span>
+                        <span id="pv_party" class="text-base font-extrabold text-slate-900 flex-1 px-2"></span>
+                    </div>
+                    <div class="flex items-baseline gap-3 border-b border-dotted border-slate-400 pb-2">
+                        <span class="font-bold text-slate-700 shrink-0">وذلك مقابل (البيان):</span>
+                        <span id="pv_notes" class="font-bold text-slate-900 flex-1 px-2"></span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-6 pt-8 text-center text-xs font-bold text-slate-700">
+                    <div>
+                        <p class="mb-8">توقيع المستلم</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
+                    </div>
+                    <div>
+                        <p class="mb-8">المحاسب / المُصدِر</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-slate-400 font-normal">........................</p>
+                    </div>
+                    <div>
+                        <p class="mb-8">الختم والاعتماد</p>
+                        <p class="border-t border-slate-400 pt-1 mx-4 text-emerald-700">معتمد إلكترونياً ✔</p>
+                    </div>
+                </div>
+            `;
+        }
+    });
     </script>
 </body>
 </html>
