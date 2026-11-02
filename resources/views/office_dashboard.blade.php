@@ -2004,6 +2004,11 @@
                         </div>
 
                         <div class="flex items-center gap-2">
+                            <button type="button" onclick="exportTableToCSV('officeVouchersMainTable', 'سجل_سندات_المكتب.xlsx')"
+                                    class="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1.5">
+                                <span>📊 تصدير السندات Excel</span>
+                            </button>
+
                             <button type="button" onclick="openModal('manageOfficePaymentMethodsModal')"
                                     class="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition">
                                 💳 طرق الدفع ({{ $paymentMethods->count() }})
@@ -2014,10 +2019,9 @@
                                 <span>+ إصدار سند قبض / صرف</span>
                             </button>
                         </div>
-                    </div>
 
                     <div class="overflow-x-auto">
-                        <table class="w-full text-sm text-right">
+                        <table class="w-full text-sm text-right" id="officeVouchersMainTable">
                             <thead class="bg-slate-50 text-slate-600 text-xs border-b border-slate-200/60">
                                 <tr>
                                     <th class="py-3.5 px-4">رقم السند</th>
@@ -5208,6 +5212,206 @@
             `;
         }
     });
+    </script>
+<!-- مكتبة SheetJS الرسمية لتصدير ملفات Excel الحقيقية المقسمة لأعمدة (.xlsx) + إصلاح PDF العربي -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        /* إصلاح تقطيع وعكس الحروف العربية في مكتبة html2pdf */
+        #printableVoucherArea, #printableVoucherArea *,
+        #ownerSettlementPrintableArea, #ownerSettlementPrintableArea *,
+        #financialStatementPrintable, #financialStatementPrintable *,
+        [id^="printableJournalArea_"], [id^="printableJournalArea_"] * {
+            letter-spacing: 0px !important;
+            word-spacing: normal !important;
+            font-kerning: normal !important;
+            font-variant-ligatures: normal !important;
+            text-rendering: geometricPrecision !important;
+            direction: rtl !important;
+        }
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            // 1. ترقية محرك html2pdf ليطبع العربية بشكل متصل وصحيح 100% بدون عكس الحروف
+            if (window.html2pdf) {
+                const originalHtml2Pdf = window.html2pdf;
+                window.html2pdf = function () {
+                    const worker = originalHtml2Pdf();
+                    const origFrom = worker.from;
+                    worker.from = function (element) {
+                        if (element) {
+                            element.setAttribute('dir', 'rtl');
+                            element.style.letterSpacing = '0px';
+                            element.style.fontFamily = "'Readex Pro', 'Tahoma', 'Arial', sans-serif";
+                        }
+                        return origFrom.call(this, element);
+                    };
+                    const origSet = worker.set;
+                    worker.set = function (opt) {
+                        opt = opt || {};
+                        opt.html2canvas = Object.assign({
+                            scale: 2,
+                            useCORS: true,
+                            letterRendering: false,
+                            backgroundColor: '#ffffff',
+                            onclone: function (clonedDoc) {
+                                clonedDoc.documentElement.setAttribute('dir', 'rtl');
+                                clonedDoc.body.setAttribute('dir', 'rtl');
+                                const style = clonedDoc.createElement('style');
+                                style.innerHTML = '* { letter-spacing: 0px !important; font-variant-ligatures: normal !important; }';
+                                clonedDoc.head.appendChild(style);
+                            }
+                        }, opt.html2canvas || {});
+                        return origSet.call(this, opt);
+                    };
+                    return worker;
+                };
+            }
+
+            // 2. إضافة أزرار تصدير الإكسل تلقائياً في شريط أدوات السندات وكشوفات الملاك
+            document.querySelectorAll('button[onclick*="downloadVoucherPDF()"]').forEach(btn => {
+                if (!btn.parentElement.querySelector('.auto-voucher-excel-btn')) {
+                    const exBtn = document.createElement('button');
+                    exBtn.type = 'button';
+                    exBtn.className = 'auto-voucher-excel-btn px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold shadow';
+                    exBtn.innerHTML = '📊 تصدير Excel';
+                    exBtn.onclick = exportSingleVoucherToExcel;
+                    btn.parentElement.insertBefore(exBtn, btn.nextSibling);
+                }
+            });
+
+            document.querySelectorAll('button[onclick*="downloadOwnerSettlementPDF()"]').forEach(btn => {
+                if (!btn.parentElement.querySelector('.auto-settle-excel-btn')) {
+                    const exBtn = document.createElement('button');
+                    exBtn.type = 'button';
+                    exBtn.className = 'auto-settle-excel-btn px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold shadow';
+                    exBtn.innerHTML = '📊 تصدير برنت Excel (أعمدة)';
+                    exBtn.onclick = exportOwnerSettlementToExcel;
+                    btn.parentElement.insertBefore(exBtn, btn.nextSibling);
+                }
+            });
+        });
+
+        // 3. تحويل دالة تصدير الجداول القديمة لتصدر ملف إكسل حقيقي (.xlsx) مقسم إلى أعمدة مستقلة
+        function exportTableToCSV(tableId, filename) {
+            const table = document.getElementById(tableId);
+            if (!table) {
+                alert('الجدول غير موجود للتصدير.');
+                return;
+            }
+
+            const cleanName = (filename || 'Report').replace(/\.csv$/i, '').replace(/\.xlsx$/i, '') + '.xlsx';
+            const rowsData = [];
+            const rows = table.querySelectorAll('tr');
+
+            rows.forEach(row => {
+                if (row.style.display === 'none') return;
+                const rowCells = [];
+                const cols = row.querySelectorAll('th, td');
+                cols.forEach(col => {
+                    // استبعاد عمود أزرار الإجراءات من ملف الإكسل ليكون نظيفاً
+                    const txt = (col.innerText || '').replace(/\s+/g, ' ').trim();
+                    if (txt.includes('PDF / طباعة') || (txt.includes('تعديل') && txt.includes('حذف'))) {
+                        return;
+                    }
+                    rowCells.push(txt);
+                });
+                if (rowCells.length > 0) {
+                    rowsData.push(rowCells);
+                }
+            });
+
+            downloadMultiColumnsExcel(rowsData, 'تقرير البيانات', cleanName);
+        }
+
+        // دالة مساعدة لبناء ملف إكسل (.xlsx) منسق ومقسم لأعمدة مع ضبط عرض كل عمود واتجاه اليمين لليسار
+        function downloadMultiColumnsExcel(aoaData, sheetTitle, fileName) {
+            if (typeof XLSX === 'undefined') {
+                alert('جاري تحميل مكتبة الإكسل، يرجى المحاولة بعد ثانية.');
+                return;
+            }
+            const ws = XLSX.utils.aoa_to_sheet(aoaData);
+            // ضبط اتجاه الورقة من اليمين إلى اليسار (RTL)
+            if (!ws['!views']) ws['!views'] = [];
+            ws['!views'].push({ rightToLeft: true });
+
+            // ضبط عرض الأعمدة تلقائياً حسب طول النص في كل عمود
+            const colWidths = [];
+            aoaData.forEach(row => {
+                row.forEach((cell, colIdx) => {
+                    const len = String(cell || '').length;
+                    colWidths[colIdx] = Math.max(colWidths[colIdx] || 14, Math.min(len + 6, 45));
+                });
+            });
+            ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
+            const wb = XLSX.utils.book_new();
+            wb.Workbook = { Views: [{ RTL: true }] };
+            XLSX.utils.book_append_sheet(wb, ws, sheetTitle.substring(0, 30));
+            XLSX.writeFile(wb, fileName);
+        }
+
+        // 4. تصدير السند الفردي (قبض / صرف) إلى ملف Excel مقسم لأعمدة
+        function exportSingleVoucherToExcel() {
+            const no = document.getElementById('pv_number')?.innerText || document.getElementById('pdf_voucher_no')?.innerText || 'Voucher';
+            const title = document.getElementById('pv_title')?.innerText || document.getElementById('pdf_voucher_title')?.innerText || 'سند مالي';
+            const date = document.getElementById('pv_date')?.innerText || document.getElementById('pdf_date')?.innerText || '';
+            const method = document.getElementById('pv_method')?.innerText || document.getElementById('pdf_method')?.innerText || '';
+            const amount = document.getElementById('pv_amount')?.innerText || document.getElementById('pdf_amount')?.innerText || '';
+            const party = document.getElementById('pv_party')?.innerText || document.getElementById('pdf_party')?.innerText || '';
+            const notes = document.getElementById('pv_notes')?.innerText || document.getElementById('pdf_notes')?.innerText || '';
+            const issuer = document.getElementById('pv_issuer')?.innerText || document.getElementById('pdf_issuer')?.innerText || '';
+
+            const data = [
+                ['رقم السند', 'نوع السند', 'التاريخ', 'الطرف المرتبط (المستفيد / الدافع)', 'المبلغ (ر.س)', 'طريقة الدفع', 'البيان والتفاصيل', 'الجهة المصدرة'],
+                [no, title, date, party, amount, method, notes, issuer]
+            ];
+            downloadMultiColumnsExcel(data, 'بيانات السند', no + '.xlsx');
+        }
+
+        // 5. تصدير برنت تصفية حساب المالك الشامل إلى ملف Excel مقسم لأعمدة
+        function exportOwnerSettlementToExcel() {
+            const printArea = document.getElementById('ownerSettlementPrintableArea');
+            if (!printArea || printArea.classList.contains('hidden')) {
+                alert('يرجى اختيار المالك أولاً لعرض برنت التصفية ثم تصديره إلى إكسل.');
+                return;
+            }
+            const ownerName = document.getElementById('rep_owner_name')?.innerText || 'المالك';
+            const period = document.getElementById('rep_period_label')?.innerText || '';
+            const iban = document.getElementById('rep_owner_iban')?.innerText || '';
+
+            const totalRent = document.getElementById('rep_total_contract_rent')?.innerText || '0';
+            const collected = document.getElementById('rep_collected_rent')?.innerText || '0';
+            const overdue = document.getElementById('rep_overdue_rent')?.innerText || '0';
+            const comm = document.getElementById('rep_office_commission')?.innerText || '0';
+            const exp = document.getElementById('rep_expenses_paid')?.innerText || '0';
+            const netDue = document.getElementById('rep_net_due_owner')?.innerText || '0';
+
+            const rows = [
+                ['بيان تصفية حساب مالك عقار', ownerName, period, 'الآيبان:', iban],
+                [],
+                ['إجمالي قيمة العقود', 'الإيجارات المستلمة (+)', 'الإيجارات المتأخرة (!)', 'عمولة المكتب (-)', 'المصروفات والمسحوبات (-)', 'الصافي المستحق للمالك'],
+                [totalRent, collected, overdue, comm, exp, netDue],
+                [],
+                ['أولاً: بيان العقود والوحدات وحالة التحصيل'],
+                ['رقم العقد', 'العقار / الوحدة', 'اسم المستأجر وجواله', 'فترة العقد والدورة', 'قيمة العقد', 'المسدد بالفترة (+)', 'المتبقي / المتأخر (!)', 'حالة السداد']
+            ];
+
+            document.querySelectorAll('#rep_contracts_tbody tr').forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
+                if (cells.length > 0) rows.push(cells);
+            });
+
+            rows.push([]);
+            rows.push(['ثانياً: سجل سندات القبض والصرف الفعلية خلال الفترة']);
+            rows.push(['التاريخ', 'رقم السند', 'النوع', 'المستأجر / الطرف', 'طريقة الدفع', 'البيان والتفاصيل', 'مقبوضات للمالك (+)', 'مصروفات / تحويلات (-)']);
+
+            document.querySelectorAll('#rep_vouchers_tbody tr').forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
+                if (cells.length > 0) rows.push(cells);
+            });
+
+            downloadMultiColumnsExcel(rows, 'تصفية حساب المالك', 'تصفية_حساب_' + ownerName + '.xlsx');
+        }
     </script>
 </body>
 </html>
