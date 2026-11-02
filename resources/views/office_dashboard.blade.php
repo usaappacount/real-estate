@@ -2975,87 +2975,549 @@
                 </script>
             @endif
 
-            <!-- 6-ج (2). صفحة كشف الحساب التفصيلي المستقلة (مفصولة عن الأستاذ العام) -->
+            <!-- 6-ج (2). صفحة كشف الحساب وتصفية حسابات الملاك الشاملة (Owner Settlement & Account Statement) -->
             @if($tab == 'account_statement')
-                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 space-y-5">
-                    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4 no-print">
-                        <div>
-                            <h3 class="font-bold text-lg text-slate-900"> كشف الحساب  (Account Statement)</h3>
-                            <p class="text-xs text-slate-500">صفحة مستقلة لاستخراج كشف حساب تفصيلي لأي حساب فرعي في الشجرة أو مالك أو مستأجر مع الرصيد التراكمي</p>
+                <div class="space-y-6">
+                    <!-- شريط التحكم العلوي والفلاتر الذكية -->
+                    <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 space-y-5 no-print">
+                        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                            <div>
+                                <h3 class="font-bold text-lg text-slate-900">📑 مركز كشف الحساب وتصفية مستحقات الملاك</h3>
+                                <p class="text-xs text-slate-500 mt-0.5">اختر المالك والفترة الزمنية لإصدار برنت تصفية شامل يوضح الإيجارات المستلمة، المتأخرة، عمولة المكتب، والصافي للتحويل</p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button type="button" onclick="switchStatementMode('owner_settlement')" id="btn_mode_owner_settlement"
+                                        class="px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold transition">
+                                    👑 برنت تصفية حساب مالك (شامل)
+                                </button>
+                                <button type="button" onclick="switchStatementMode('general_ledger')" id="btn_mode_general_ledger"
+                                        class="px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 text-xs font-bold transition">
+                                    📋 كشف حركات حساب / مستأجر
+                                </button>
+                                <button type="button" onclick="downloadOwnerSettlementPDF()"
+                                        class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow">
+                                    📥 تصدير برنت PDF
+                                </button>
+                                <button type="button" onclick="printOwnerSettlementArea()"
+                                        class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold">
+                                    🖨️ طباعة البرنت
+                                </button>
+                            </div>
                         </div>
-                        <div class="flex items-center gap-2">
-                            <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">🖨️ طباعة الكشف</button>
-                            <button type="button" onclick="exportTableToCSV('standaloneAccountStatementTable', 'Account_Statement.csv')" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📊 تصدير Excel</button>
+
+                        <!-- فلاتر تصفية حساب المالك -->
+                        <div id="owner_settlement_filters" class="grid grid-cols-1 md:grid-cols-12 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200 items-end">
+                            <div class="md:col-span-4">
+                                <label class="block text-xs font-bold text-slate-800 mb-1">👤 1. اختر المالك (ابحث بالاسم أو الهوية) *</label>
+                                <select id="settle_owner_id" onchange="onSettlementOwnerChange()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                                    <option value="">-- اختر المالك لإصدار التصفية --</option>
+                                    @foreach($owners as $ow)
+                                        <option value="{{ $ow->id }}">{{ $ow->name }} ({{ $ow->phone }})</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div class="md:col-span-3">
+                                <label class="block text-xs font-bold text-slate-800 mb-1">🏢 2. العقار (اختياري)</label>
+                                <select id="settle_property_id" onchange="renderOwnerSettlementReport()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-semibold">
+                                    <option value="">-- جميع عقارات المالك --</option>
+                                    @foreach($properties as $pr)
+                                        <option value="{{ $pr->id }}" data-owner="{{ $pr->owner_id }}">{{ $pr->title }} (صك: {{ $pr->deed_number }})</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-xs font-bold text-slate-800 mb-1">📅 من تاريخ</label>
+                                <input type="date" id="settle_from_date" value="{{ date('Y-01-01') }}" onchange="renderOwnerSettlementReport()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-xs font-bold text-slate-800 mb-1">📅 إلى تاريخ</label>
+                                <input type="date" id="settle_to_date" value="{{ date('Y-m-d') }}" onchange="renderOwnerSettlementReport()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
+                            </div>
+                            <div class="md:col-span-1">
+                                <button type="button" onclick="setSettlementFullYear()" title="عرض كامل السنة" class="w-full py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-[11px] font-bold">
+                                    سنة كاملة
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- فلاتر كشف الحساب العام (التقليدي) -->
+                        <div id="general_statement_filters" class="hidden grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">اختر الحساب من الشجرة</label>
+                                <select id="sa_acc_filter" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                                    <option value="">-- جميع الحسابات --</option>
+                                    @foreach($accounts->where('is_group', 0) as $acc)
+                                        <option value="{{ $acc->id }}">{{ $acc->code }} - {{ $acc->name }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">أو اختر المالك / المستأجر</label>
+                                <select id="sa_party_filter" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                                    <option value="">-- جميع الأطراف --</option>
+                                    @foreach($owners as $ow)
+                                        <option value="owner_{{ $ow->id }}">مالك: {{ $ow->name }}</option>
+                                    @endforeach
+                                    @foreach($tenants as $tn)
+                                        <option value="tenant_{{ $tn->id }}">مستأجر: {{ $tn->name }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">من تاريخ</label>
+                                <input type="date" id="sa_from_date" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">إلى تاريخ</label>
+                                <input type="date" id="sa_to_date" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
+                            </div>
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200 no-print">
-                        <div>
-                            <label class="block text-xs font-bold text-slate-700 mb-1">اختر الحساب من الشجرة</label>
-                            <select id="sa_acc_filter" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
-                                <option value="">-- جميع الحسابات --</option>
-                                @foreach($accounts->where('is_group', 0) as $acc)
-                                    <option value="{{ $acc->id }}">{{ $acc->code }} - {{ $acc->name }}</option>
-                                @endforeach
-                            </select>
+                    <!-- ========================================================= -->
+                    <!-- الوضع الأول: ورقة برنت تصفية حساب المالك الرسمية (Printable) -->
+                    <!-- ========================================================= -->
+                    <div id="owner_settlement_view">
+                        <!-- رسالة تنبيهية قبل اختيار المالك -->
+                        <div id="settlement_empty_prompt" class="bg-white rounded-3xl border border-slate-200 p-12 text-center space-y-3">
+                            <div class="text-4xl">👑</div>
+                            <h4 class="font-bold text-base text-slate-900">اختر اسم المالك من القائمة بالأعلى لعرض برنت التصفية الشامل</h4>
+                            <p class="text-xs text-slate-500 max-w-md mx-auto">سيقوم النظام فوراً بجمع عقارات المالك، عقوده، الإيجارات المستلمة، الإيجارات المتأخرة، وخصم عمولة المكتب والمصروفات لإعطائك الصافي الجاهز للتحويل.</p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-700 mb-1">أو اختر المالك / المستأجر</label>
-                            <select id="sa_party_filter" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
-                                <option value="">-- جميع الأطراف --</option>
-                                @foreach($owners as $ow)
-                                    <option value="owner_{{ $ow->id }}">مالك: {{ $ow->name }}</option>
-                                @endforeach
-                                @foreach($tenants as $tn)
-                                    <option value="tenant_{{ $tn->id }}">مستأجر: {{ $tn->name }}</option>
-                                @endforeach
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-700 mb-1">من تاريخ</label>
-                            <input type="date" id="sa_from_date" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-700 mb-1">إلى تاريخ</label>
-                            <input type="date" id="sa_to_date" onchange="filterStandaloneStatement()" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-mono">
+
+                        <!-- منطقة البرنت الفعلي التي تظهر عند اختيار المالك -->
+                        <div id="ownerSettlementPrintableArea" class="hidden bg-white rounded-3xl border-2 border-slate-800 p-8 space-y-6 shadow-sm text-slate-900">
+                            <!-- ترويسة التقرير الرسمية -->
+                            <div class="flex flex-wrap items-start justify-between gap-4 border-b-2 border-slate-900 pb-5">
+                                <div>
+                                    <h2 class="text-xl font-extrabold text-slate-900">{{ $office->name }}</h2>
+                                    <p class="text-xs text-slate-500 mt-1">
+                                        رخصة فال: <span class="font-mono font-bold">{{ $office->fal_license ?: '-' }}</span> |
+                                        سجل تجاري: <span class="font-mono font-bold">{{ $office->cr_number ?: '-' }}</span> |
+                                        جوال: <span class="font-mono font-bold" dir="ltr">{{ $office->phone }}</span>
+                                    </p>
+                                </div>
+                                <div class="text-center px-6 py-2.5 rounded-2xl bg-slate-900 text-white">
+                                    <div class="text-base font-extrabold">بيان تصفية حساب مالك عقار</div>
+                                    <div id="rep_period_label" class="text-[11px] font-mono text-emerald-300 mt-0.5">الفترة: الكل</div>
+                                </div>
+                                <div class="text-left text-xs space-y-1">
+                                    <div>تاريخ الإصدار: <b class="font-mono">{{ date('Y-m-d') }}</b></div>
+                                    <div>نسبة إدارة الأملاك: <b id="rep_fee_rate" class="font-mono text-amber-700">5%</b></div>
+                                </div>
+                            </div>
+
+                            <!-- بيانات المالك والآيبان -->
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200 text-xs">
+                                <div>
+                                    <span class="text-slate-400 block">اسم المالك:</span>
+                                    <b id="rep_owner_name" class="text-sm text-slate-900">-</b>
+                                </div>
+                                <div>
+                                    <span class="text-slate-400 block">رقم الهوية / الجوال:</span>
+                                    <b id="rep_owner_id_phone" class="font-mono text-slate-800">-</b>
+                                </div>
+                                <div>
+                                    <span class="text-slate-400 block">البنك والآيبان المعتمد للتحويل:</span>
+                                    <b id="rep_owner_iban" class="font-mono text-emerald-700" dir="ltr">-</b>
+                                </div>
+                                <div>
+                                    <span class="text-slate-400 block">نطاق العقارات بالتقرير:</span>
+                                    <b id="rep_property_scope" class="text-slate-900">جميع عقارات المالك</b>
+                                </div>
+                            </div>
+
+                            <!-- 1. بطاقات الملخص المالي الصافي (6 مؤشرات حاسمة) -->
+                            <div class="grid grid-cols-2 md:grid-cols-6 gap-3 text-center">
+                                <div class="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                                    <div class="text-[11px] font-bold text-slate-500">إجمالي عقود الإيجار</div>
+                                    <div id="rep_total_contract_rent" class="text-base font-extrabold font-mono text-slate-900 mt-1">0.00</div>
+                                    <span class="text-[10px] text-slate-400">ريال سعودي</span>
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200">
+                                    <div class="text-[11px] font-bold text-emerald-800">الإيجارات المستلمة (+)</div>
+                                    <div id="rep_collected_rent" class="text-base font-extrabold font-mono text-emerald-700 mt-1">0.00</div>
+                                    <span class="text-[10px] text-emerald-600">محصل فعلياً بالفترة</span>
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-rose-50 border border-rose-200">
+                                    <div class="text-[11px] font-bold text-rose-800">الإيجارات المتأخرة (!)</div>
+                                    <div id="rep_overdue_rent" class="text-base font-extrabold font-mono text-rose-600 mt-1">0.00</div>
+                                    <span class="text-[10px] text-rose-500">متبقي بذمة المستأجرين</span>
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-amber-50 border border-amber-200">
+                                    <div class="text-[11px] font-bold text-amber-900">عمولة المكتب (-)</div>
+                                    <div id="rep_office_commission" class="text-base font-extrabold font-mono text-amber-800 mt-1">0.00</div>
+                                    <span class="text-[10px] text-amber-700">تخصم من المحصل</span>
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-slate-100 border border-slate-300">
+                                    <div class="text-[11px] font-bold text-slate-700">المصروفات والمسحوبات (-)</div>
+                                    <div id="rep_expenses_paid" class="text-base font-extrabold font-mono text-slate-800 mt-1">0.00</div>
+                                    <span class="text-[10px] text-slate-500">سندات صرف على المالك</span>
+                                </div>
+                                <div class="p-3.5 rounded-2xl bg-slate-900 text-white shadow-md">
+                                    <div class="text-[11px] font-bold text-emerald-300">💎 الصافي المستحق للمالك</div>
+                                    <div id="rep_net_due_owner" class="text-lg font-extrabold font-mono text-white mt-1">0.00</div>
+                                    <span class="text-[10px] text-emerald-300">جاهز للتحويل البنكي</span>
+                                </div>
+                            </div>
+
+                            <!-- 2. جدول العقود وحالة التحصيل والمتأخرات لكل مستأجر / وحدة -->
+                            <div class="space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <h4 class="font-bold text-sm text-slate-900">🏢 أولاً: بيان العقود والوحدات (الإيجارات المستلمة والمتأخرة لكل مستأجر)</h4>
+                                    <span id="rep_vacant_units_badge" class="px-3 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-bold"></span>
+                                </div>
+                                <div class="overflow-x-auto rounded-2xl border border-slate-300">
+                                    <table class="w-full text-xs text-right">
+                                        <thead class="bg-slate-900 text-white">
+                                            <tr>
+                                                <th class="py-3 px-3">رقم العقد</th>
+                                                <th class="py-3 px-3">العقار / الوحدة</th>
+                                                <th class="py-3 px-3">اسم المستأجر وجواله</th>
+                                                <th class="py-3 px-3">فترة العقد والدورة</th>
+                                                <th class="py-3 px-3">قيمة العقد</th>
+                                                <th class="py-3 px-3 text-emerald-300">المسدد بالفترة (+)</th>
+                                                <th class="py-3 px-3 text-rose-300">المتبقي / المتأخر (!)</th>
+                                                <th class="py-3 px-3 text-center">حالة السداد</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rep_contracts_tbody" class="divide-y divide-slate-200"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- 3. جدول سندات القبض والصرف الفعلية خلال الفترة -->
+                            <div class="space-y-2">
+                                <h4 class="font-bold text-sm text-slate-900">🧾 ثانياً: سجل سندات القبض والصرف الفعلية خلال الفترة المحددة</h4>
+                                <div class="overflow-x-auto rounded-2xl border border-slate-300">
+                                    <table class="w-full text-xs text-right">
+                                        <thead class="bg-slate-100 text-slate-800 border-b border-slate-300">
+                                            <tr>
+                                                <th class="py-2.5 px-3">التاريخ</th>
+                                                <th class="py-2.5 px-3">رقم السند</th>
+                                                <th class="py-2.5 px-3">النوع</th>
+                                                <th class="py-2.5 px-3">المستأجر / الطرف</th>
+                                                <th class="py-2.5 px-3">طريقة الدفع</th>
+                                                <th class="py-2.5 px-3">البيان والتفاصيل</th>
+                                                <th class="py-2.5 px-3 text-emerald-700">مقبوضات للمالك (+)</th>
+                                                <th class="py-2.5 px-3 text-rose-700">مصروفات / تحويلات (-)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rep_vouchers_tbody" class="divide-y divide-slate-200"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- توقيع واعتماد التصفية -->
+                            <div class="grid grid-cols-3 gap-6 pt-6 border-t-2 border-dashed border-slate-300 text-center text-xs text-slate-600">
+                                <div>
+                                    <p class="font-bold text-slate-800 mb-8">إعداد محاسب الأملاك</p>
+                                    <p>........................................</p>
+                                </div>
+                                <div>
+                                    <p class="font-bold text-slate-800 mb-8">مصادقة المالك / الوكيل</p>
+                                    <p>........................................</p>
+                                </div>
+                                <div>
+                                    <p class="font-bold text-slate-800 mb-8">ختم واعتماد المكتب العقاري</p>
+                                    <p class="text-emerald-700 font-bold">معتمد إلكترونياً — {{ $office->name }} ✔</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="overflow-x-auto rounded-2xl border border-slate-200">
-                        <table class="w-full text-xs text-right" id="standaloneAccountStatementTable">
-                            <thead class="bg-slate-900 text-white">
-                                <tr>
-                                    <th class="py-3.5 px-4">التاريخ</th>
-                                    <th class="py-3.5 px-4">رقم السند / المرجع</th>
-                                    <th class="py-3.5 px-4">الحساب</th>
-                                    <th class="py-3.5 px-4">الطرف المرتبط</th>
-                                    <th class="py-3.5 px-4">البيان</th>
-                                    <th class="py-3.5 px-4 text-emerald-300">مدين (+)</th>
-                                    <th class="py-3.5 px-4 text-amber-300">دائن (-)</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-100">
-                                @foreach($vouchers as $v)
-                                    <tr class="sa-stmt-row hover:bg-slate-50"
-                                        data-date="{{ $v->voucher_date }}"
-                                        data-owner="{{ $v->owner_id ?? '' }}"
-                                        data-tenant="{{ $v->tenant_id ?? '' }}"
-                                        data-debit-acc="{{ $v->debit_account_id }}"
-                                        data-credit-acc="{{ $v->credit_account_id }}">
-                                        <td class="py-3 px-4 font-mono">{{ $v->voucher_date }}</td>
-                                        <td class="py-3 px-4 font-mono font-bold">{{ $v->voucher_number }}</td>
-                                        <td class="py-3 px-4 font-bold">{{ $v->debit_code }} - {{ $v->debit_name }} / {{ $v->credit_code }} - {{ $v->credit_name }}</td>
-                                        <td class="py-3 px-4 font-semibold">{{ $v->tenant_name ?: ($v->owner_name ?: 'عام للمكتب') }}</td>
-                                        <td class="py-3 px-4">{{ $v->notes }}</td>
-                                        <td class="py-3 px-4 font-mono font-bold text-emerald-700">{{ $v->voucher_type == 'receipt' ? number_format($v->amount, 2) : '0.00' }}</td>
-                                        <td class="py-3 px-4 font-mono font-bold text-amber-700">{{ $v->voucher_type == 'payment' ? number_format($v->amount, 2) : '0.00' }}</td>
+                    <!-- ========================================================= -->
+                    <!-- الوضع الثاني: جدول كشف الحركات العام (لأي حساب أو مستأجر) -->
+                    <!-- ========================================================= -->
+                    <div id="general_ledger_statement_view" class="hidden bg-white rounded-3xl border border-slate-200 p-6">
+                        <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                            <table class="w-full text-xs text-right" id="standaloneAccountStatementTable">
+                                <thead class="bg-slate-900 text-white">
+                                    <tr>
+                                        <th class="py-3.5 px-4">التاريخ</th>
+                                        <th class="py-3.5 px-4">رقم السند / المرجع</th>
+                                        <th class="py-3.5 px-4">الحساب</th>
+                                        <th class="py-3.5 px-4">الطرف المرتبط</th>
+                                        <th class="py-3.5 px-4">البيان</th>
+                                        <th class="py-3.5 px-4 text-emerald-300">مدين (+)</th>
+                                        <th class="py-3.5 px-4 text-amber-300">دائن (-)</th>
                                     </tr>
-                                @endforeach
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    @foreach($vouchers as $v)
+                                        <tr class="sa-stmt-row hover:bg-slate-50"
+                                            data-date="{{ $v->voucher_date }}"
+                                            data-owner="{{ $v->owner_id ?? '' }}"
+                                            data-tenant="{{ $v->tenant_id ?? '' }}"
+                                            data-debit-acc="{{ $v->debit_account_id }}"
+                                            data-credit-acc="{{ $v->credit_account_id }}">
+                                            <td class="py-3 px-4 font-mono">{{ $v->voucher_date }}</td>
+                                            <td class="py-3 px-4 font-mono font-bold">{{ $v->voucher_number }}</td>
+                                            <td class="py-3 px-4 font-bold">{{ $v->debit_code }} - {{ $v->debit_name }} / {{ $v->credit_code }} - {{ $v->credit_name }}</td>
+                                            <td class="py-3 px-4 font-semibold">{{ $v->tenant_name ?: ($v->owner_name ?: 'عام للمكتب') }}</td>
+                                            <td class="py-3 px-4">{{ $v->notes }}</td>
+                                            <td class="py-3 px-4 font-mono font-bold text-emerald-700">{{ $v->voucher_type == 'receipt' ? number_format($v->amount, 2) : '0.00' }}</td>
+                                            <td class="py-3 px-4 font-mono font-bold text-amber-700">{{ $v->voucher_type == 'payment' ? number_format($v->amount, 2) : '0.00' }}</td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
+
                 <script>
+                    const settlementOwnersData = @json($owners ?? []);
+                    const settlementPropsData = @json($properties ?? []);
+                    const settlementUnitsData = @json($units ?? []);
+                    const settlementContractsData = @json($contracts ?? []);
+                    const settlementVouchersData = @json($vouchers ?? []);
+
+                    const cycleLabelsAr = {
+                        'monthly': 'شهري',
+                        'quarterly': 'ربع سنوي',
+                        'semi_annual': 'نصف سنوي',
+                        'annual': 'سنوي'
+                    };
+
+                    function formatMoneySAR(num) {
+                        return Number(num || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    }
+
+                    function switchStatementMode(mode) {
+                        const isOwnerMode = (mode === 'owner_settlement');
+                        document.getElementById('owner_settlement_view').classList.toggle('hidden', !isOwnerMode);
+                        document.getElementById('owner_settlement_filters').classList.toggle('hidden', !isOwnerMode);
+                        document.getElementById('general_ledger_statement_view').classList.toggle('hidden', isOwnerMode);
+                        document.getElementById('general_statement_filters').classList.toggle('hidden', isOwnerMode);
+
+                        document.getElementById('btn_mode_owner_settlement').className = isOwnerMode
+                            ? 'px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold transition'
+                            : 'px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 text-xs font-bold transition';
+                        document.getElementById('btn_mode_general_ledger').className = !isOwnerMode
+                            ? 'px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold transition'
+                            : 'px-4 py-2.5 rounded-xl bg-slate-100 text-slate-700 hover:bg-slate-200 text-xs font-bold transition';
+                    }
+
+                    function setSettlementFullYear() {
+                        const y = new Date().getFullYear();
+                        document.getElementById('settle_from_date').value = y + '-01-01';
+                        document.getElementById('settle_to_date').value = y + '-12-31';
+                        renderOwnerSettlementReport();
+                    }
+
+                    function onSettlementOwnerChange() {
+                        const ownerId = String(document.getElementById('settle_owner_id')?.value || '');
+                        const propSel = document.getElementById('settle_property_id');
+                        if (propSel) {
+                            Array.from(propSel.options).forEach(opt => {
+                                if (!opt.value) { opt.hidden = false; return; }
+                                opt.hidden = (ownerId && String(opt.getAttribute('data-owner')) !== ownerId);
+                            });
+                            propSel.value = '';
+                            propSel.dispatchEvent(new Event('change'));
+                        }
+                        renderOwnerSettlementReport();
+                    }
+
+                    function renderOwnerSettlementReport() {
+                        const ownerId = String(document.getElementById('settle_owner_id')?.value || '');
+                        const propId = String(document.getElementById('settle_property_id')?.value || '');
+                        const fromDate = document.getElementById('settle_from_date')?.value || '';
+                        const toDate = document.getElementById('settle_to_date')?.value || '';
+
+                        const emptyPrompt = document.getElementById('settlement_empty_prompt');
+                        const printArea = document.getElementById('ownerSettlementPrintableArea');
+
+                        if (!ownerId) {
+                            emptyPrompt.classList.remove('hidden');
+                            printArea.classList.add('hidden');
+                            return;
+                        }
+
+                        const owner = settlementOwnersData.find(o => String(o.id) === ownerId);
+                        if (!owner) return;
+
+                        emptyPrompt.classList.add('hidden');
+                        printArea.classList.remove('hidden');
+
+                        const feeRate = parseFloat(owner.office_management_fee_rate || 5);
+                        document.getElementById('rep_owner_name').innerText = owner.name;
+                        document.getElementById('rep_owner_id_phone').innerText = (owner.national_id || '-') + ' | ' + (owner.phone || '-');
+                        document.getElementById('rep_owner_iban').innerText = (owner.bank_name ? owner.bank_name + ' - ' : '') + (owner.iban || 'غير مسجل');
+                        document.getElementById('rep_fee_rate').innerText = feeRate + '%';
+                        document.getElementById('rep_period_label').innerText = 'الفترة: ' + (fromDate || 'البداية') + ' إلى ' + (toDate || 'اليوم');
+
+                        const selectedPropObj = propId ? settlementPropsData.find(p => String(p.id) === propId) : null;
+                        document.getElementById('rep_property_scope').innerText = selectedPropObj ? selectedPropObj.title : 'جميع عقارات المالك';
+
+                        // 1. فلترة عقارات ووحدات وعقود المالك
+                        const ownerProps = settlementPropsData.filter(p => String(p.owner_id) === ownerId && (!propId || String(p.id) === propId));
+                        const ownerPropIds = ownerProps.map(p => String(p.id));
+                        const ownerUnits = settlementUnitsData.filter(u => ownerPropIds.includes(String(u.property_id)));
+                        const vacantCount = ownerUnits.filter(u => u.status === 'vacant').length;
+                        document.getElementById('rep_vacant_units_badge').innerText =
+                            `إجمالي العقارات: ${ownerProps.length} | الوحدات الشاغرة حالياً: ${vacantCount}`;
+
+                        const ownerContracts = settlementContractsData.filter(c => {
+                            if (String(c.owner_id) !== ownerId) return false;
+                            if (propId && String(c.property_id) !== propId) return false;
+                            return true;
+                        });
+
+                        const ownerTenantIds = ownerContracts.map(c => String(c.tenant_id));
+
+                        // 2. فلترة سندات المالك ضمن الفترة الزمنية (سواء رُبطت بالمالك مباشرة أو بمستأجر لدى هذا المالك)
+                        const periodVouchers = settlementVouchersData.filter(v => {
+                            const vDate = v.voucher_date || '';
+                            if (fromDate && vDate < fromDate) return false;
+                            if (toDate && vDate > toDate) return false;
+
+                            const matchOwner = String(v.owner_id || '') === ownerId;
+                            const matchTenantOfOwner = !v.owner_id && v.tenant_id && ownerTenantIds.includes(String(v.tenant_id));
+
+                            if (!matchOwner && !matchTenantOfOwner) return false;
+
+                            if (propId && v.tenant_id) {
+                                const hasContractInProp = ownerContracts.some(c => String(c.tenant_id) === String(v.tenant_id) && String(c.property_id) === propId);
+                                if (!hasContractInProp) return false;
+                            }
+                            return true;
+                        });
+
+                        // 3. بناء جدول العقود وحساب المسدد والمتأخر لكل مستأجر
+                        let totalContractsRent = 0;
+                        let totalCollectedFromContracts = 0;
+                        let totalOverdueRent = 0;
+
+                        const contractsTbody = document.getElementById('rep_contracts_tbody');
+                        contractsTbody.innerHTML = '';
+
+                        if (ownerContracts.length === 0) {
+                            contractsTbody.innerHTML = `<tr><td colspan="8" class="py-6 text-center text-slate-400">لا توجد عقود إيجار مسجلة لهذا المالك ضمن النطاق المحدد.</td></tr>`;
+                        } else {
+                            ownerContracts.forEach(c => {
+                                const rentVal = parseFloat(c.total_rent_amount || 0);
+                                totalContractsRent += rentVal;
+
+                                // مجموع سندات القبض لهذا المستأجر خلال الفترة
+                                const paidByTenant = periodVouchers
+                                    .filter(v => v.voucher_type === 'receipt' && String(v.tenant_id || '') === String(c.tenant_id))
+                                    .reduce((sum, v) => sum + parseFloat(v.amount || 0), 0);
+
+                                const remaining = Math.max(0, rentVal - paidByTenant);
+                                totalOverdueRent += remaining;
+
+                                let statusBadge = '';
+                                if (remaining <= 0.01 && rentVal > 0) {
+                                    statusBadge = `<span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold text-[11px]">✅ مسدد بالكامل</span>`;
+                                } else if (paidByTenant > 0) {
+                                    statusBadge = `<span class="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 font-bold text-[11px]">⚠️ متأخر جزئياً</span>`;
+                                } else {
+                                    statusBadge = `<span class="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 font-bold text-[11px]">🚨 لم يسدد (متأخر)</span>`;
+                                }
+
+                                const tr = document.createElement('tr');
+                                tr.className = 'hover:bg-slate-50';
+                                tr.innerHTML = `
+                                    <td class="py-3 px-3 font-mono font-bold">${c.contract_number}</td>
+                                    <td class="py-3 px-3 font-bold">${c.property_title} ${c.unit_number ? '<span class="text-emerald-700">(وحدة ' + c.unit_number + ')</span>' : ''}</td>
+                                    <td class="py-3 px-3">
+                                        <div class="font-bold text-slate-900">${c.tenant_name}</div>
+                                        <div class="font-mono text-[10px] text-slate-500" dir="ltr">${c.tenant_phone || ''}</div>
+                                    </td>
+                                    <td class="py-3 px-3 text-[11px]">
+                                        <div class="font-mono">${c.start_date} ← ${c.end_date}</div>
+                                        <span class="text-slate-500">الدورة: ${cycleLabelsAr[c.payment_cycle] || c.payment_cycle}</span>
+                                    </td>
+                                    <td class="py-3 px-3 font-mono font-bold">${formatMoneySAR(rentVal)}</td>
+                                    <td class="py-3 px-3 font-mono font-extrabold text-emerald-700 bg-emerald-50/50">${formatMoneySAR(paidByTenant)}</td>
+                                    <td class="py-3 px-3 font-mono font-extrabold ${remaining > 0 ? 'text-rose-600 bg-rose-50/50' : 'text-slate-400'}">${formatMoneySAR(remaining)}</td>
+                                    <td class="py-3 px-3 text-center">${statusBadge}</td>
+                                `;
+                                contractsTbody.appendChild(tr);
+                            });
+                        }
+
+                        // 4. بناء جدول السندات وحساب إجمالي المقبوضات والمصروفات الفعلية
+                        const totalReceiptsPeriod = periodVouchers
+                            .filter(v => v.voucher_type === 'receipt')
+                            .reduce((sum, v) => sum + parseFloat(v.amount || 0), 0);
+
+                        const totalPaymentsPeriod = periodVouchers
+                            .filter(v => v.voucher_type === 'payment')
+                            .reduce((sum, v) => sum + parseFloat(v.amount || 0), 0);
+
+                        const officeCommissionAmount = (totalReceiptsPeriod * feeRate) / 100;
+                        const netDueToOwner = totalReceiptsPeriod - officeCommissionAmount - totalPaymentsPeriod;
+
+                        document.getElementById('rep_total_contract_rent').innerText = formatMoneySAR(totalContractsRent);
+                        document.getElementById('rep_collected_rent').innerText = formatMoneySAR(totalReceiptsPeriod);
+                        document.getElementById('rep_overdue_rent').innerText = formatMoneySAR(totalOverdueRent);
+                        document.getElementById('rep_office_commission').innerText = formatMoneySAR(officeCommissionAmount);
+                        document.getElementById('rep_expenses_paid').innerText = formatMoneySAR(totalPaymentsPeriod);
+                        document.getElementById('rep_net_due_owner').innerText = formatMoneySAR(netDueToOwner) + ' ر.س';
+
+                        const vouchersTbody = document.getElementById('rep_vouchers_tbody');
+                        vouchersTbody.innerHTML = '';
+
+                        if (periodVouchers.length === 0) {
+                            vouchersTbody.innerHTML = `<tr><td colspan="8" class="py-6 text-center text-slate-400">لا توجد سندات قبض أو صرف مسجلة خلال هذه الفترة.</td></tr>`;
+                        } else {
+                            periodVouchers.forEach(v => {
+                                const isRec = v.voucher_type === 'receipt';
+                                const tr = document.createElement('tr');
+                                tr.className = 'hover:bg-slate-50';
+                                tr.innerHTML = `
+                                    <td class="py-2.5 px-3 font-mono">${v.voucher_date}</td>
+                                    <td class="py-2.5 px-3 font-mono font-bold">${v.voucher_number}</td>
+                                    <td class="py-2.5 px-3">
+                                        <span class="px-2 py-0.5 rounded font-bold text-[10px] ${isRec ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">
+                                            ${isRec ? 'سند قبض إيجار' : 'سند صرف / تحويل'}
+                                        </span>
+                                    </td>
+                                    <td class="py-2.5 px-3 font-bold">${v.tenant_name || v.owner_name || '-'}</td>
+                                    <td class="py-2.5 px-3">${v.payment_method || '-'}</td>
+                                    <td class="py-2.5 px-3">${v.notes || '-'}</td>
+                                    <td class="py-2.5 px-3 font-mono font-bold text-emerald-700">${isRec ? formatMoneySAR(v.amount) : '-'}</td>
+                                    <td class="py-2.5 px-3 font-mono font-bold text-rose-600">${!isRec ? formatMoneySAR(v.amount) : '-'}</td>
+                                `;
+                                vouchersTbody.appendChild(tr);
+                            });
+                        }
+                    }
+
+                    function downloadOwnerSettlementPDF() {
+                        const printArea = document.getElementById('ownerSettlementPrintableArea');
+                        if (!printArea || printArea.classList.contains('hidden')) {
+                            alert('يرجى اختيار المالك أولاً لعرض برنت التصفية ثم تصديره.');
+                            return;
+                        }
+                        const ownerName = document.getElementById('rep_owner_name')?.innerText || 'Owner';
+                        html2pdf().set({
+                            margin: 8,
+                            filename: 'تصفية_حساب_' + ownerName + '.pdf',
+                            image: { type: 'jpeg', quality: 0.98 },
+                            html2canvas: { scale: 2, useCORS: true },
+                            jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+                        }).from(printArea).save();
+                    }
+
+                    function printOwnerSettlementArea() {
+                        const printArea = document.getElementById('ownerSettlementPrintableArea');
+                        if (!printArea || printArea.classList.contains('hidden')) {
+                            window.print();
+                            return;
+                        }
+                        const origId = printArea.id;
+                        const prevPrintable = document.getElementById('printableVoucherArea');
+                        if (prevPrintable) prevPrintable.id = 'temp_old_printable';
+                        printArea.id = 'printableVoucherArea';
+                        window.print();
+                        printArea.id = origId;
+                        if (prevPrintable) prevPrintable.id = 'printableVoucherArea';
+                    }
+
                     function filterStandaloneStatement() {
                         const acc = document.getElementById('sa_acc_filter')?.value || '';
                         const party = document.getElementById('sa_party_filter')?.value || '';

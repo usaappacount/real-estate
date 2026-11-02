@@ -996,15 +996,33 @@ class OfficeErpController extends Controller
         $officeId = $this->getCurrentOfficeId();
         $voucherNumber = CompanyErpController::generateNextVoucherNumber($request->voucher_type, $officeId);
 
-        DB::transaction(function () use ($request, $officeId, $voucherNumber) {
+        // ذكاء تلقائي: إذا اختار المحاسب المستأجر ولم يحدد المالك، نجلب المالك والعقد تلقائياً من جدول العقود
+        $ownerId = $request->owner_id ?: null;
+        $tenantId = $request->tenant_id ?: null;
+        $contractId = $request->lease_contract_id ?: null;
+
+        if ($tenantId && !$ownerId) {
+            $activeContract = DB::table('lease_contracts')
+                ->where('office_id', $officeId)
+                ->where('tenant_id', $tenantId)
+                ->orderBy('id', 'desc')
+                ->first();
+            if ($activeContract) {
+                $ownerId = $activeContract->owner_id;
+                $contractId = $contractId ?: $activeContract->id;
+            }
+        }
+
+        DB::transaction(function () use ($request, $officeId, $voucherNumber, $ownerId, $tenantId, $contractId) {
             DB::table('vouchers')->insert([
                 'voucher_number' => $voucherNumber,
                 'voucher_type' => $request->voucher_type,
                 'office_id' => $officeId,
                 'debit_account_id' => $request->debit_account_id,
                 'credit_account_id' => $request->credit_account_id,
-                'owner_id' => $request->owner_id ?: null,
-                'tenant_id' => $request->tenant_id ?: null,
+                'owner_id' => $ownerId,
+                'tenant_id' => $tenantId,
+                'lease_contract_id' => $contractId,
                 'amount' => $request->amount,
                 'payment_method' => CompanyErpController::normalizeVoucherPaymentMethod($request->payment_method),
                 'voucher_date' => $request->voucher_date ?: date('Y-m-d'),
@@ -1024,7 +1042,7 @@ class OfficeErpController extends Controller
         }
 
         return redirect()->route('office.dashboard', ['tab' => 'vouchers'])
-            ->with('success', 'تم إصدار السند الرسمي للمكتب رقم (' . $voucherNumber . ') وترحيل القيد بنجاح.');
+            ->with('success', 'تم إصدار السند الرسمي للمكتب رقم (' . $voucherNumber . ') وربطه بالمالك وترحيل القيد بنجاح.');
     }
 
     public function updateOfficeVoucher(Request $request, $id)
