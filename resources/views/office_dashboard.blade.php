@@ -409,10 +409,16 @@
                             </thead>
                             <tbody id="ownersTableBody" class="divide-y divide-slate-100">
                                 @forelse($owners as $owner)
+                                    @php $ownerVouchersCount = $vouchers->where('owner_id', $owner->id)->count(); @endphp
                                     <tr class="hover:bg-slate-50/80 transition">
                                         <td class="py-4 px-5">
-                                            <div class="font-bold text-slate-900">{{ $owner->name }}</div>
-                                            <div class="text-xs text-slate-400 font-mono">هوية: {{ $owner->national_id }}</div>
+                                            <button type="button" onclick="openModal('ownerStatementModal_{{ $owner->id }}')" class="text-right group focus:outline-none">
+                                                <div class="font-bold text-emerald-700 group-hover:text-emerald-900 underline flex items-center gap-1.5">
+                                                    <span>👑 {{ $owner->name }}</span>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">كشف الحساب ({{ $ownerVouchersCount }})</span>
+                                                </div>
+                                                <div class="text-xs text-slate-400 font-mono mt-0.5">هوية: {{ $owner->national_id }} | اضغط لعرض وتحميل كشف الحساب</div>
+                                            </button>
                                         </td>
                                         <td class="py-4 px-5">
                                             <div class="font-mono text-xs font-bold text-emerald-700" dir="ltr">{{ $owner->phone }}</div>
@@ -518,6 +524,122 @@
                             </form>
                         </div>
                     </div>
+
+                    <!-- نافذة كشف حساب المالك عند الضغط على اسمه -->
+                    @php
+                        $owVouchers = $vouchers->where('owner_id', $owner->id);
+                        $owRec = $owVouchers->where('voucher_type', 'receipt')->sum('amount');
+                        $owPay = $owVouchers->where('voucher_type', 'payment')->sum('amount');
+                        $owComm = ($owRec * ($owner->office_management_fee_rate ?? 5)) / 100;
+                        $owNet = $owRec - $owComm - $owPay;
+                    @endphp
+                    <div id="ownerStatementModal_{{ $owner->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+                            <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-100">
+                                <div>
+                                    <h3 class="font-bold text-base text-slate-900">👑 كشف حساب المالك: <span class="text-emerald-700">{{ $owner->name }}</span></h3>
+                                    <p class="text-xs text-slate-500 font-mono mt-0.5">هوية: {{ $owner->national_id }} | جوال: {{ $owner->phone }} | آيبان: {{ $owner->iban ?: '-' }}</p>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" onclick="exportElementToPDF('ownerStmtPrintArea_{{ $owner->id }}', 'كشف_حساب_المالك_{{ $owner->name }}.pdf')"
+                                            class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                                        📥 تحميل الكشف PDF
+                                    </button>
+                                    <button type="button" onclick="exportTableToCSV('ownerStmtTable_{{ $owner->id }}', 'كشف_حساب_المالك_{{ $owner->name }}.xlsx')"
+                                            class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                        📊 تصدير الكشف Excel
+                                    </button>
+                                    <button type="button" onclick="closeModal('ownerStatementModal_{{ $owner->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                                </div>
+                            </div>
+
+                            <div id="ownerStmtPrintArea_{{ $owner->id }}" class="overflow-y-auto flex-1 space-y-4 p-3 bg-white">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                                    <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                                        <div class="text-[11px] text-emerald-800 font-bold">إجمالي الإيجارات المحصلة (+)</div>
+                                        <div class="text-base font-extrabold text-emerald-700 font-mono mt-1">{{ number_format($owRec, 2) }} ر.س</div>
+                                    </div>
+                                    <div class="p-3 rounded-xl bg-amber-50 border border-amber-200">
+                                        <div class="text-[11px] text-amber-900 font-bold">عمولة المكتب ({{ $owner->office_management_fee_rate }}%)</div>
+                                        <div class="text-base font-extrabold text-amber-800 font-mono mt-1">{{ number_format($owComm, 2) }} ر.س</div>
+                                    </div>
+                                    <div class="p-3 rounded-xl bg-rose-50 border border-rose-200">
+                                        <div class="text-[11px] text-rose-800 font-bold">سندات الصرف والتحويلات (-)</div>
+                                        <div class="text-base font-extrabold text-rose-700 font-mono mt-1">{{ number_format($owPay, 2) }} ر.س</div>
+                                    </div>
+                                    <div class="p-3 rounded-xl bg-slate-900 text-white">
+                                        <div class="text-[11px] text-emerald-300 font-bold">الصافي المستحق للمالك</div>
+                                        <div class="text-base font-extrabold text-white font-mono mt-1">{{ number_format($owNet, 2) }} ر.س</div>
+                                    </div>
+                                </div>
+
+                                <table class="w-full text-xs text-right border rounded-xl overflow-hidden" id="ownerStmtTable_{{ $owner->id }}">
+                                    <thead class="bg-slate-100 text-slate-700 border-b">
+                                        <tr>
+                                            <th class="py-3 px-3">رقم السند</th>
+                                            <th class="py-3 px-3">التاريخ</th>
+                                            <th class="py-3 px-3">النوع</th>
+                                            <th class="py-3 px-3">المستأجر المرتبط</th>
+                                            <th class="py-3 px-3">طريقة الدفع</th>
+                                            <th class="py-3 px-3">البيان</th>
+                                            <th class="py-3 px-3">المبلغ</th>
+                                            <th class="py-3 px-3 text-center">تحميل السند</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        @forelse($owVouchers as $ov)
+                                            @php $ovPmAr = \App\Http\Controllers\CompanyErpController::translatePaymentMethod($ov->payment_method); @endphp
+                                            <tr class="hover:bg-slate-50">
+                                                <td class="py-2.5 px-3 font-mono font-bold">{{ $ov->voucher_number }}</td>
+                                                <td class="py-2.5 px-3 font-mono">{{ $ov->voucher_date }}</td>
+                                                <td class="py-2.5 px-3">
+                                                    @if($ov->voucher_type == 'receipt')
+                                                        <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">قبض إيجار</span>
+                                                    @else
+                                                        <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">صرف / تحويل</span>
+                                                    @endif
+                                                </td>
+                                                <td class="py-2.5 px-3 font-bold">{{ $ov->tenant_name ?: '-' }}</td>
+                                                <td class="py-2.5 px-3">{{ $ovPmAr }}</td>
+                                                <td class="py-2.5 px-3">{{ $ov->notes }}</td>
+                                                <td class="py-2.5 px-3 font-mono font-bold {{ $ov->voucher_type == 'receipt' ? 'text-emerald-700' : 'text-rose-600' }}">{{ number_format($ov->amount, 2) }} ر.س</td>
+                                                <td class="py-2.5 px-3 text-center">
+                                                    <div class="flex items-center justify-center gap-1">
+                                                        <button type="button"
+                                                                onclick="directDownloadSingleVoucherPDF({
+                                                                    number: '{{ $ov->voucher_number }}',
+                                                                    type: '{{ $ov->voucher_type }}',
+                                                                    amount: '{{ number_format($ov->amount, 2) }}',
+                                                                    date: '{{ $ov->voucher_date }}',
+                                                                    party: '{{ addslashes($ov->tenant_name ?: $owner->name) }}',
+                                                                    payment_method: '{{ addslashes($ovPmAr) }}',
+                                                                    notes: '{{ addslashes($ov->notes) }}',
+                                                                    issuer: '{{ addslashes($office->name) }}'
+                                                                })"
+                                                                class="px-2 py-1 rounded bg-slate-900 text-white text-[10px] font-bold">PDF</button>
+                                                        <button type="button"
+                                                                onclick="directDownloadSingleVoucherExcel({
+                                                                    number: '{{ $ov->voucher_number }}',
+                                                                    type: '{{ $ov->voucher_type == 'receipt' ? 'سند قبض' : 'سند صرف' }}',
+                                                                    amount: '{{ number_format($ov->amount, 2) }}',
+                                                                    date: '{{ $ov->voucher_date }}',
+                                                                    party: '{{ addslashes($ov->tenant_name ?: $owner->name) }}',
+                                                                    payment_method: '{{ addslashes($ovPmAr) }}',
+                                                                    notes: '{{ addslashes($ov->notes) }}',
+                                                                    issuer: '{{ addslashes($office->name) }}'
+                                                                })"
+                                                                class="px-2 py-1 rounded bg-emerald-600 text-white text-[10px] font-bold">Excel</button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        @empty
+                                            <tr><td colspan="8" class="py-8 text-center text-slate-400">لا توجد سندات مسجلة لهذا المالك حتى الآن.</td></tr>
+                                        @endforelse
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 @endforeach
 
                 <!-- نافذة إضافة مالك جديد -->
@@ -606,30 +728,81 @@
                 </div>
             @endif
 
-            <!-- 3. تبويب العقارات والصكوك والوحدات (جدول مرتب + أزرار الإضافة) -->
+           <!-- 3. تبويب العقارات والصكوك والوحدات (مع فلتر الشواغر وتصدير PDF عام وتفصيلي ZIP) -->
             @if($tab == 'properties')
                 <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
                     <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
                         <div>
                             <h3 class="font-bold text-base text-slate-900">سجل العقارات والصكوك والوحدات التابعة لها</h3>
-                            <p class="text-xs text-slate-500 mt-0.5">جميع الصكوك والعقارات المسجلة بالمكتب مع إمكانية استعراض وإضافة الوحدات الداخلية والمرفقات</p>
+                            <p class="text-xs text-slate-500 mt-0.5">يمكنك فلترة العقارات التي بها وحدات شاغرة فقط وتصديرها كجدول PDF عام أو ملف مضغوط (ZIP) يضم ملف PDF مستقل لكل عمارة</p>
                         </div>
 
-                        <div class="flex items-center gap-3 flex-1 max-w-md">
-                            <input type="text" id="officePropertySearch" oninput="filterTableRows('officePropertySearch', 'officePropertiesTableBody')"
-                                   placeholder="🔍 ابحث بمسمى العقار، رقم الصك، المالك، أو الحي..."
+                        <div class="flex items-center gap-2 flex-1 max-w-sm">
+                            <input type="text" id="officePropertySearch" oninput="filterOfficePropertiesAdvanced()"
+                                   placeholder="🔍 ابحث بمسمى العقار، الصك، المالك، أو الحي..."
                                    class="w-full rounded-2xl border border-slate-300 px-4 py-2.5 text-xs focus:outline-none focus:border-emerald-600">
                         </div>
 
-                        <button type="button" onclick="openModal('addPropertyModal')"
-                                class="px-5 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/20 flex items-center gap-2 transition">
-                            <span>➕</span>
-                            <span>إضافة عقار وصك جديد</span>
-                        </button>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <!-- زر فلترة الوحدات الشاغرة فقط -->
+                            <button type="button" id="btnToggleVacantFilter" onclick="toggleVacantPropertiesOnly()"
+                                    class="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition flex items-center gap-1.5 border border-slate-300">
+                                <span id="vacantFilterIcon">🏢</span>
+                                <span id="vacantFilterText">عرض العقارات ذات الوحدات الشاغرة فقط</span>
+                            </button>
+
+                            <!-- زر خيارات تصدير PDF (عام / تفصيلي ZIP) -->
+                            <button type="button" onclick="openModal('propertiesPdfExportChoiceModal')"
+                                    class="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold transition flex items-center gap-1.5">
+                                <span>📥 تصدير PDF (عام / تفصيلي ZIP)</span>
+                            </button>
+
+                            <!-- زر تصدير إكسل -->
+                            <button type="button" onclick="exportTableToCSV('officePropertiesMainTable', 'سجل_العقارات_والوحدات.xlsx')"
+                                    class="px-3.5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition">
+                                📊 Excel
+                            </button>
+
+                            <button type="button" onclick="openModal('addPropertyModal')"
+                                    class="px-5 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-lg flex items-center gap-2 transition">
+                                <span>➕ إضافة عقار وصك</span>
+                            </button>
+                        </div>
                     </div>
 
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-sm text-right">
+                    <!-- نافذة اختيار نوع تصدير PDF للعقارات (PDF عام أو ZIP تفصيلي لكل عمارة) -->
+                    <div id="propertiesPdfExportChoiceModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+                            <div class="flex items-center justify-between border-b pb-3">
+                                <h3 class="font-bold text-base text-slate-900">📥 اختر نوع تصدير تقرير العقارات والوحدات المتاحة</h3>
+                                <button type="button" onclick="closeModal('propertiesPdfExportChoiceModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <p class="text-xs text-slate-500">ملاحظة: إذا قمت بتفعيل زر (عرض العقارات ذات الوحدات الشاغرة فقط) فسيتم تصدير العقارات والوحدات المتاحة فقط.</p>
+
+                            <div id="zipExportProgressBox" class="hidden p-4 rounded-2xl bg-amber-50 border border-amber-200 text-center space-y-2">
+                                <div class="text-xs font-bold text-amber-900" id="zipExportProgressText">⏳ جاري توليد ملفات الـ PDF المنفصلة لكل عمارة وضغطها في ملف ZIP...</div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <button type="button" onclick="exportGeneralPropertiesPDF()"
+                                        class="p-4 rounded-2xl bg-slate-50 hover:bg-slate-900 text-slate-900 hover:text-white border border-slate-200 text-right transition space-y-1">
+                                    <div class="text-xl">📄</div>
+                                    <div class="font-bold text-xs">1. تحميل PDF عام (جدول موحد)</div>
+                                    <div class="text-[11px] opacity-75">يصدّر جدول العقارات المعروضة حالياً في ملف PDF واحد شامل</div>
+                                </button>
+
+                                <button type="button" onclick="exportDetailedBuildingsZipPDF()"
+                                        class="p-4 rounded-2xl bg-emerald-50 hover:bg-emerald-600 text-emerald-950 hover:text-white border border-emerald-200 text-right transition space-y-1">
+                                    <div class="text-xl">🗂️</div>
+                                    <div class="font-bold text-xs">2. تحميل PDF تفصيلي (ملف مضغوط ZIP)</div>
+                                    <div class="text-[11px] opacity-75">يولّد ملف PDF مستقل لكل عمارة مع جدول وحداتها الشاغرة ويجمعها في ملف ZIP واحد</div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto" id="officePropertiesPrintableWrap">
+                        <table class="w-full text-sm text-right" id="officePropertiesMainTable">
                             <thead class="bg-slate-50 text-slate-600 text-xs border-b border-slate-200/80">
                                 <tr>
                                     <th class="py-4 px-4">#</th>
@@ -638,7 +811,7 @@
                                     <th class="py-4 px-4">رقم الصك والمساحة</th>
                                     <th class="py-4 px-4">العنوان الوطني</th>
                                     <th class="py-4 px-4">المواصفات والمرفقات</th>
-                                    <th class="py-4 px-4 text-center">الوحدات الداخلية</th>
+                                    <th class="py-4 px-4 text-center">الوحدات الداخلية (والشاغر)</th>
                                     <th class="py-4 px-4 text-center">إجراءات</th>
                                 </tr>
                             </thead>
@@ -646,9 +819,20 @@
                                 @forelse($properties as $idx => $prop)
                                     @php
                                         $propUnits = $units->where('property_id', $prop->id);
+                                        $vacantUnitsList = $propUnits->where('status', 'vacant')->values();
+                                        $vacantCount = $vacantUnitsList->count();
                                         $savedAttrs = json_decode($prop->custom_attributes ?? '{}', true) ?: [];
                                     @endphp
-                                    <tr class="hover:bg-slate-50/90 transition">
+                                    <tr class="hover:bg-slate-50/90 transition office-prop-row"
+                                        data-prop-id="{{ $prop->id }}"
+                                        data-prop-title="{{ $prop->title }}"
+                                        data-prop-type="{{ $prop->type_name }}"
+                                        data-prop-owner="{{ $prop->owner_name }}"
+                                        data-prop-deed="{{ $prop->deed_number }}"
+                                        data-prop-area="{{ number_format($prop->total_area, 0) }}"
+                                        data-prop-address="{{ $prop->city }} - {{ $prop->district }} {{ $prop->street }}"
+                                        data-vacant-count="{{ $vacantCount }}"
+                                        data-vacant-units='@json($vacantUnitsList)'>
                                         <td class="py-4 px-4 font-mono text-xs text-slate-400 font-bold">{{ $idx + 1 }}</td>
                                         <td class="py-4 px-4">
                                             <div class="font-bold text-slate-900">{{ $prop->title }}</div>
@@ -2841,12 +3025,12 @@
                         <div class="flex items-center justify-between pb-4 border-b mb-4">
                             <h3 class="font-bold text-base text-slate-900">معاينة الفاتورة الضريبية الإلكترونية</h3>
                             <div class="flex items-center gap-2">
-                                <button type="button" onclick="downloadOfficeTaxInvoicePDF()" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📥 تحميل PDF</button>
-                                <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">🖨️ طباعة</button>
+                                <button type="button" onclick="exportElementToPDF('officeTaxInvoicePrintArea', (window.currentOfficeInvoiceNo || 'Office_Tax_Invoice') + '.pdf')" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">📥 تحميل PDF</button>
+                                <button type="button" onclick="exportCurrentTaxInvoiceExcel('oti')" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📊 تصدير Excel</button>
                                 <button type="button" onclick="closeModal('officeTaxInvoiceModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                             </div>
                         </div>
-                        <div id="printableVoucherArea" class="p-6 rounded-3xl border-2 border-slate-900 bg-white space-y-5 text-slate-900">
+                        <div id="officeTaxInvoicePrintArea" class="p-6 rounded-3xl border-2 border-slate-900 bg-white space-y-5 text-slate-900">
                             <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
                                 <div>
                                     <div id="oti_type" class="text-lg font-extrabold text-emerald-800">فاتورة ضريبية</div>
@@ -5213,128 +5397,201 @@
         }
     });
     </script>
-<!-- مكتبة SheetJS الرسمية لتصدير ملفات Excel الحقيقية المقسمة لأعمدة (.xlsx) + إصلاح PDF العربي -->
+    <!-- مكتبات Excel (.xlsx) وملفات الضغط (.zip) وإصلاح PDF العربي الشامل -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
-        /* إصلاح تقطيع وعكس الحروف العربية في مكتبة html2pdf */
+        /* إخفاء جميع أزرار الطباعة التقليدية في كل الصفحات والاكتفاء بـ PDF و Excel */
+        button[onclick*="window.print"],
+        button[onclick*="printOwnerSettlementArea"] {
+            display: none !important;
+        }
+
+        /* إصلاح الحروف العربية واتجاهها في جميع قوالب الـ PDF */
         #printableVoucherArea, #printableVoucherArea *,
+        #companyTaxInvoicePrintArea, #companyTaxInvoicePrintArea *,
+        #officeTaxInvoicePrintArea, #officeTaxInvoicePrintArea *,
         #ownerSettlementPrintableArea, #ownerSettlementPrintableArea *,
         #financialStatementPrintable, #financialStatementPrintable *,
+        [id^="officeStmtPrintArea_"], [id^="officeStmtPrintArea_"] *,
+        [id^="ownerStmtPrintArea_"], [id^="ownerStmtPrintArea_"] *,
         [id^="printableJournalArea_"], [id^="printableJournalArea_"] * {
             letter-spacing: 0px !important;
             word-spacing: normal !important;
             font-kerning: normal !important;
             font-variant-ligatures: normal !important;
-            text-rendering: geometricPrecision !important;
             direction: rtl !important;
         }
     </style>
+
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            // 1. ترقية محرك html2pdf ليطبع العربية بشكل متصل وصحيح 100% بدون عكس الحروف
-            if (window.html2pdf) {
-                const originalHtml2Pdf = window.html2pdf;
-                window.html2pdf = function () {
-                    const worker = originalHtml2Pdf();
-                    const origFrom = worker.from;
-                    worker.from = function (element) {
-                        if (element) {
-                            element.setAttribute('dir', 'rtl');
-                            element.style.letterSpacing = '0px';
-                            element.style.fontFamily = "'Readex Pro', 'Tahoma', 'Arial', sans-serif";
-                        }
-                        return origFrom.call(this, element);
-                    };
-                    const origSet = worker.set;
-                    worker.set = function (opt) {
-                        opt = opt || {};
-                        opt.html2canvas = Object.assign({
-                            scale: 2,
-                            useCORS: true,
-                            letterRendering: false,
-                            backgroundColor: '#ffffff',
-                            onclone: function (clonedDoc) {
-                                clonedDoc.documentElement.setAttribute('dir', 'rtl');
-                                clonedDoc.body.setAttribute('dir', 'rtl');
-                                const style = clonedDoc.createElement('style');
-                                style.innerHTML = '* { letter-spacing: 0px !important; font-variant-ligatures: normal !important; }';
-                                clonedDoc.head.appendChild(style);
-                            }
-                        }, opt.html2canvas || {});
-                        return origSet.call(this, opt);
-                    };
-                    return worker;
-                };
+        // دالة موحدة ومضمونة لتصدير أي عنصر أو جدول أو فاتورة أو أستاذ عام إلى PDF عربي سليم 100%
+        function exportElementToPDF(elementId, fileName, orientation = 'portrait') {
+            const el = document.getElementById(elementId);
+            if (!el) {
+                alert('العنصر المطلوب تصديره غير موجود.');
+                return;
             }
+            const cleanFileName = (fileName || 'Document.pdf').endsWith('.pdf') ? fileName : (fileName + '.pdf');
 
-            // 2. إضافة أزرار تصدير الإكسل تلقائياً في شريط أدوات السندات وكشوفات الملاك
-            document.querySelectorAll('button[onclick*="downloadVoucherPDF()"]').forEach(btn => {
-                if (!btn.parentElement.querySelector('.auto-voucher-excel-btn')) {
-                    const exBtn = document.createElement('button');
-                    exBtn.type = 'button';
-                    exBtn.className = 'auto-voucher-excel-btn px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold shadow';
-                    exBtn.innerHTML = '📊 تصدير Excel';
-                    exBtn.onclick = exportSingleVoucherToExcel;
-                    btn.parentElement.insertBefore(exBtn, btn.nextSibling);
+            const opt = {
+                margin: 8,
+                filename: cleanFileName,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: {
+                    scale: 2,
+                    useCORS: true,
+                    backgroundColor: '#ffffff',
+                    onclone: function (clonedDoc) {
+                        clonedDoc.documentElement.setAttribute('dir', 'rtl');
+                        clonedDoc.body.setAttribute('dir', 'rtl');
+                        // إخفاء عناصر البحث والفلاتر أثناء تصوير الـ PDF
+                        clonedDoc.querySelectorAll('.no-print').forEach(n => n.style.display = 'none');
+                        const st = clonedDoc.createElement('style');
+                        st.innerHTML = '* { letter-spacing: 0px !important; font-family: "Readex Pro", Tahoma, Arial, sans-serif !important; }';
+                        clonedDoc.head.appendChild(st);
+                    }
+                },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: orientation }
+            };
+            html2pdf().set(opt).from(el).save();
+        }
+
+        // إصلاح دوال PDF في الأستاذ العام والفواتير الضريبية والسندات
+        function exportStatementPDF() {
+            // تصدير القسم المفتوح حالياً في الأستاذ العام (الجدول التفصيلي أو البطاقات أو ميزان المراجعة أو قائمة الدخل)
+            const sections = ['ledger_view_section', 'cards_view_section', 'trial_view_section', 'income_view_section'];
+            let activeId = 'financialStatementPrintable';
+            for (const sId of sections) {
+                const sec = document.getElementById(sId);
+                if (sec && !sec.classList.contains('hidden')) {
+                    activeId = sId;
+                    break;
                 }
-            });
+            }
+            exportElementToPDF(activeId, 'تقرير_الأستاذ_العام_والقوائم_المالية.pdf', 'landscape');
+        }
 
-            document.querySelectorAll('button[onclick*="downloadOwnerSettlementPDF()"]').forEach(btn => {
-                if (!btn.parentElement.querySelector('.auto-settle-excel-btn')) {
-                    const exBtn = document.createElement('button');
-                    exBtn.type = 'button';
-                    exBtn.className = 'auto-settle-excel-btn px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold shadow';
-                    exBtn.innerHTML = '📊 تصدير برنت Excel (أعمدة)';
-                    exBtn.onclick = exportOwnerSettlementToExcel;
-                    btn.parentElement.insertBefore(exBtn, btn.nextSibling);
-                }
-            });
-        });
+        function downloadCompanyTaxInvoicePDF() {
+            exportElementToPDF('companyTaxInvoicePrintArea', (window.currentCompanyInvoiceNo || 'Tax_Invoice') + '.pdf', 'portrait');
+        }
 
-        // 3. تحويل دالة تصدير الجداول القديمة لتصدر ملف إكسل حقيقي (.xlsx) مقسم إلى أعمدة مستقلة
+        function downloadOfficeTaxInvoicePDF() {
+            exportElementToPDF('officeTaxInvoicePrintArea', (window.currentOfficeInvoiceNo || 'Office_Tax_Invoice') + '.pdf', 'portrait');
+        }
+
+        function downloadVoucherPDF() {
+            exportElementToPDF('printableVoucherArea', (window.currentVoucherNumber || 'Voucher') + '.pdf', 'portrait');
+        }
+
+        // تحميل مباشر لسند فردي كـ PDF من داخل كشف حساب المكتب أو كشف حساب المالك
+        function directDownloadSingleVoucherPDF(v) {
+            const tempDiv = document.createElement('div');
+            tempDiv.setAttribute('dir', 'rtl');
+            tempDiv.style.cssText = 'padding:28px; background:#ffffff; color:#0f172a; font-family:"Readex Pro",Tahoma,sans-serif; border:2px solid #0f172a; border-radius:16px; width:720px; letter-spacing:0px;';
+            const vTitle = (v.type === 'receipt') ? 'سند قبض رسمي (Receipt Voucher)' : 'سند صرف رسمي (Payment Voucher)';
+            tempDiv.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #0f172a; padding-bottom:14px; margin-bottom:18px;">
+                    <div>
+                        <div style="font-size:18px; font-weight:800;">${v.issuer || 'منظومة العقارات'}</div>
+                        <div style="font-size:12px; color:#64748b; margin-top:4px;">سند مالي رسمي معتمد إلكترونياً</div>
+                    </div>
+                    <div style="background:#0f172a; color:#ffffff; padding:8px 20px; border-radius:10px; text-align:center;">
+                        <div style="font-size:15px; font-weight:700;">${vTitle}</div>
+                        <div style="font-size:12px; color:#6ee7b7; font-family:monospace; margin-top:2px;">${v.number}</div>
+                    </div>
+                    <div style="font-size:12px; text-align:left;">
+                        <div>التاريخ: <b>${v.date}</b></div>
+                        <div style="margin-top:4px;">طريقة الدفع: <b>${v.payment_method || '-'}</b></div>
+                    </div>
+                </div>
+                <div style="background:#f8fafc; padding:14px; border-radius:10px; border:1px solid #cbd5e1; margin-bottom:14px;">
+                    <span style="font-size:12px; color:#475569;">المبلغ المعتمد بالريال السعودي:</span>
+                    <div style="font-size:22px; font-weight:800; color:#047857; margin-top:4px;">${v.amount} ر.س</div>
+                </div>
+                <div style="border:1px solid #e2e8f0; padding:12px; border-radius:10px; margin-bottom:10px; font-size:13px;">
+                    <span style="color:#64748b;">الطرف المرتبط (استلمنا من / صرفنا إلى):</span>
+                    <b style="margin-right:8px;">${v.party}</b>
+                </div>
+                <div style="border:1px solid #e2e8f0; padding:12px; border-radius:10px; margin-bottom:20px; font-size:13px;">
+                    <span style="color:#64748b;">وذلك عن (البيان والتفاصيل):</span>
+                    <b style="margin-right:8px;">${v.notes}</b>
+                </div>
+                <div style="display:flex; justify-content:space-between; text-align:center; font-size:12px; color:#475569; border-top:1px dashed #cbd5e1; padding-top:16px;">
+                    <div><b>المحاسب</b><br><br>....................</div>
+                    <div><b>المستلم</b><br><br>....................</div>
+                    <div><b>الختم والاعتماد</b><br><br><span style="color:#047857; font-weight:700;">معتمد إلكترونياً ✔</span></div>
+                </div>
+            `;
+            document.body.appendChild(tempDiv);
+            html2pdf().set({
+                margin: 10,
+                filename: (v.number || 'Voucher') + '.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            }).from(tempDiv).save().then(() => tempDiv.remove());
+        }
+
+        // تحميل مباشر لسند فردي كـ Excel مقسم لأعمدة
+        function directDownloadSingleVoucherExcel(v) {
+            const data = [
+                ['رقم السند', 'نوع السند', 'التاريخ', 'الطرف المرتبط', 'المبلغ (ر.س)', 'طريقة الدفع', 'البيان والتفاصيل', 'الجهة المصدرة'],
+                [v.number, v.type, v.date, v.party, v.amount, v.payment_method, v.notes, v.issuer]
+            ];
+            downloadMultiColumnsExcel(data, 'سند مالي', (v.number || 'Voucher') + '.xlsx');
+        }
+
+        // تصدير الفاتورة الضريبية المفتوحة إلى Excel مقسم لأعمدة
+        function exportCurrentTaxInvoiceExcel(prefix) {
+            const no = document.getElementById(prefix + '_number')?.innerText || 'Invoice';
+            const type = document.getElementById(prefix + '_type')?.innerText || '';
+            const date = document.getElementById(prefix + '_date')?.innerText || '';
+            const seller = document.getElementById(prefix + '_seller_name')?.innerText || '';
+            const sellerTax = document.getElementById(prefix + '_seller_tax')?.innerText || '';
+            const buyer = document.getElementById(prefix + '_buyer_name')?.innerText || '';
+            const buyerTax = document.getElementById(prefix + '_buyer_tax')?.innerText || '';
+            const desc = document.getElementById(prefix + '_desc')?.innerText || '';
+            const sub = document.getElementById(prefix + '_subtotal')?.innerText || '';
+            const vat = document.getElementById(prefix + '_vat')?.innerText || '';
+            const total = document.getElementById(prefix + '_total')?.innerText || '';
+
+            const rows = [
+                ['رقم الفاتورة', 'نوع الفاتورة', 'تاريخ الإصدار', 'المورّد (المُصدِر)', 'الرقم الضريبي للمورّد', 'العميل (المشتري)', 'الرقم الضريبي للعميل', 'البيان', 'المبلغ قبل الضريبة', 'قيمة الضريبة', 'الإجمالي شامل الضريبة'],
+                [no, type, date, seller, sellerTax, buyer, buyerTax, desc, sub, vat, total]
+            ];
+            downloadMultiColumnsExcel(rows, 'فاتورة ضريبية', no + '.xlsx');
+        }
+
+        // تحويل جميع جداول النظام إلى ملفات Excel حقيقية (.xlsx) مقسمة إلى أعمدة
         function exportTableToCSV(tableId, filename) {
             const table = document.getElementById(tableId);
             if (!table) {
                 alert('الجدول غير موجود للتصدير.');
                 return;
             }
-
             const cleanName = (filename || 'Report').replace(/\.csv$/i, '').replace(/\.xlsx$/i, '') + '.xlsx';
             const rowsData = [];
-            const rows = table.querySelectorAll('tr');
-
-            rows.forEach(row => {
+            table.querySelectorAll('tr').forEach(row => {
                 if (row.style.display === 'none') return;
                 const rowCells = [];
-                const cols = row.querySelectorAll('th, td');
-                cols.forEach(col => {
-                    // استبعاد عمود أزرار الإجراءات من ملف الإكسل ليكون نظيفاً
+                row.querySelectorAll('th, td').forEach(col => {
                     const txt = (col.innerText || '').replace(/\s+/g, ' ').trim();
-                    if (txt.includes('PDF / طباعة') || (txt.includes('تعديل') && txt.includes('حذف'))) {
-                        return;
-                    }
+                    if (txt.includes('PDF / طباعة') || txt.includes('تحميل السند') || (txt.includes('تعديل') && txt.includes('حذف'))) return;
                     rowCells.push(txt);
                 });
-                if (rowCells.length > 0) {
-                    rowsData.push(rowCells);
-                }
+                if (rowCells.length > 0) rowsData.push(rowCells);
             });
-
             downloadMultiColumnsExcel(rowsData, 'تقرير البيانات', cleanName);
         }
 
-        // دالة مساعدة لبناء ملف إكسل (.xlsx) منسق ومقسم لأعمدة مع ضبط عرض كل عمود واتجاه اليمين لليسار
         function downloadMultiColumnsExcel(aoaData, sheetTitle, fileName) {
             if (typeof XLSX === 'undefined') {
-                alert('جاري تحميل مكتبة الإكسل، يرجى المحاولة بعد ثانية.');
+                alert('يرجى الانتظار لحظة لتحميل مكتبة Excel.');
                 return;
             }
             const ws = XLSX.utils.aoa_to_sheet(aoaData);
-            // ضبط اتجاه الورقة من اليمين إلى اليسار (RTL)
-            if (!ws['!views']) ws['!views'] = [];
-            ws['!views'].push({ rightToLeft: true });
-
-            // ضبط عرض الأعمدة تلقائياً حسب طول النص في كل عمود
+            ws['!views'] = [{ rightToLeft: true }];
             const colWidths = [];
             aoaData.forEach(row => {
                 row.forEach((cell, colIdx) => {
@@ -5343,74 +5600,175 @@
                 });
             });
             ws['!cols'] = colWidths.map(w => ({ wch: w }));
-
             const wb = XLSX.utils.book_new();
             wb.Workbook = { Views: [{ RTL: true }] };
             XLSX.utils.book_append_sheet(wb, ws, sheetTitle.substring(0, 30));
             XLSX.writeFile(wb, fileName);
         }
 
-        // 4. تصدير السند الفردي (قبض / صرف) إلى ملف Excel مقسم لأعمدة
-        function exportSingleVoucherToExcel() {
-            const no = document.getElementById('pv_number')?.innerText || document.getElementById('pdf_voucher_no')?.innerText || 'Voucher';
-            const title = document.getElementById('pv_title')?.innerText || document.getElementById('pdf_voucher_title')?.innerText || 'سند مالي';
-            const date = document.getElementById('pv_date')?.innerText || document.getElementById('pdf_date')?.innerText || '';
-            const method = document.getElementById('pv_method')?.innerText || document.getElementById('pdf_method')?.innerText || '';
-            const amount = document.getElementById('pv_amount')?.innerText || document.getElementById('pdf_amount')?.innerText || '';
-            const party = document.getElementById('pv_party')?.innerText || document.getElementById('pdf_party')?.innerText || '';
-            const notes = document.getElementById('pv_notes')?.innerText || document.getElementById('pdf_notes')?.innerText || '';
-            const issuer = document.getElementById('pv_issuer')?.innerText || document.getElementById('pdf_issuer')?.innerText || '';
+        // =====================================================================
+        // فلتر الوحدات الشاغرة فقط + تصدير PDF العام وتصدير ZIP التفصيلي لكل عمارة
+        // =====================================================================
+        let showOnlyVacantProps = false;
 
-            const data = [
-                ['رقم السند', 'نوع السند', 'التاريخ', 'الطرف المرتبط (المستفيد / الدافع)', 'المبلغ (ر.س)', 'طريقة الدفع', 'البيان والتفاصيل', 'الجهة المصدرة'],
-                [no, title, date, party, amount, method, notes, issuer]
-            ];
-            downloadMultiColumnsExcel(data, 'بيانات السند', no + '.xlsx');
+        function toggleVacantPropertiesOnly() {
+            showOnlyVacantProps = !showOnlyVacantProps;
+            const btn = document.getElementById('btnToggleVacantFilter');
+            const txt = document.getElementById('vacantFilterText');
+            if (btn && txt) {
+                if (showOnlyVacantProps) {
+                    btn.className = 'px-4 py-2.5 rounded-2xl bg-emerald-600 text-white text-xs font-bold transition flex items-center gap-1.5 shadow';
+                    txt.innerText = '✔ معروض الآن: العقارات ذات الوحدات الشاغرة فقط (اضغط لإلغاء الفلتر)';
+                } else {
+                    btn.className = 'px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition flex items-center gap-1.5 border border-slate-300';
+                    txt.innerText = 'عرض العقارات ذات الوحدات الشاغرة فقط';
+                }
+            }
+            filterOfficePropertiesAdvanced();
         }
 
-        // 5. تصدير برنت تصفية حساب المالك الشامل إلى ملف Excel مقسم لأعمدة
-        function exportOwnerSettlementToExcel() {
-            const printArea = document.getElementById('ownerSettlementPrintableArea');
-            if (!printArea || printArea.classList.contains('hidden')) {
-                alert('يرجى اختيار المالك أولاً لعرض برنت التصفية ثم تصديره إلى إكسل.');
+        function filterOfficePropertiesAdvanced() {
+            const q = (document.getElementById('officePropertySearch')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('.office-prop-row').forEach(row => {
+                const textMatch = row.innerText.toLowerCase().includes(q);
+                const vacantCount = parseInt(row.getAttribute('data-vacant-count') || '0', 10);
+                const vacantMatch = !showOnlyVacantProps || (vacantCount > 0);
+                row.style.display = (textMatch && vacantMatch) ? '' : 'none';
+            });
+        }
+
+        // 1. تصدير PDF عام لجدول العقارات المعروضة
+        function exportGeneralPropertiesPDF() {
+            closeModal('propertiesPdfExportChoiceModal');
+            exportElementToPDF('officePropertiesPrintableWrap', showOnlyVacantProps ? 'جدول_العقارات_والوحدات_الشاغرة_عام.pdf' : 'سجل_العقارات_العام.pdf', 'landscape');
+        }
+
+        // 2. تصدير ملف مضغوط (ZIP) بداخله ملفات PDF منفصلة لكل عمارة مع وحداتها المتاحة تفصيلياً
+        async function exportDetailedBuildingsZipPDF() {
+            if (typeof JSZip === 'undefined') {
+                alert('جاري تحميل مكتبة ضغط الملفات JSZip، حاول بعد ثانية.');
                 return;
             }
-            const ownerName = document.getElementById('rep_owner_name')?.innerText || 'المالك';
-            const period = document.getElementById('rep_period_label')?.innerText || '';
-            const iban = document.getElementById('rep_owner_iban')?.innerText || '';
 
-            const totalRent = document.getElementById('rep_total_contract_rent')?.innerText || '0';
-            const collected = document.getElementById('rep_collected_rent')?.innerText || '0';
-            const overdue = document.getElementById('rep_overdue_rent')?.innerText || '0';
-            const comm = document.getElementById('rep_office_commission')?.innerText || '0';
-            const exp = document.getElementById('rep_expenses_paid')?.innerText || '0';
-            const netDue = document.getElementById('rep_net_due_owner')?.innerText || '0';
-
-            const rows = [
-                ['بيان تصفية حساب مالك عقار', ownerName, period, 'الآيبان:', iban],
-                [],
-                ['إجمالي قيمة العقود', 'الإيجارات المستلمة (+)', 'الإيجارات المتأخرة (!)', 'عمولة المكتب (-)', 'المصروفات والمسحوبات (-)', 'الصافي المستحق للمالك'],
-                [totalRent, collected, overdue, comm, exp, netDue],
-                [],
-                ['أولاً: بيان العقود والوحدات وحالة التحصيل'],
-                ['رقم العقد', 'العقار / الوحدة', 'اسم المستأجر وجواله', 'فترة العقد والدورة', 'قيمة العقد', 'المسدد بالفترة (+)', 'المتبقي / المتأخر (!)', 'حالة السداد']
-            ];
-
-            document.querySelectorAll('#rep_contracts_tbody tr').forEach(tr => {
-                const cells = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
-                if (cells.length > 0) rows.push(cells);
+            const visibleRows = Array.from(document.querySelectorAll('.office-prop-row')).filter(r => {
+                if (r.style.display === 'none') return false;
+                const vCount = parseInt(r.getAttribute('data-vacant-count') || '0', 10);
+                return vCount > 0; // نصدر العمائر التي تحتوي على وحدات شاغرة متاحة
             });
 
-            rows.push([]);
-            rows.push(['ثانياً: سجل سندات القبض والصرف الفعلية خلال الفترة']);
-            rows.push(['التاريخ', 'رقم السند', 'النوع', 'المستأجر / الطرف', 'طريقة الدفع', 'البيان والتفاصيل', 'مقبوضات للمالك (+)', 'مصروفات / تحويلات (-)']);
+            if (visibleRows.length === 0) {
+                alert('لا توجد عمائر تحتوي على وحدات شاغرة متاحة حالياً لتصديرها.');
+                return;
+            }
 
-            document.querySelectorAll('#rep_vouchers_tbody tr').forEach(tr => {
-                const cells = Array.from(tr.querySelectorAll('td')).map(td => (td.innerText || '').replace(/\s+/g, ' ').trim());
-                if (cells.length > 0) rows.push(cells);
-            });
+            const progBox = document.getElementById('zipExportProgressBox');
+            const progTxt = document.getElementById('zipExportProgressText');
+            if (progBox) progBox.classList.remove('hidden');
 
-            downloadMultiColumnsExcel(rows, 'تصفية حساب المالك', 'تصفية_حساب_' + ownerName + '.xlsx');
+            const zip = new JSZip();
+
+            for (let i = 0; i < visibleRows.length; i++) {
+                const row = visibleRows[i];
+                const title = row.getAttribute('data-prop-title') || ('عمارة_' + (i + 1));
+                const typeName = row.getAttribute('data-prop-type') || '';
+                const ownerName = row.getAttribute('data-prop-owner') || '';
+                const deedNo = row.getAttribute('data-prop-deed') || '';
+                const area = row.getAttribute('data-prop-area') || '';
+                const addr = row.getAttribute('data-prop-address') || '';
+                let vacantUnits = [];
+                try {
+                    vacantUnits = JSON.parse(row.getAttribute('data-vacant-units') || '[]');
+                } catch (e) {}
+
+                if (progTxt) {
+                    progTxt.innerText = `⏳ جاري تجهيز ملف PDF (${i + 1} من ${visibleRows.length}): ${title}...`;
+                }
+
+                // بناء ورقة العمارة التفصيلية مع جدول وحداتها المتاحة
+                const cardDiv = document.createElement('div');
+                cardDiv.setAttribute('dir', 'rtl');
+                cardDiv.style.cssText = 'padding:25px; background:#ffffff; color:#0f172a; font-family:"Readex Pro",Tahoma,sans-serif; width:750px; letter-spacing:0px;';
+
+                let unitsRowsHtml = '';
+                vacantUnits.forEach((u, uIdx) => {
+                    let roomsInfo = '-';
+                    try {
+                        const ca = JSON.parse(u.custom_attributes || '{}');
+                        roomsInfo = (ca.unit_kind || 'وحدة') + (ca.rooms ? ` (${ca.rooms} غرف)` : '');
+                    } catch (e) {}
+                    unitsRowsHtml += `
+                        <tr style="border-bottom:1px solid #e2e8f0;">
+                            <td style="padding:8px; border:1px solid #cbd5e1; text-align:center;">${uIdx + 1}</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1; font-weight:700;">${u.unit_number}</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1;">${roomsInfo}</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1; text-align:center;">${u.floor_number || '-'}</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1; text-align:center;">${u.area || '-'} م²</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1; font-family:monospace;">كهرباء: ${u.electricity_meter || '-'}<br>ماء: ${u.water_meter || '-'}</td>
+                            <td style="padding:8px; border:1px solid #cbd5e1; font-weight:800; color:#047857;">${Number(u.default_rent_price || 0).toLocaleString()} ر.س</td>
+                        </tr>
+                    `;
+                });
+
+                cardDiv.innerHTML = `
+                    <div style="border:2px solid #0f172a; border-radius:14px; padding:20px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #0f172a; padding-bottom:12px; margin-bottom:16px;">
+                            <div>
+                                <div style="font-size:18px; font-weight:800; color:#0f172a;">بيان تفصيلي للوحدات العقارية الشاغرة (المتاحة للإيجار)</div>
+                                <div style="font-size:13px; color:#047857; font-weight:700; margin-top:4px;">العقار: ${title} (${typeName})</div>
+                            </div>
+                            <div style="font-size:12px; text-align:left;">
+                                <div>تاريخ البيان: <b>${new Date().toISOString().slice(0, 10)}</b></div>
+                                <div>عدد الوحدات المتاحة: <b>${vacantUnits.length} وحدة شاغرة</b></div>
+                            </div>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; background:#f8fafc; padding:12px; border-radius:10px; border:1px solid #cbd5e1; font-size:12px; margin-bottom:16px;">
+                            <div><b>اسم العقار:</b> ${title}</div>
+                            <div><b>المالك:</b> ${ownerName}</div>
+                            <div><b>رقم الصك:</b> ${deedNo} | <b>المساحة:</b> ${area} م²</div>
+                            <div><b>العنوان الوطني:</b> ${addr}</div>
+                        </div>
+
+                        <div style="font-size:13px; font-weight:700; margin-bottom:8px;">جدول الوحدات الشاغرة المتاحة للتأجير في هذا العقار:</div>
+                        <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:right;">
+                            <thead>
+                                <tr style="background:#0f172a; color:#ffffff;">
+                                    <th style="padding:8px; border:1px solid #0f172a;">#</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">رقم الوحدة</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">النوع والغرف</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">الدور</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">المساحة</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">أرقام العدادات</th>
+                                    <th style="padding:8px; border:1px solid #0f172a;">الإيجار السنوي المطلوب</th>
+                                </tr>
+                            </thead>
+                            <tbody>${unitsRowsHtml}</tbody>
+                        </table>
+                    </div>
+                `;
+
+                document.body.appendChild(cardDiv);
+                const pdfBlob = await html2pdf().set({
+                    margin: 8,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                }).from(cardDiv).outputPdf('blob');
+                cardDiv.remove();
+
+                const safeFileName = title.replace(/[\/\\?%*:|"<>]/g, '_') + '_الوحدات_الشاغرة.pdf';
+                zip.file(safeFileName, pdfBlob);
+            }
+
+            if (progTxt) progTxt.innerText = '📦 جاري ضغط الملفات وتحميل ملف الـ ZIP...';
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(zipBlob);
+            link.download = 'ملفات_العمائر_والوحدات_الشاغرة_تفصيلي.zip';
+            link.click();
+
+            if (progBox) progBox.classList.add('hidden');
+            closeModal('propertiesPdfExportChoiceModal');
         }
     </script>
 </body>
