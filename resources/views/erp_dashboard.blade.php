@@ -814,22 +814,31 @@
                     @endphp
                     <div id="officeStatementModal_{{ $office->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
                         <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
-                            <td class="py-3 px-4 text-center">
-                                                    <a href="{{ route('erp.dashboard', ['tab' => 'vouchers']) }}" class="text-blue-600 hover:underline font-bold">عرض / PDF</a>
-                                                </td>
-                                            </tr>
-                                        @empty
-                                            <tr><td colspan="7" class="py-8 text-center text-slate-400">لا توجد حركات مالية مسجلة في كشف حساب هذا المكتب حتى الآن.</td></tr>
-                                        @endforelse
-                                    </tbody>
-                                </table>
+                            <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-100">
+                                <div>
+                                    <h3 class="font-bold text-base text-slate-900">📑 كشف الحساب المالي الخاص بين الإدارة ومكتب: <span class="text-emerald-600">{{ $office->name }}</span></h3>
+                                    <p class="text-xs text-slate-500 mt-0.5">
+                                        حساب الشجرة: <span class="font-mono font-bold">{{ $office->account_code ?? '-' }}</span> |
+                                        إجمالي المقبوضات من المكتب: <b class="text-emerald-600">{{ number_format($offRec, 2) }} ر.س</b> |
+                                        إجمالي المصروفات والعمولات للمكتب: <b class="text-red-600">{{ number_format($offPay, 2) }} ر.س</b> |
+                                        الصافي: <b class="text-slate-900">{{ number_format($offNet, 2) }} ر.س</b>
+                                    </p>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" onclick="exportElementToPDF('officeStmtPrintArea_{{ $office->id }}', 'كشف_حساب_{{ $office->name }}.pdf')"
+                                            class="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold">
+                                        📥 تحميل الكشف PDF
+                                    </button>
+                                    <button type="button" onclick="exportTableToCSV('officeStmtTable_{{ $office->id }}', 'كشف_حساب_{{ $office->name }}.xlsx')"
+                                            class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
+                                        📊 تصدير الكشف Excel
+                                    </button>
+                                    <button type="button" onclick="closeModal('officeStatementModal_{{ $office->id }}')" class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 font-bold">✕</button>
+                                </div>
                             </div>
-                        </div>
-                    </div>
-                @endforeach
 
                             <!-- نموذج سريع لتسجيل عملية في كشف حساب المكتب -->
-                            <form action="{{ route('erp.vouchers.store') }}" method="POST" class="my-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
+                            <form action="{{ route('erp.vouchers.store') }}" method="POST" class="my-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end no-print">
                                 @csrf
                                 <input type="hidden" name="office_id" value="{{ $office->id }}">
                                 <input type="hidden" name="stay_in_offices" value="1">
@@ -863,8 +872,8 @@
                                 </div>
                             </form>
 
-                            <div class="overflow-y-auto flex-1 rounded-2xl border border-slate-200">
-                                <table class="w-full text-xs text-right">
+                            <div id="officeStmtPrintArea_{{ $office->id }}" class="overflow-y-auto flex-1 rounded-2xl border border-slate-200 p-2 bg-white">
+                                <table class="w-full text-xs text-right" id="officeStmtTable_{{ $office->id }}">
                                     <thead class="bg-slate-100 text-slate-700 border-b">
                                         <tr>
                                             <th class="py-3 px-4">رقم السند</th>
@@ -873,11 +882,12 @@
                                             <th class="py-3 px-4">البيان والتفاصيل</th>
                                             <th class="py-3 px-4">مقبوضات (+)</th>
                                             <th class="py-3 px-4">مصروفات (-)</th>
-                                            <th class="py-3 px-4 text-center">إجراءات</th>
+                                            <th class="py-3 px-4 text-center">تحميل السند (PDF / Excel)</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100">
                                         @forelse($offVouchers as $ov)
+                                            @php $ovPmAr = \App\Http\Controllers\CompanyErpController::translatePaymentMethod($ov->payment_method); @endphp
                                             <tr class="hover:bg-slate-50">
                                                 <td class="py-3 px-4 font-mono font-bold">{{ $ov->voucher_number }}</td>
                                                 <td class="py-3 px-4 font-mono">{{ $ov->voucher_date }}</td>
@@ -892,7 +902,36 @@
                                                 <td class="py-3 px-4 font-bold text-emerald-600">{{ $ov->voucher_type == 'receipt' ? number_format($ov->amount, 2) . ' ر.س' : '-' }}</td>
                                                 <td class="py-3 px-4 font-bold text-red-600">{{ $ov->voucher_type == 'payment' ? number_format($ov->amount, 2) . ' ر.س' : '-' }}</td>
                                                 <td class="py-3 px-4 text-center">
-                                                    <a href="{{ route('erp.dashboard', ['tab' => 'vouchers']) }}" class="text-blue-600 hover:underline font-bold">عرض / PDF</a>
+                                                    <div class="flex items-center justify-center gap-1.5">
+                                                        <button type="button"
+                                                                onclick="directDownloadSingleVoucherPDF({
+                                                                    number: '{{ $ov->voucher_number }}',
+                                                                    type: '{{ $ov->voucher_type }}',
+                                                                    amount: '{{ number_format($ov->amount, 2) }}',
+                                                                    date: '{{ $ov->voucher_date }}',
+                                                                    party: '{{ addslashes($office->name) }}',
+                                                                    payment_method: '{{ addslashes($ovPmAr) }}',
+                                                                    notes: '{{ addslashes($ov->notes) }}',
+                                                                    issuer: 'الإدارة المركزية - منظومة العقارات'
+                                                                })"
+                                                                class="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold">
+                                                            📥 PDF
+                                                        </button>
+                                                        <button type="button"
+                                                                onclick="directDownloadSingleVoucherExcel({
+                                                                    number: '{{ $ov->voucher_number }}',
+                                                                    type: '{{ $ov->voucher_type == 'receipt' ? 'سند قبض' : 'سند صرف' }}',
+                                                                    amount: '{{ number_format($ov->amount, 2) }}',
+                                                                    date: '{{ $ov->voucher_date }}',
+                                                                    party: '{{ addslashes($office->name) }}',
+                                                                    payment_method: '{{ addslashes($ovPmAr) }}',
+                                                                    notes: '{{ addslashes($ov->notes) }}',
+                                                                    issuer: 'الإدارة المركزية - منظومة العقارات'
+                                                                })"
+                                                                class="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold">
+                                                            📊 Excel
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         @empty
