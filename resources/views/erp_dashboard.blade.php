@@ -163,6 +163,11 @@
                 <span>مـكـاتب العقـار</span>
             </a>
 
+            <a href="{{ route('erp.dashboard', ['tab' => 'office_plans']) }}"
+               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'office_plans' ? 'bg-gradient-to-l from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25' : 'text-slate-400 hover:bg-slate-800/60 hover:text-white' }}">
+                <span>📦 باقات وصلاحيات المكاتب</span>
+            </a>
+
             <a href="{{ route('erp.dashboard', ['tab' => 'properties']) }}"
                class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'properties' ? 'bg-gradient-to-l from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25' : 'text-slate-400 hover:bg-slate-800/60 hover:text-white' }}">
                 <span>أنواع العقارات والمتطلبات</span>
@@ -499,23 +504,28 @@
                                                         {{ !empty($office->allow_owner_tax_invoice) ? ' الفوترة بإسم المالك مفعلة ' : ' تفعيل الفوترة بإٍسم المالك   ' }}
                                                     </button>
                                                 </form>
+                                                @php
+                                                    $officeTabsArr = !empty($office->allowed_tabs) ? (json_decode($office->allowed_tabs, true) ?: []) : array_keys($availableOfficeTabs ?? []);
+                                                @endphp
                                                 <button type="button"
-                                                        onclick="openEditOfficeModal({
-                                                            id: '{{ $office->id }}',
-                                                            name: '{{ addslashes($office->name) }}',
-                                                            cr_number: '{{ addslashes($office->cr_number) }}',
-                                                            fal_license: '{{ addslashes($office->fal_license) }}',
-                                                            tax_number: '{{ addslashes($office->tax_number ?? '') }}',
-                                                            allow_owner_tax_invoice: '{{ $office->allow_owner_tax_invoice ?? 0 }}',
-                                                            phone: '{{ $localPhone }}',
-                                                            username: '{{ addslashes($office->manager_username) }}',
-                                                            billing_type: '{{ $office->billing_type }}',
-                                                            annual_fee: '{{ $office->annual_fee }}',
-                                                            company_commission_rate: '{{ $office->company_commission_rate }}',
-                                                            subscription_ends_at: '{{ $office->subscription_ends_at }}',
-                                                            status: '{{ $office->status }}',
-                                                            parent_account_id: '{{ $office->parent_account_id ?? '' }}'
-                                                        })"
+                                                        onclick='openEditOfficeModal({
+                                                            id: "{{ $office->id }}",
+                                                            name: "{{ addslashes($office->name) }}",
+                                                            cr_number: "{{ addslashes($office->cr_number) }}",
+                                                            fal_license: "{{ addslashes($office->fal_license) }}",
+                                                            tax_number: "{{ addslashes($office->tax_number ?? '') }}",
+                                                            allow_owner_tax_invoice: "{{ $office->allow_owner_tax_invoice ?? 0 }}",
+                                                            phone: "{{ $localPhone }}",
+                                                            username: "{{ addslashes($office->manager_username) }}",
+                                                            billing_type: "{{ $office->billing_type }}",
+                                                            annual_fee: "{{ $office->annual_fee }}",
+                                                            company_commission_rate: "{{ $office->company_commission_rate }}",
+                                                            subscription_ends_at: "{{ $office->subscription_ends_at }}",
+                                                            status: "{{ $office->status }}",
+                                                            plan_id: "{{ $office->plan_id ?? '' }}",
+                                                            allowed_tabs: @json($officeTabsArr),
+                                                            parent_account_id: "{{ $office->parent_account_id ?? '' }}"
+                                                        })'
                                                         class="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-semibold transition">
                                                      تعديل
                                                 </button>
@@ -601,9 +611,24 @@
                                 </div>
                             </div>
 
-                            <!-- الاتفاقية المالية مع إظهار وإخفاء الحقول تلقائياً -->
+                            <!-- اختيار الباقة وتحديد الصفحات المسموحة والاتفاقية المالية -->
                             <div class="p-3.5 rounded-2xl bg-emerald-50/50 border border-emerald-200/70 space-y-3">
-                                <div class="text-xs font-bold text-slate-800">الاتفاقية المالية مع صاحب المكتب</div>
+                                <div class="text-xs font-bold text-slate-800">📦 الباقة والاتفاقية المالية وصلاحيات الصفحات</div>
+                                <div>
+                                    <label class="block text-xs font-bold text-emerald-800 mb-1">اختر باقة جاهزة للمكتب (تملأ السعر والصلاحيات تلقائياً)</label>
+                                    <select name="plan_id" id="add_plan_id" onchange="applyPlanToOfficeForm('add')" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                                        <option value="">-- تخصيص يدوي حر (بدون باقة محددة) --</option>
+                                        @foreach(($officePlans ?? collect()) as $pl)
+                                            <option value="{{ $pl->id }}"
+                                                    data-billing="{{ $pl->billing_type }}"
+                                                    data-price="{{ $pl->price }}"
+                                                    data-rate="{{ $pl->commission_rate }}"
+                                                    data-tabs='{{ $pl->allowed_tabs }}'>
+                                                {{ $pl->name }} ({{ number_format($pl->price, 0) }} ر.س)
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 mb-1">نوع الاتفاق المالي *</label>
                                     <select name="billing_type" id="add_billing_type" onchange="toggleBillingInputs('add')" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white font-semibold">
@@ -615,13 +640,33 @@
                                 <div class="grid grid-cols-2 gap-2.5">
                                     <div id="add_annual_fee_box">
                                         <label class="block text-xs font-semibold text-slate-700 mb-1">الاشتراك السنوي (ر.س) *</label>
-                                        <input type="number" step="0.01" name="annual_fee" id="add_annual_fee" value="1000"
+                                        <input type="number" step="0.01" name="annual_fee" id="add_annual_fee" value="1500"
                                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white font-bold text-emerald-700">
                                     </div>
                                     <div id="add_commission_rate_box" class="hidden">
                                         <label class="block text-xs font-semibold text-slate-700 mb-1">نسبة الشركة (%) *</label>
                                         <input type="number" step="0.01" name="company_commission_rate" id="add_commission_rate" value="0"
                                                class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white font-bold text-amber-700">
+                                    </div>
+                                </div>
+
+                                <div class="pt-2 border-t border-emerald-200/80">
+                                    <div class="flex items-center justify-between mb-1.5">
+                                        <label class="text-xs font-bold text-slate-800">🔐 الصفحات المسموحة لهذا المكتب فقط:</label>
+                                        <div class="flex gap-2 text-[11px]">
+                                            <button type="button" onclick="toggleAllOfficeTabs('add', true)" class="text-emerald-700 font-bold underline">تحديد الكل</button>
+                                            <button type="button" onclick="toggleAllOfficeTabs('add', false)" class="text-rose-600 font-bold underline">إدارة أملاك فقط</button>
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-1.5 bg-white p-3 rounded-xl border border-slate-200 max-h-44 overflow-y-auto">
+                                        @foreach(($availableOfficeTabs ?? []) as $tKey => $tLabel)
+                                            <label class="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                                                <input type="checkbox" name="allowed_tabs[]" value="{{ $tKey }}"
+                                                       class="add-office-tab-cb rounded text-emerald-600"
+                                                       {{ $tKey === 'overview' ? 'checked onclick="return false;"' : 'checked' }}>
+                                                <span>{{ $tLabel }}</span>
+                                            </label>
+                                        @endforeach
                                     </div>
                                 </div>
                             </div>
@@ -682,7 +727,22 @@
                             </div>
 
                             <div class="p-3.5 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-3">
-                                <div class="text-xs font-bold text-amber-900">تعديل الاتفاق المالي والاشتراك</div>
+                                <div class="text-xs font-bold text-amber-900">تعديل الباقة والاتفاق المالي وصلاحيات الصفحات</div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">باقة المكتب</label>
+                                    <select name="plan_id" id="edit_plan_id" onchange="applyPlanToOfficeForm('edit')" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                                        <option value="">-- تخصيص يدوي حر --</option>
+                                        @foreach(($officePlans ?? collect()) as $pl)
+                                            <option value="{{ $pl->id }}"
+                                                    data-billing="{{ $pl->billing_type }}"
+                                                    data-price="{{ $pl->price }}"
+                                                    data-rate="{{ $pl->commission_rate }}"
+                                                    data-tabs='{{ $pl->allowed_tabs }}'>
+                                                {{ $pl->name }} ({{ number_format($pl->price, 0) }} ر.س)
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 mb-1">نوع الاتفاق المالي *</label>
                                     <select name="billing_type" id="edit_billing_type" onchange="toggleBillingInputs('edit')" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white font-semibold">
@@ -712,6 +772,26 @@
                                             <option value="active">نشط (مفعل)</option>
                                             <option value="suspended">موقوف مؤقتاً</option>
                                         </select>
+                                    </div>
+                                </div>
+
+                                <div class="pt-2 border-t border-amber-200">
+                                    <div class="flex items-center justify-between mb-1.5">
+                                        <label class="text-xs font-bold text-slate-800">🔐 الصفحات المسموحة لهذا المكتب فقط:</label>
+                                        <div class="flex gap-2 text-[11px]">
+                                            <button type="button" onclick="toggleAllOfficeTabs('edit', true)" class="text-emerald-700 font-bold underline">تحديد الكل</button>
+                                            <button type="button" onclick="toggleAllOfficeTabs('edit', false)" class="text-rose-600 font-bold underline">إدارة أملاك فقط</button>
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-1.5 bg-white p-3 rounded-xl border border-slate-200 max-h-44 overflow-y-auto">
+                                        @foreach(($availableOfficeTabs ?? []) as $tKey => $tLabel)
+                                            <label class="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                                                <input type="checkbox" name="allowed_tabs[]" value="{{ $tKey }}"
+                                                       class="edit-office-tab-cb rounded text-emerald-600"
+                                                       {{ $tKey === 'overview' ? 'checked onclick="return false;"' : '' }}>
+                                                <span>{{ $tLabel }}</span>
+                                            </label>
+                                        @endforeach
                                     </div>
                                 </div>
                             </div>
@@ -823,6 +903,268 @@
                         </div>
                     </div>
                 @endforeach
+            @endif
+
+            <!-- 2-ب. إدارة باقات وصلاحيات مكاتب العقار وربطها بالواجهة الرئيسية -->
+            @if($tab == 'office_plans')
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900">📦 إدارة باقات وصلاحيات مكاتب العقار (المرتبطة بالواجهة الرئيسية)</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">أنشئ باقات مخصصة (مثلاً: باقة إدارة أملاك فقط بدون محاسبة وبدون تتبع) وحدد سعرها وعرضها الترويجي لتظهر في الصفحة الرئيسية</p>
+                        </div>
+                        <button type="button" onclick="openModal('addOfficePlanModal')"
+                                class="px-5 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-lg flex items-center gap-2 transition">
+                            <span>➕ إنشاء باقة جديدة</span>
+                        </button>
+                    </div>
+
+                    <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                        @forelse(($officePlans ?? collect()) as $plan)
+                            @php
+                                $planTabs = json_decode($plan->allowed_tabs ?? '[]', true) ?: [];
+                                $subscribedCount = $offices->where('plan_id', $plan->id)->count();
+                            @endphp
+                            <div class="rounded-2xl border-2 {{ $plan->is_highlighted ? 'border-emerald-500 bg-emerald-50/20' : 'border-slate-200 bg-white' }} p-5 flex flex-col justify-between space-y-4 shadow-sm">
+                                <div class="space-y-3">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <span class="px-3 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold">{{ $plan->badge ?: 'باقة' }}</span>
+                                        <div class="flex items-center gap-1.5">
+                                            @if($plan->show_on_landing)
+                                                <span class="px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[11px] font-bold">🌐 معروضة بالرئيسية</span>
+                                            @else
+                                                <span class="px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[11px]">مخفية من الرئيسية</span>
+                                            @endif
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <h4 class="font-bold text-base text-slate-900">{{ $plan->name }}</h4>
+                                        <p class="text-xs text-slate-500 mt-1">{{ $plan->description }}</p>
+                                    </div>
+
+                                    <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                                        <div class="flex items-baseline gap-2">
+                                            <span class="text-xl font-extrabold text-emerald-700 font-mono">{{ number_format($plan->price, 0) }} ر.س</span>
+                                            @if(!empty($plan->old_price) && $plan->old_price > $plan->price)
+                                                <span class="text-xs text-rose-500 line-through font-mono">{{ number_format($plan->old_price, 0) }} ر.س</span>
+                                            @endif
+                                            @if($plan->commission_rate > 0)
+                                                <span class="text-xs font-bold text-amber-700">+ {{ $plan->commission_rate }}%</span>
+                                            @endif
+                                        </div>
+                                        @if(!empty($plan->offer_label))
+                                            <div class="text-[11px] font-bold text-amber-700">🔥 العرض: {{ $plan->offer_label }}</div>
+                                        @endif
+                                        <div class="text-[11px] text-slate-500">المكاتب المشتركة حالياً: <b>{{ $subscribedCount }} مكتب</b></div>
+                                    </div>
+
+                                    <div>
+                                        <div class="text-xs font-bold text-slate-800 mb-1.5">✅ الصفحات المسموحة في هذه الباقة ({{ count($planTabs) }} من {{ count($availableOfficeTabs) }}):</div>
+                                        <div class="flex flex-wrap gap-1">
+                                            @foreach($availableOfficeTabs as $tKey => $tLabel)
+                                                @if(in_array($tKey, $planTabs))
+                                                    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-bold">✔ {{ $tLabel }}</span>
+                                                @else
+                                                    <span class="px-2 py-0.5 rounded bg-rose-50 text-rose-400 text-[10px] line-through">✖ {{ $tLabel }}</span>
+                                                @endif
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="flex items-center justify-between gap-2 pt-3 border-t border-slate-200">
+                                    <button type="button" onclick="openModal('editOfficePlanModal_{{ $plan->id }}')"
+                                            class="flex-1 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold transition">
+                                        ✏️ تعديل الباقة والصلاحيات
+                                    </button>
+                                    <form action="{{ route('erp.office_plans.delete', $plan->id) }}" method="POST" onsubmit="return confirm('هل تريد حذف هذه الباقة؟');">
+                                        @csrf
+                                        <button type="submit" class="px-3 py-2 rounded-xl bg-red-50 hover:bg-red-600 text-red-600 hover:text-white text-xs font-bold transition">
+                                            حذف
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- نافذة تعديل الباقة -->
+                            <div id="editOfficePlanModal_{{ $plan->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                                <div class="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
+                                    <div class="flex items-center justify-between pb-3 border-b mb-4">
+                                        <h3 class="font-bold text-base text-slate-900">تعديل الباقة: {{ $plan->name }}</h3>
+                                        <button type="button" onclick="closeModal('editOfficePlanModal_{{ $plan->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                                    </div>
+                                    <form action="{{ route('erp.office_plans.update', $plan->id) }}" method="POST" class="space-y-4">
+                                        @csrf
+                                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div class="md:col-span-2">
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">اسم الباقة *</label>
+                                                <input type="text" name="name" value="{{ $plan->name }}" required class="w-full rounded-xl border px-3.5 py-2 text-sm font-bold">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-bold text-slate-700 mb-1">شارة الباقة (Badge)</label>
+                                                <input type="text" name="badge" value="{{ $plan->badge }}" placeholder="الأكثر طلباً" class="w-full rounded-xl border px-3 py-2 text-xs">
+                                            </div>
+                                        </div>
+
+                                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3 p-3.5 rounded-2xl bg-slate-50 border">
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">نوع الاشتراك</label>
+                                                <select name="billing_type" class="w-full rounded-xl border px-2.5 py-2 text-xs bg-white font-bold">
+                                                    <option value="annual_subscription" {{ $plan->billing_type == 'annual_subscription' ? 'selected' : '' }}>اشتراك سنوي</option>
+                                                    <option value="per_property_percentage" {{ $plan->billing_type == 'per_property_percentage' ? 'selected' : '' }}>نسبة لكل عقد</option>
+                                                    <option value="hybrid" {{ $plan->billing_type == 'hybrid' ? 'selected' : '' }}>مدمج (اشتراك + نسبة)</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-emerald-700 mb-1">السعر الحالي (ر.س) *</label>
+                                                <input type="number" step="0.01" name="price" value="{{ $plan->price }}" required class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono font-bold bg-white">
+                                            </div>
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-rose-600 mb-1">السعر قبل الخصم (اختياري)</label>
+                                                <input type="number" step="0.01" name="old_price" value="{{ $plan->old_price }}" placeholder="مثال: 2500" class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono bg-white">
+                                            </div>
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-amber-700 mb-1">النسبة % (إن وجدت)</label>
+                                                <input type="number" step="0.01" name="commission_rate" value="{{ $plan->commission_rate }}" class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono bg-white">
+                                            </div>
+                                            <div class="md:col-span-4">
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">🔥 نص العرض الترويجي (يظهر في الصفحة الرئيسية)</label>
+                                                <input type="text" name="offer_label" value="{{ $plan->offer_label }}" placeholder="مثال: خصم 30% لفترة محدودة + شهرين مجاناً" class="w-full rounded-xl border px-3 py-1.5 text-xs bg-white">
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-700 mb-1">وصف ومميزات الباقة (يظهر في الواجهة الرئيسية للموقع)</label>
+                                            <textarea name="description" rows="2" class="w-full rounded-xl border px-3 py-2 text-xs">{{ $plan->description }}</textarea>
+                                        </div>
+
+                                        <div class="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-2">
+                                            <label class="block text-xs font-bold text-emerald-950">🔐 حدد الصفحات المسموح للمكتب العمل عليها في هذه الباقة (باقي الصفحات ستُحجب عنه):</label>
+                                            <div class="grid grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+                                                @foreach($availableOfficeTabs as $tKey => $tLabel)
+                                                    <label class="flex items-center gap-2 p-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold cursor-pointer">
+                                                        <input type="checkbox" name="allowed_tabs[]" value="{{ $tKey }}"
+                                                               {{ in_array($tKey, $planTabs) || $tKey === 'overview' ? 'checked' : '' }}
+                                                               {{ $tKey === 'overview' ? 'onclick="return false;"' : '' }}>
+                                                        <span>{{ $tLabel }}</span>
+                                                    </label>
+                                                @endforeach
+                                            </div>
+                                        </div>
+
+                                        <div class="flex flex-wrap items-center gap-5 pt-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer">
+                                                <input type="checkbox" name="show_on_landing" value="1" {{ $plan->show_on_landing ? 'checked' : '' }}>
+                                                <span>🌐 عرض هذه الباقة في الصفحة الرئيسية للموقع</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 text-xs font-bold text-emerald-700 cursor-pointer">
+                                                <input type="checkbox" name="is_highlighted" value="1" {{ $plan->is_highlighted ? 'checked' : '' }}>
+                                                <span>⭐ تمييز البطاقة كأفضل عرض</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 text-xs font-bold text-amber-800 cursor-pointer">
+                                                <input type="checkbox" name="sync_subscribed_offices" value="1" checked>
+                                                <span>🔄 تطبيق تعديل الصلاحيات فوراً على المكاتب المشتركة بهذه الباقة</span>
+                                            </label>
+                                        </div>
+
+                                        <div class="flex justify-end gap-2 pt-3 border-t">
+                                            <button type="button" onclick="closeModal('editOfficePlanModal_{{ $plan->id }}')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-semibold">إلغاء</button>
+                                            <button type="submit" class="px-6 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">حفظ وتحديث الباقة والواجهة</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        @empty
+                            <div class="col-span-3 py-10 text-center text-slate-400">لا توجد باقات مضافة بعد.</div>
+                        @endforelse
+                    </div>
+                </div>
+
+                <!-- نافذة إنشاء باقة جديدة -->
+                <div id="addOfficePlanModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                    <div class="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
+                        <div class="flex items-center justify-between pb-3 border-b mb-4">
+                            <h3 class="font-bold text-base text-slate-900">➕ إنشاء باقة مكاتب جديدة وتحديد صفحاتها وعرضها</h3>
+                            <button type="button" onclick="closeModal('addOfficePlanModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                        </div>
+                        <form action="{{ route('erp.office_plans.store') }}" method="POST" class="space-y-4">
+                            @csrf
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div class="md:col-span-2">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">اسم الباقة *</label>
+                                    <input type="text" name="name" required placeholder="مثال: باقة إدارة الأملاك فقط (بدون محاسبة)" class="w-full rounded-xl border px-3.5 py-2 text-sm font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">شارة الباقة</label>
+                                    <input type="text" name="badge" placeholder="مثال: باقة اقتصادية" class="w-full rounded-xl border px-3 py-2 text-xs">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 p-3.5 rounded-2xl bg-slate-50 border">
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-700 mb-1">نوع الاشتراك</label>
+                                    <select name="billing_type" class="w-full rounded-xl border px-2.5 py-2 text-xs bg-white font-bold">
+                                        <option value="annual_subscription">اشتراك سنوي</option>
+                                        <option value="per_property_percentage">نسبة لكل عقد</option>
+                                        <option value="hybrid">مدمج (اشتراك + نسبة)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-emerald-700 mb-1">سعر الباقة (ر.س) *</label>
+                                    <input type="number" step="0.01" name="price" value="1500" required class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono font-bold bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-rose-600 mb-1">السعر السابق (للخصم)</label>
+                                    <input type="number" step="0.01" name="old_price" placeholder="2000" class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-amber-700 mb-1">النسبة % (اختياري)</label>
+                                    <input type="number" step="0.01" name="commission_rate" value="0" class="w-full rounded-xl border px-2.5 py-2 text-xs font-mono bg-white">
+                                </div>
+                                <div class="md:col-span-4">
+                                    <label class="block text-[11px] font-bold text-slate-700 mb-1">🔥 نص العرض الترويجي (يظهر في الصفحة الرئيسية)</label>
+                                    <input type="text" name="offer_label" placeholder="مثال: خصم 25% عند الاشتراك السنوي" class="w-full rounded-xl border px-3 py-1.5 text-xs bg-white">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">وصف ومميزات الباقة (يظهر في الصفحة الرئيسية للموقع)</label>
+                                <textarea name="description" rows="2" placeholder="اكتب مميزات الباقة التي ستظهر للزوار في الصفحة الرئيسية..." class="w-full rounded-xl border px-3 py-2 text-xs"></textarea>
+                            </div>
+
+                            <div class="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-2">
+                                <label class="block text-xs font-bold text-emerald-950">🔐 اختر الصفحات المسموحة فقط لهذه الباقة:</label>
+                                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 pt-1">
+                                    @foreach(($availableOfficeTabs ?? []) as $tKey => $tLabel)
+                                        <label class="flex items-center gap-2 p-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold cursor-pointer">
+                                            <input type="checkbox" name="allowed_tabs[]" value="{{ $tKey }}"
+                                                   {{ in_array($tKey, ['overview', 'owners', 'properties', 'contracts']) ? 'checked' : '' }}
+                                                   {{ $tKey === 'overview' ? 'onclick="return false;"' : '' }}>
+                                            <span>{{ $tLabel }}</span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-5 pt-2">
+                                <label class="flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer">
+                                    <input type="checkbox" name="show_on_landing" value="1" checked>
+                                    <span>🌐 عرض هذه الباقة في الصفحة الرئيسية للموقع تلقائياً</span>
+                                </label>
+                                <label class="flex items-center gap-2 text-xs font-bold text-emerald-700 cursor-pointer">
+                                    <input type="checkbox" name="is_highlighted" value="1">
+                                    <span>⭐ تمييز البطاقة كأفضل عرض</span>
+                                </label>
+                            </div>
+
+                            <div class="flex justify-end gap-2 pt-3 border-t">
+                                <button type="button" onclick="closeModal('addOfficePlanModal')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-semibold">إلغاء</button>
+                                <button type="submit" class="px-6 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">اعتماد الباقة ونشرها بالواجهة</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
             @endif
 
             <!-- 3. أنواع العقارات والمتطلبات الديناميكية -->
@@ -4043,6 +4385,47 @@
             }
         }
 
+        function applyPlanToOfficeForm(prefix) {
+            const sel = document.getElementById(prefix + '_plan_id');
+            if (!sel || !sel.value) return;
+            const opt = sel.options[sel.selectedIndex];
+            const billing = opt.getAttribute('data-billing') || 'annual_subscription';
+            const price = opt.getAttribute('data-price') || 0;
+            const rate = opt.getAttribute('data-rate') || 0;
+            const tabsRaw = opt.getAttribute('data-tabs') || '[]';
+
+            const bEl = document.getElementById(prefix + '_billing_type');
+            if (bEl) {
+                bEl.value = billing;
+                bEl.dispatchEvent(new Event('change'));
+            }
+            const feeEl = document.getElementById(prefix + '_annual_fee');
+            if (feeEl) feeEl.value = price;
+
+            const rateEl = document.getElementById(prefix === 'add' ? 'add_commission_rate' : 'edit_company_commission_rate');
+            if (rateEl) rateEl.value = rate;
+
+            toggleBillingInputs(prefix);
+
+            try {
+                const allowed = JSON.parse(tabsRaw);
+                document.querySelectorAll('.' + prefix + '-office-tab-cb').forEach(cb => {
+                    cb.checked = (cb.value === 'overview') || allowed.includes(cb.value);
+                });
+            } catch (e) {}
+        }
+
+        function toggleAllOfficeTabs(prefix, selectAll) {
+            const basicTabs = ['overview', 'owners', 'properties', 'contracts'];
+            document.querySelectorAll('.' + prefix + '-office-tab-cb').forEach(cb => {
+                if (selectAll) {
+                    cb.checked = true;
+                } else {
+                    cb.checked = basicTabs.includes(cb.value);
+                }
+            });
+        }
+
         function openEditOfficeModal(office) {
             const form = document.getElementById('editOfficeForm');
             if (form) form.action = '/offices/' + office.id + '/update';
@@ -4052,11 +4435,20 @@
             if (document.getElementById('edit_fal_license')) document.getElementById('edit_fal_license').value = office.fal_license || '';
             if (document.getElementById('edit_phone')) document.getElementById('edit_phone').value = office.phone || '';
             if (document.getElementById('edit_username')) document.getElementById('edit_username').value = office.username || '';
+            if (document.getElementById('edit_plan_id')) {
+                document.getElementById('edit_plan_id').value = office.plan_id || '';
+                document.getElementById('edit_plan_id').dispatchEvent(new Event('change'));
+            }
             if (document.getElementById('edit_billing_type')) document.getElementById('edit_billing_type').value = office.billing_type || 'annual_subscription';
             if (document.getElementById('edit_annual_fee')) document.getElementById('edit_annual_fee').value = office.annual_fee || 0;
             if (document.getElementById('edit_company_commission_rate')) document.getElementById('edit_company_commission_rate').value = office.company_commission_rate || 0;
             if (document.getElementById('edit_subscription_ends_at')) document.getElementById('edit_subscription_ends_at').value = office.subscription_ends_at || '';
             if (document.getElementById('edit_status')) document.getElementById('edit_status').value = office.status || 'active';
+
+            const allowed = Array.isArray(office.allowed_tabs) ? office.allowed_tabs : [];
+            document.querySelectorAll('.edit-office-tab-cb').forEach(cb => {
+                cb.checked = (cb.value === 'overview') || allowed.includes(cb.value);
+            });
 
             toggleBillingInputs('edit');
             openModal('editOfficeModal');

@@ -40,7 +40,19 @@ class OfficeErpController extends Controller
             return redirect()->route('erp.dashboard');
         }
 
+        $allowedOfficeTabs = !empty($office->allowed_tabs)
+            ? (json_decode($office->allowed_tabs, true) ?: [])
+            : array_keys(\App\Http\Controllers\CompanyErpController::getAvailableOfficeTabs());
+
+        if (!in_array('overview', $allowedOfficeTabs)) {
+            array_unshift($allowedOfficeTabs, 'overview');
+        }
+
         $tab = $request->get('tab', 'overview');
+        if (!in_array($tab, $allowedOfficeTabs)) {
+            return redirect()->route('office.dashboard', ['tab' => 'overview'])
+                ->withErrors(['عذراً، هذه الصفحة غير متاحة ضمن باقة اشتراك مكتبكم الحالية. يمكنك ترقية الباقة من الإدارة.']);
+        }
 
         $accountTypes = DB::table('custom_account_types')->orderBy('id')->get();
         $accounts = DB::table('accounts')->where('office_id', $officeId)->orderBy('code')->get();
@@ -222,7 +234,7 @@ class OfficeErpController extends Controller
         ];
 
         return view('office_dashboard', compact(
-            'office', 'tab', 'owners', 'propertyTypes', 'allAttributes',
+            'office', 'tab', 'allowedOfficeTabs', 'owners', 'propertyTypes', 'allAttributes',
             'properties', 'units', 'tenants', 'contracts', 'accountTypes',
             'accounts', 'vouchers', 'journalEntries', 'journalItems', 'journalItemsByEntry',
             'staff', 'stats', 'defaultTenantParentAcc', 'defaultOwnerParentAcc',

@@ -147,6 +147,11 @@
             </div>
         </div>
 
+        @php
+            $allowedTabsList = $allowedOfficeTabs ?? array_keys(\App\Http\Controllers\CompanyErpController::getAvailableOfficeTabs());
+            $hasAnyAccountingTab = count(array_intersect(['accounting', 'vouchers', 'journal', 'invoicing', 'account_statement', 'statements'], $allowedTabsList)) > 0;
+            $hasAnySettingsTab = count(array_intersect(['staff', 'activity_logs', 'whatsapp'], $allowedTabsList)) > 0;
+        @endphp
         <nav class="p-4 space-y-1.5 flex-1 overflow-y-auto">
             <div class="px-3 py-2 text-[11px] font-bold text-emerald-300/60 uppercase tracking-wider">إدارة الأملاك والعقارات</div>
 
@@ -155,69 +160,97 @@
                 <span> لوحة التحكم </span>
             </a>
 
-            <a href="{{ route('office.dashboard', ['tab' => 'owners']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'owners' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span> الـملاك ({{ $stats['owners_count'] }})</span>
-            </a>
+            @if(in_array('owners', $allowedTabsList))
+                <a href="{{ route('office.dashboard', ['tab' => 'owners']) }}"
+                   class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'owners' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                    <span> الـملاك ({{ $stats['owners_count'] }})</span>
+                </a>
+            @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'properties']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'properties' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>العقارات والوحدات</span>
-            </a>
+            @if(in_array('properties', $allowedTabsList))
+                <a href="{{ route('office.dashboard', ['tab' => 'properties']) }}"
+                   class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'properties' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                    <span>العقارات والوحدات</span>
+                </a>
+            @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'contracts']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'contracts' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>المستأجرون وعقود (إيجار)</span>
-            </a>
+            @if(in_array('contracts', $allowedTabsList))
+                <a href="{{ route('office.dashboard', ['tab' => 'contracts']) }}"
+                   class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'contracts' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                    <span>المستأجرون وعقود (إيجار)</span>
+                </a>
+            @endif
 
-            <div class="px-3 pt-4 pb-2 text-[11px] font-bold text-emerald-300/60 uppercase tracking-wider">النظام المالي والمحاسبي للمكتب</div>
+            @if($hasAnyAccountingTab)
+                <div class="px-3 pt-4 pb-2 text-[11px] font-bold text-emerald-300/60 uppercase tracking-wider">النظام المالي والمحاسبي للمكتب</div>
 
-            <a href="{{ route('office.dashboard', ['tab' => 'accounting']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'accounting' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>شجرة الحسابات</span>
-            </a>
+                @if(in_array('accounting', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'accounting']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'accounting' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>شجرة الحسابات</span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'vouchers']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'vouchers' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>سندات القبض والصرف</span>
-            </a>
+                @if(in_array('vouchers', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'vouchers']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'vouchers' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>سندات القبض والصرف</span>
+                    </a>
+                @endif
 
-           <a href="{{ route('office.dashboard', ['tab' => 'journal']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'journal' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>القيود اليومية</span>
-            </a>
+                @if(in_array('journal', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'journal']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'journal' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>القيود اليومية</span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'invoicing']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'invoicing' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span> الفواتير الضريبية</span>
-            </a>
+                @if(in_array('invoicing', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'invoicing']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'invoicing' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span> الفواتير الضريبية</span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'account_statement']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'account_statement' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>كشف الحساب </span>
-            </a>
+                @if(in_array('account_statement', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'account_statement']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'account_statement' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>كشف الحساب </span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'statements']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'statements' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>الأستاذ العام والقوائم المالية</span>
-            </a>
+                @if(in_array('statements', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'statements']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'statements' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>الأستاذ العام والقوائم المالية</span>
+                    </a>
+                @endif
+            @endif
 
-            <div class="px-3 pt-4 pb-2 text-[11px] font-bold text-emerald-300/60 uppercase tracking-wider">الإعدادات والموارد البشرية</div>
+            @if($hasAnySettingsTab)
+                <div class="px-3 pt-4 pb-2 text-[11px] font-bold text-emerald-300/60 uppercase tracking-wider">الإعدادات والموارد البشرية</div>
 
-            <a href="{{ route('office.dashboard', ['tab' => 'staff']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'staff' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span> الموظفين والصلاحيات </span>
-            </a>
+                @if(in_array('staff', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'staff']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'staff' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span> الموظفين والصلاحيات </span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'activity_logs']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'activity_logs' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>🕵️ سجل تتبع حركات الموظفين</span>
-            </a>
+                @if(in_array('activity_logs', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'activity_logs']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'activity_logs' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>🕵️ سجل تتبع حركات الموظفين</span>
+                    </a>
+                @endif
 
-            <a href="{{ route('office.dashboard', ['tab' => 'whatsapp']) }}"
-               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'whatsapp' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                <span>إعدادات الربط مع واتساب</span>
-            </a>
+                @if(in_array('whatsapp', $allowedTabsList))
+                    <a href="{{ route('office.dashboard', ['tab' => 'whatsapp']) }}"
+                       class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'whatsapp' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                        <span>إعدادات الربط مع واتساب</span>
+                    </a>
+                @endif
+            @endif
         </nav>
 
         <div class="p-4 border-t border-white/10 bg-black/20 space-y-2">

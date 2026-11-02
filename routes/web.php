@@ -35,9 +35,12 @@ Route::middleware([
     Route::post('/whatsapp/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp.update');
     Route::post('/whatsapp-settings/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp_settings.update');
 
-    // إدارة وتعديل مكاتب العقار والاتفاقيات المالية
+    // إدارة وتعديل مكاتب العقار والاتفاقيات المالية والباقات
     Route::post('/offices/store', [CompanyErpController::class, 'storeOffice'])->name('erp.offices.store');
     Route::post('/offices/{id}/update', [CompanyErpController::class, 'updateOffice'])->name('erp.offices.update');
+    Route::post('/office-plans/store', [CompanyErpController::class, 'storeOfficePlan'])->name('erp.office_plans.store');
+    Route::post('/office-plans/{id}/update', [CompanyErpController::class, 'updateOfficePlan'])->name('erp.office_plans.update');
+    Route::post('/office-plans/{id}/delete', [CompanyErpController::class, 'deleteOfficePlan'])->name('erp.office_plans.delete');
 
     // إدارة التصنيفات الرئيسية
     Route::post('property-categories/store', [CompanyErpController::class, 'storePropertyCategory'])->name('erp.property_categories.store');

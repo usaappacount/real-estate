@@ -99,8 +99,15 @@ class CompanyErpController extends Controller
                 if (!Schema::hasColumn('offices', 'enable_auto_reminders')) {
                     $table->boolean('enable_auto_reminders')->default(true);
                 }
+                if (!Schema::hasColumn('offices', 'plan_id')) {
+                    $table->unsignedBigInteger('plan_id')->nullable();
+                }
+                if (!Schema::hasColumn('offices', 'allowed_tabs')) {
+                    $table->text('allowed_tabs')->nullable();
+                }
             });
         }
+        $this->ensureOfficePlansTable();
 
         if (Schema::hasTable('owners')) {
             Schema::table('owners', function (Blueprint $table) {
@@ -631,8 +638,10 @@ class CompanyErpController extends Controller
             ->orderBy('tax_invoices.id', 'desc')
             ->get();
 
-        $landingSettings = self::getLandingSettings();
-        $activityLogs = self::getFilteredActivityLogs();
+        $this->ensureOfficePlansTable();
+        $officePlans = DB::table('office_plans')->orderBy('id', 'asc')->get();$availableOfficeTabs = self::getAvailableOfficeTabs();
+
+        $landingSettings = self::getLandingSettings();$activityLogs = self::getFilteredActivityLogs();
 
         $stats = [
             'offices_count' => $offices->count(),
@@ -646,6 +655,8 @@ class CompanyErpController extends Controller
         return view('erp_dashboard', compact(
             'tab',
             'offices',
+            'officePlans',
+            'availableOfficeTabs',
             'categories',
             'fieldTypes',
             'propertyTypes',
@@ -727,17 +738,29 @@ class CompanyErpController extends Controller
         ]);
 
         $formattedPhone = self::formatSaudiPhone($request->phone);
-        $billingType = $request->billing_type ?: 'annual_subscription';
+        $billingType =$request->billing_type ?: 'annual_subscription';
         $annualFee = in_array($billingType, ['annual_subscription', 'hybrid']) ? ($request->annual_fee ?? 0) : 0;
         $commissionRate = in_array($billingType, ['per_property_percentage', 'hybrid']) ? ($request->company_commission_rate ?? 0) : 0;
 
-        DB::transaction(function () use ($request, $formattedPhone, $billingType, $annualFee, $commissionRate) {
-            $parentAccount = null;
-            if ($request->filled('parent_account_id')) {
-                $parentAccount = DB::table('accounts')->whereNull('office_id')->where('id', $request->parent_account_id)->first();
+        $planId = $request->filled('plan_id') ? (int)$request->plan_id : null;
+        $allowedTabs =$request->input('allowed_tabs', []);
+        if ($planId && empty($allowedTabs)) {
+            $planRow = DB::table('office_plans')->where('id',$planId)->first();
+            if ($planRow && !empty($planRow->allowed_tabs)) {
+                $allowedTabs = json_decode($planRow->allowed_tabs, true) ?: [];
             }
-            if (!$parentAccount) {
-                $parentAccount = DB::table('accounts')->whereNull('office_id')->where('code', '1103')->first()
+        }
+        if (empty($allowedTabs)) {$allowedTabs = array_keys(self::getAvailableOfficeTabs());
+        }
+        if (!in_array('overview', $allowedTabs)) {
+            array_unshift($allowedTabs, 'overview');
+        }
+
+        DB::transaction(function () use ($request,$formattedPhone, $billingType,$annualFee, $commissionRate,$planId, $allowedTabs) {$parentAccount = null;
+            if ($request->filled('parent_account_id')) {
+                $parentAccount = DB::table('accounts')->whereNull('office_id')->where('id',$request->parent_account_id)->first();
+            }
+            if (!$parentAccount) {$parentAccount = DB::table('accounts')->whereNull('office_id')->where('code', '1103')->first()
                               ?: DB::table('accounts')->whereNull('office_id')->where('code', '1000')->first();
             }
 
@@ -757,6 +780,8 @@ class CompanyErpController extends Controller
                 'billing_type' => $billingType,
                 'annual_fee' => $annualFee,
                 'company_commission_rate' => $commissionRate,
+                'plan_id' => $planId,
+                'allowed_tabs' => json_encode(array_values(array_unique($allowedTabs)), JSON_UNESCAPED_UNICODE),
                 'subscription_ends_at' => $request->subscription_ends_at ?: now()->addYear()->toDateString(),
                 'status' => 'active',
                 'account_id' => $officeAccountId,
@@ -780,10 +805,10 @@ class CompanyErpController extends Controller
         });
 
         return redirect()->route('erp.dashboard', ['tab' => 'offices'])
-            ->with('success', 'تم إضافة المكتب العقاري وربطه تلقائياً وبشكل متسلسل في شجرة الحسابات وتفعيل اتفاقيته بنجاح.');
+            ->with('success', 'تم إضافة المكتب العقاري وتخصيص باقته وصلاحيات صفحاته وربطه بالشجرة بنجاح.');
     }
 
-    public function updateOffice(Request $request, $id)
+    public function updateOffice(Request $request,$id)
     {
         $request->validate([
             'name' => 'required',
@@ -794,11 +819,18 @@ class CompanyErpController extends Controller
         ]);
 
         $formattedPhone = self::formatSaudiPhone($request->phone);
-        $billingType = $request->billing_type ?: 'annual_subscription';
+        $billingType =$request->billing_type ?: 'annual_subscription';
         $annualFee = in_array($billingType, ['annual_subscription', 'hybrid']) ? ($request->annual_fee ?? 0) : 0;
         $commissionRate = in_array($billingType, ['per_property_percentage', 'hybrid']) ? ($request->company_commission_rate ?? 0) : 0;
 
-        DB::transaction(function () use ($request, $id, $formattedPhone, $billingType, $annualFee, $commissionRate) {
+        $planId = $request->filled('plan_id') ? (int)$request->plan_id : null;
+        $allowedTabs =$request->input('allowed_tabs', []);
+        if (empty($allowedTabs)) {$allowedTabs = ['overview'];
+        } elseif (!in_array('overview', $allowedTabs)) {
+            array_unshift($allowedTabs, 'overview');
+        }
+
+        DB::transaction(function () use ($request,$id, $formattedPhone,$billingType, $annualFee,$commissionRate, $planId,$allowedTabs) {
             DB::table('offices')->where('id', $id)->update([
                 'name' => trim($request->name),
                 'cr_number' => $request->cr_number,
@@ -807,6 +839,8 @@ class CompanyErpController extends Controller
                 'billing_type' => $billingType,
                 'annual_fee' => $annualFee,
                 'company_commission_rate' => $commissionRate,
+                'plan_id' => $planId,
+                'allowed_tabs' => json_encode(array_values(array_unique($allowedTabs)), JSON_UNESCAPED_UNICODE),
                 'subscription_ends_at' => $request->subscription_ends_at,
                 'status' => $request->status,
                 'updated_at' => now(),
@@ -3561,5 +3595,214 @@ class CompanyErpController extends Controller
         }
 
         return $query->limit(350)->get();
+    }
+
+    // =========================================================================
+    // نظام الباقات وصلاحيات الصفحات لمكاتب العقار + الربط بالواجهة الرئيسية
+    // =========================================================================
+    public static function getAvailableOfficeTabs(): array
+    {
+        return [
+            'overview' => 'لوحة التحكم والملخص العام',
+            'owners' => 'إدارة الملاك',
+            'properties' => 'العقارات والصكوك والوحدات',
+            'contracts' => 'المستأجرون وعقود (إيجار)',
+            'accounting' => 'شجرة الحسابات المحاسبية',
+            'vouchers' => 'سندات القبض والصرف',
+            'journal' => 'القيود اليومية',
+            'invoicing' => 'الفواتير الضريبية (ZATCA)',
+            'account_statement' => 'كشف الحساب التفصيلي',
+            'statements' => 'الأستاذ العام والقوائم المالية',
+            'staff' => 'إدارة الموظفين والصلاحيات',
+            'activity_logs' => 'سجل تتبع حركات الموظفين',
+            'whatsapp' => 'إعدادات الربط مع واتساب والضريبة',
+        ];
+    }
+
+    public function ensureOfficePlansTable(): void
+    {
+        if (!Schema::hasTable('office_plans')) {
+            Schema::create('office_plans', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('badge')->nullable();
+                $table->string('billing_type')->default('annual_subscription');
+                $table->decimal('price', 15, 2)->default(0);
+                $table->decimal('old_price', 15, 2)->nullable();
+                $table->string('offer_label')->nullable();
+                $table->decimal('commission_rate', 5, 2)->default(0);
+                $table->text('description')->nullable();
+                $table->text('allowed_tabs')->nullable();
+                $table->boolean('show_on_landing')->default(true);
+                $table->boolean('is_highlighted')->default(false);
+                $table->timestamps();
+            });
+
+            $defaultPlans = [
+                [
+                    'name' => 'باقة إدارة الأملاك والعقارات الأساسية',
+                    'badge' => 'اقتصادية للمكاتب',
+                    'billing_type' => 'annual_subscription',
+                    'price' => 1500,
+                    'old_price' => 2200,
+                    'offer_label' => 'عرض خاص - خصم 30%',
+                    'commission_rate' => 0,
+                    'description' => 'مخصصة لإدارة الملاك، الصكوك، الوحدات العقارية، المستأجرين وتوثيق عقود إيجار بدون النظام المحاسبي وسجل التتبع.',
+                    'allowed_tabs' => json_encode(['overview', 'owners', 'properties', 'contracts', 'staff'], JSON_UNESCAPED_UNICODE),
+                    'show_on_landing' => 1,
+                    'is_highlighted' => 0,
+                ],
+                [
+                    'name' => 'الباقة المحاسبية والعقارية الشاملة (Pro ERP)',
+                    'badge' => 'الأكثر طلباً ⭐',
+                    'billing_type' => 'annual_subscription',
+                    'price' => 3000,
+                    'old_price' => 4000,
+                    'offer_label' => 'شامل الفوترة الضريبية ZATCA',
+                    'commission_rate' => 0,
+                    'description' => 'تشمل جميع صفحات إدارة الأملاك + النظام المالي والمحاسبي الكامل (شجرة الحسابات، السندات، القيود، الفواتير الضريبية، الأستاذ العام، وسجل التتبع).',
+                    'allowed_tabs' => json_encode(array_keys(self::getAvailableOfficeTabs()), JSON_UNESCAPED_UNICODE),
+                    'show_on_landing' => 1,
+                    'is_highlighted' => 1,
+                ],
+                [
+                    'name' => 'باقة الشراكة المرنة (اشتراك مخفض + نسبة)',
+                    'badge' => 'باقة مرنة',
+                    'billing_type' => 'hybrid',
+                    'price' => 1000,
+                    'old_price' => null,
+                    'offer_label' => 'رسوم ميسرة + نسبة لكل عقد',
+                    'commission_rate' => 2.5,
+                    'description' => 'تمنح المكتب كامل خصائص المنظومة العقارية والمحاسبية والربط مع واتساب مقابل اشتراك سنوي مخفض ونسبة رمزية على العقود.',
+                    'allowed_tabs' => json_encode(array_keys(self::getAvailableOfficeTabs()), JSON_UNESCAPED_UNICODE),
+                    'show_on_landing' => 1,
+                    'is_highlighted' => 0,
+                ],
+            ];
+
+            foreach ($defaultPlans as $dp) {
+                DB::table('office_plans')->insert(array_merge($dp, ['created_at' => now(), 'updated_at' => now()]));
+            }
+            $this->syncOfficePlansToLandingPage();
+        }
+    }
+
+    public function syncOfficePlansToLandingPage(): void
+    {
+        if (!Schema::hasTable('office_plans')) return;
+        $plans = DB::table('office_plans')->where('show_on_landing', 1)->orderBy('id', 'asc')->get();
+        if ($plans->count() === 0) return;
+
+        $landingPlans = [];
+        foreach ($plans as $p) {
+            $priceText = '';
+            if ($p->billing_type === 'annual_subscription') {
+                $priceText = number_format($p->price, 0) . ' ر.س / سنوياً';
+            } elseif ($p->billing_type === 'per_property_percentage') {
+                $priceText = 'نسبة ' . $p->commission_rate . '% لكل عقد';
+            } else {
+                $priceText = number_format($p->price, 0) . ' ر.س + ' . $p->commission_rate . '%';
+            }
+
+            if (!empty($p->old_price) && $p->old_price > $p->price) {
+                $priceText .= ' (بدلاً من ' . number_format($p->old_price, 0) . ' ر.س)';
+            }
+            if (!empty($p->offer_label)) {
+                $priceText .= ' — ' . $p->offer_label;
+            }
+
+            $landingPlans[] = [
+                'badge' => $p->badge ?: 'باقة اشتراك',
+                'title' => $p->name,
+                'price' => $priceText,
+                'desc' => $p->description ?: '',
+                'btn_text' => 'اشترك في الباقة الآن',
+                'highlight' => $p->is_highlighted ? 1 : 0,
+            ];
+        }
+
+        self::setSetting('landing_plans_json', json_encode($landingPlans, JSON_UNESCAPED_UNICODE));
+    }
+
+    public function storeOfficePlan(Request $request)
+    {
+        $this->ensureOfficePlansTable();
+        $request->validate(['name' => 'required']);
+
+        $tabs = $request->input('allowed_tabs', ['overview']);
+        if (!in_array('overview', $tabs)) {
+            array_unshift($tabs, 'overview');
+        }
+
+        DB::table('office_plans')->insert([
+            'name' => trim($request->name),
+            'badge' => trim($request->badge ?: 'باقة مكاتب'),
+            'billing_type' => $request->billing_type ?: 'annual_subscription',
+            'price' => (float) ($request->price ?? 0),
+            'old_price' => $request->filled('old_price') ? (float) $request->old_price : null,
+            'offer_label' => trim($request->offer_label ?? ''),
+            'commission_rate' => (float) ($request->commission_rate ?? 0),
+            'description' => trim($request->description ?? ''),
+            'allowed_tabs' => json_encode(array_values(array_unique($tabs)), JSON_UNESCAPED_UNICODE),
+            'show_on_landing' => $request->has('show_on_landing') ? 1 : 0,
+            'is_highlighted' => $request->has('is_highlighted') ? 1 : 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->syncOfficePlansToLandingPage();
+
+        return redirect()->route('erp.dashboard', ['tab' => 'office_plans'])
+            ->with('success', 'تم إنشاء الباقة وتحديد صفحاتها المسموحة وتحديث الواجهة الرئيسية للموقع بنجاح.');
+    }
+
+    public function updateOfficePlan(Request $request, $id)
+    {
+        $this->ensureOfficePlansTable();
+        $tabs = $request->input('allowed_tabs', ['overview']);
+        if (!in_array('overview', $tabs)) {
+            array_unshift($tabs, 'overview');
+        }
+        $encodedTabs = json_encode(array_values(array_unique($tabs)), JSON_UNESCAPED_UNICODE);
+
+        DB::table('office_plans')->where('id', $id)->update([
+            'name' => trim($request->name),
+            'badge' => trim($request->badge ?: 'باقة مكاتب'),
+            'billing_type' => $request->billing_type ?: 'annual_subscription',
+            'price' => (float) ($request->price ?? 0),
+            'old_price' => $request->filled('old_price') ? (float) $request->old_price : null,
+            'offer_label' => trim($request->offer_label ?? ''),
+            'commission_rate' => (float) ($request->commission_rate ?? 0),
+            'description' => trim($request->description ?? ''),
+            'allowed_tabs' => $encodedTabs,
+            'show_on_landing' => $request->has('show_on_landing') ? 1 : 0,
+            'is_highlighted' => $request->has('is_highlighted') ? 1 : 0,
+            'updated_at' => now(),
+        ]);
+
+        // تحديث جميع المكاتب المشتركة في هذه الباقة تلقائياً إذا اختار الأدمن ذلك
+        if ($request->has('sync_subscribed_offices')) {
+            DB::table('offices')->where('plan_id', $id)->update([
+                'allowed_tabs' => $encodedTabs,
+                'billing_type' => $request->billing_type ?: 'annual_subscription',
+                'annual_fee' => (float) ($request->price ?? 0),
+                'company_commission_rate' => (float) ($request->commission_rate ?? 0),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $this->syncOfficePlansToLandingPage();
+
+        return redirect()->route('erp.dashboard', ['tab' => 'office_plans'])
+            ->with('success', 'تم تحديث بيانات الباقة وصلاحياتها ومزامنتها مع الواجهة الرئيسية بنجاح.');
+    }
+
+    public function deleteOfficePlan($id)
+    {
+        DB::table('office_plans')->where('id', $id)->delete();
+        $this->syncOfficePlansToLandingPage();
+
+        return redirect()->route('erp.dashboard', ['tab' => 'office_plans'])
+            ->with('success', 'تم حذف الباقة وتحديث الواجهة الرئيسية.');
     }
 }
