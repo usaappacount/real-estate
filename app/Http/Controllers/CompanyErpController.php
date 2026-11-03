@@ -14,6 +14,41 @@ use App\Models\User;
 class CompanyErpController extends Controller
 {
     /**
+     * بوابة حماية مركزية: تمنع أي مستخدم غير (company_admin) من استدعاء دوال الإدارة المركزية
+     */
+    public function callAction($method,$parameters)
+    {
+        $publicOrSharedMethods = [
+            'showLandingPage',
+            'showPublicInvoicePdf',
+            'handleWhatsappWebhook',
+            'showLogin',
+            'sendOtp',
+            'verifyOtp',
+            'loginWithPassword',
+            'logout',
+            'printVoucher',
+            'sendRawPdfViaWhatsapp',
+        ];
+
+        if (!in_array($method,$publicOrSharedMethods, true)) {
+            if (!Auth::check() || Auth::user()->user_type !== 'company_admin') {
+                abort(403, 'غير مصرح لك بالوصول إلى إجراءات الإدارة المركزية.');
+            }
+        }
+
+        return $this->{$method}(...array_values($parameters));
+    }
+
+    /**
+     * توليد توكن مشفر وموقع بمفتاح النظام للفواتير الضريبية العامة
+     */
+    public static function generateInvoicePublicToken($id, string$invoiceNumber): string
+    {
+        return hash_hmac('sha256', $id . '\vert{}' .$invoiceNumber . '|zatca_pdf', config('app.key', 'erp_zatca_secret_key'));
+    }
+
+    /**
      * فحص وإصلاح أعمدة الجداول تلقائياً + إنشاء حساب الأدمن الافتراضي
      */
     public function ensureDefaultAdminExists(): void
@@ -105,9 +140,75 @@ class CompanyErpController extends Controller
                 if (!Schema::hasColumn('offices', 'allowed_tabs')) {
                     $table->text('allowed_tabs')->nullable();
                 }
+                // إعدادات اعتماد سندات الصرف عبر الواتساب + شروط كاشف الشذوذ المحاسبي
+                if (!Schema::hasColumn('offices', 'wa_approval_threshold')) {
+                    $table->decimal('wa_approval_threshold', 15, 2)->default(10000);
+                }
+                if (!Schema::hasColumn('offices', 'wa_approval_keywords')) {
+                    $table->string('wa_approval_keywords')->default('اعتمد,تم,اوك,موافق,نعم');
+                }
+                if (!Schema::hasColumn('offices', 'enable_wa_voucher_approval')) {
+                    $table->boolean('enable_wa_voucher_approval')->default(false);
+                }
+                if (!Schema::hasColumn('offices', 'anomaly_max_amount')) {
+                    $table->decimal('anomaly_max_amount', 15, 2)->default(20000);
+                }
+                if (!Schema::hasColumn('offices', 'anomaly_night_start')) {
+                    $table->integer('anomaly_night_start')->default(23); // 11 PM
+                }
+                if (!Schema::hasColumn('offices', 'anomaly_night_end')) {
+                    $table->integer('anomaly_night_end')->default(5); // 5 AM
+                }
+                if (!Schema::hasColumn('offices', 'anomaly_alert_on_delete')) {
+                    $table->boolean('anomaly_alert_on_delete')->default(true);
+                }
+                if (!Schema::hasColumn('offices', 'enable_anomaly_detector')) {
+                    $table->boolean('enable_anomaly_detector')->default(true);
+                }
+                if (!Schema::hasColumn('offices', 'wa_invoice_caption')) {
+                    $table->text('wa_invoice_caption')->nullable();
+                }
+                if (!Schema::hasColumn('offices', 'wa_voucher_caption')) {
+                    $table->text('wa_voucher_caption')->nullable();
+                }
+                if (!Schema::hasColumn('offices', 'wa_legal_caption')) {
+                    $table->text('wa_legal_caption')->nullable();
+                }
             });
         }
-        $this->ensureOfficePlansTable();
+
+        if (Schema::hasTable('vouchers')) {
+            Schema::table('vouchers', function (Blueprint $table) {
+                if (!Schema::hasColumn('vouchers', 'property_id')) {
+                    $table->unsignedBigInteger('property_id')->nullable();
+                }
+                if (!Schema::hasColumn('vouchers', 'property_unit_id')) {
+                    $table->unsignedBigInteger('property_unit_id')->nullable();
+                }
+                if (!Schema::hasColumn('vouchers', 'installment_id')) {
+                    $table->unsignedBigInteger('installment_id')->nullable();
+                }
+                if (!Schema::hasColumn('vouchers', 'approval_status')) {
+                    $table->string('approval_status')->default('approved'); // approved | pending
+                }
+                if (!Schema::hasColumn('vouchers', 'approval_code')) {
+                    $table->string('approval_code', 20)->nullable();
+                }
+            });
+        }
+
+        if (Schema::hasTable('journal_entry_items')) {
+            Schema::table('journal_entry_items', function (Blueprint $table) {
+                if (!Schema::hasColumn('journal_entry_items', 'property_id')) {
+                    $table->unsignedBigInteger('property_id')->nullable();
+                }
+                if (!Schema::hasColumn('journal_entry_items', 'property_unit_id')) {
+                    $table->unsignedBigInteger('property_unit_id')->nullable();
+                }
+            });
+        }
+
+        self::ensureContractInstallmentsTable();
 
         if (Schema::hasTable('owners')) {
             Schema::table('owners', function (Blueprint $table) {
@@ -183,6 +284,38 @@ class CompanyErpController extends Controller
             return;
         }
 
+        // إذا كان الجدول قديماً ويحتوي على عمود setting_key بقيد NOT NULL، نعيد بناءه ليصبح نظيفاً ومرناً
+        if (Schema::hasColumn('system_settings', 'setting_key')) {
+            try {
+                DB::transaction(function () {
+                    Schema::create('system_settings_clean_tmp', function (Blueprint $table) {
+                        $table->id();
+                        $table->string('key')->nullable()->index();
+                        $table->string('setting_key')->nullable();
+                        $table->text('value')->nullable();
+                        $table->timestamps();
+                    });
+
+                    $oldRows = DB::table('system_settings')->get();
+                    foreach ($oldRows as $row) {
+                        $k = $row->key ?? ($row->setting_key ?? null);
+                        DB::table('system_settings_clean_tmp')->insert([
+                            'id' => $row->id,
+                            'key' => $k,
+                            'setting_key' => $k,
+                            'value' => $row->value ?? null,
+                            'created_at' => $row->created_at ?? now(),
+                            'updated_at' => $row->updated_at ?? now(),
+                        ]);
+                    }
+
+                    Schema::drop('system_settings');
+                    Schema::rename('system_settings_clean_tmp', 'system_settings');
+                });
+                return;
+            } catch (\Throwable $e) {}
+        }
+
         Schema::table('system_settings', function (Blueprint $table) {
             if (!Schema::hasColumn('system_settings', 'key')) {
                 $table->string('key')->nullable();
@@ -198,7 +331,6 @@ class CompanyErpController extends Controller
             }
         });
     }
-
     public static function getSetting(string $key, $default = null)
     {
         try {
@@ -355,7 +487,10 @@ class CompanyErpController extends Controller
 
     public function showLogin()
     {
-        $this->ensureDefaultAdminExists();
+        if (!session('login_admin_checked')) {
+            $this->ensureDefaultAdminExists();
+            session(['login_admin_checked' => true]);
+        }
 
         if (Auth::check()) {
             return $this->redirectByUserRole(Auth::user());
@@ -388,7 +523,7 @@ class CompanyErpController extends Controller
             return back()->with('error', 'هذا الحساب موقوف حالياً، يرجى مراجعة الإدارة.');
         }
 
-        $otp = (string) rand(1000, 9999);
+        $otp = (string) random_int(1000, 9999);
 
         DB::table('users')->where('id', $user->id)->update([
             'phone' => $formattedPhone,
@@ -396,8 +531,7 @@ class CompanyErpController extends Controller
             'otp_expires_at' => now()->addMinutes(5),
         ]);
 
-        $whatsappSent = self::sendWhatsAppMessage(
-            $formattedPhone,
+        $whatsappSent = self::sendWhatsAppMessage($formattedPhone,
             "كود التحقق الخاص بك في منصة العقارات هو: *{$otp}*",
             $user->office_id
         );
@@ -407,28 +541,46 @@ class CompanyErpController extends Controller
             'local_phone' => $request->phone,
             'formatted_phone' => $formattedPhone,
             'whatsapp_sent' => $whatsappSent,
-            'dev_otp_hint' => !$whatsappSent ? $otp : null,
+            'dev_otp_hint' => (!$whatsappSent && config('app.debug')) ?$otp : null,
         ]);
     }
 
     public function verifyOtp(Request $request)
     {
-        $formattedPhone = $request->formatted_phone;
-        $user = User::where('phone', $formattedPhone)
+        $request->validate([
+            'otp_code' => ['required', 'string', 'regex:/^[0-9]{4,6}$/'],
+        ], [
+            'otp_code.required' => 'يرجى إدخال كود التحقق.',
+            'otp_code.regex' => 'كود التحقق غير صالح.',
+        ]);
+
+        $formattedPhone = self::formatSaudiPhone((string) ($request->formatted_phone ?: $request->local_phone));
+        $user = User::where('phone',$formattedPhone)
                     ->orWhere('phone', $request->local_phone)
                     ->first();
 
-        if (!$user || $user->otp_code !== $request->otp_code) {
+        $inputOtp = trim((string)$request->otp_code);
+        $isExpired = !$user || empty($user->otp_expires_at) || now()->greaterThan(\Carbon\Carbon::parse($user->otp_expires_at));
+
+        if (!$user || empty($user->otp_code) ||$isExpired || !hash_equals((string) $user->otp_code,$inputOtp)) {
             return back()->with([
                 'otp_step' => true,
                 'local_phone' => $request->local_phone,
                 'formatted_phone' => $formattedPhone,
-                'error' => 'كود التحقق غير صحيح، حاول مرة أخرى أو ادخل باسم المستخدم وكلمة المرور.'
+                'error' => $isExpired ? 'انتهت صلاحية كود التحقق، يرجى طلب كود جديد.' : 'كود التحقق غير صحيح، حاول مرة أخرى أو ادخل باسم المستخدم وكلمة المرور.'
             ]);
         }
 
-        DB::table('users')->where('id', $user->id)->update(['otp_code' => null]);
-        Auth::login($user, true);
+        if (!$user->is_active) {
+            return back()->with('error', 'هذا الحساب موقوف حالياً، يرجى مراجعة الإدارة.');
+        }
+
+        DB::table('users')->where('id', $user->id)->update([
+            'otp_code' => null,
+            'otp_expires_at' => null,
+        ]);
+
+        Auth::login($user, true);$request->session()->regenerate();
 
         return $this->redirectByUserRole($user);
     }
@@ -438,19 +590,18 @@ class CompanyErpController extends Controller
         $this->ensureDefaultAdminExists();
 
         $request->validate([
-            'username' => 'required',
-            'password' => 'required',
+            'username' => 'required|string',
+            'password' => 'required|string',
         ]);
 
-        $input = trim($request->username);
-        $formattedPhone = preg_match('/^05[0-9]{8}$/', $input) ? self::formatSaudiPhone($input) : $input;
+        $input = trim($request->username);$formattedPhone = preg_match('/^05[0-9]{8}$/',$input) ? self::formatSaudiPhone($input) :$input;
 
-        $user = User::where('username', $input)
+        $user = User::where('username',$input)
                     ->orWhere('phone', $formattedPhone)
                     ->orWhere('phone', $input)
                     ->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
+        if (!$user || !Hash::check($request->password,$user->password)) {
             return back()->with([
                 'password_mode' => true,
                 'error' => 'اسم المستخدم أو كلمة المرور غير صحيحة.'
@@ -464,14 +615,15 @@ class CompanyErpController extends Controller
             ]);
         }
 
-        Auth::login($user, true);
+        Auth::login($user, true);$request->session()->regenerate();
         return $this->redirectByUserRole($user);
     }
 
-    public function logout()
+    public function logout(Request $request)
     {
         session()->forget(['impersonate_office_id', 'impersonate_owner_id']);
         Auth::logout();
+        $request->session()->invalidate();$request->session()->regenerateToken();
         return redirect()->route('login');
     }
 
@@ -683,18 +835,26 @@ class CompanyErpController extends Controller
 
     public function updateProfile(Request $request)
     {
+        $userId = Auth::id();
         $request->validate([
             'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
-            'username' => 'required',
+            'username' => 'required|unique:users,username,' . $userId,
         ], [
-            'phone.regex' => 'رقم الجوال يجب أن يتكون من 10 أرقام ويبدأ بـ 05.'
+            'phone.regex' => 'رقم الجوال يجب أن يتكون من 10 أرقام ويبدأ بـ 05.',
+            'username.unique' => 'اسم المستخدم مستخدم مسبقاً لحساب آخر.'
         ]);
 
         $formattedPhone = self::formatSaudiPhone($request->phone);
-        $userId = Auth::id();
+        $phoneTaken = DB::table('users')
+            ->where('id', '!=', $userId)
+            ->whereIn('phone', [$formattedPhone, $request->phone])
+            ->exists();
+        if ($phoneTaken) {
+            return back()->withErrors(['رقم الجوال مسجل مسبقاً لمستخدم آخر في النظام.']);
+        }
 
         $updateData = [
-            'name' => $request->name,
+            'name' => trim($request->name),
             'phone' => $formattedPhone,
             'username' => trim($request->username),
             'updated_at' => now(),
@@ -2044,6 +2204,16 @@ class CompanyErpController extends Controller
             abort(404);
         }
 
+        $user = Auth::user();
+        if ($user->user_type !== 'company_admin') {
+            if (in_array($user->user_type, ['office_admin', 'office_staff'], true) && (int) $voucher->office_id !== (int) $user->office_id) {
+                abort(403, 'غير مصرح لك بعرض سندات مكتب آخر.');
+            }
+            if (in_array($user->user_type, ['owner', 'owner_family'], true) && (int) $voucher->owner_id !== (int) $user->owner_id) {
+                abort(403, 'غير مصرح لك بعرض هذا السند.');
+            }
+        }
+
         return view('voucher_print', compact('voucher'));
     }
 
@@ -2559,14 +2729,35 @@ class CompanyErpController extends Controller
     }
 
     // =========================================================================
-    // 3. نظام النسخ الاحتياطي الفوري والاستعادة (Full System Backup & Restore)
+    // 3. نظام النسخ الاحتياطي الفوري والاستعادة المحدث (يشمل كافة الجداول الـ 24)
     // =========================================================================
+    private function getAllBackupTableNames(): array
+    {
+        return [
+            'users', 'offices', 'office_plans', 'owners', 'tenants', 'properties', 'property_units',
+            'lease_contracts', 'contract_installments', 'property_types', 'property_type_attributes',
+            'property_categories', 'custom_field_types', 'accounts', 'custom_account_types',
+            'custom_payment_methods', 'vouchers', 'journal_entries', 'journal_entry_items',
+            'tax_invoices', 'activity_logs', 'system_error_logs', 'system_diagnostic_runs', 'system_settings'
+        ];
+    }
+
     public function downloadSystemBackup(Request $request)
     {
+        $this->ensureDefaultAdminExists();
+        $this->ensureDynamicPropertyTables();
+        $this->ensureDynamicAccountTables();
+        $this->ensurePaymentMethodsTable();
+        $this->ensureJournalTables();
+        $this->ensureTaxInvoicesTable();
+        $this->ensureOfficePlansTable();
+        $this->ensureSystemMonitoringTables();
+        self::ensureContractInstallmentsTable();
+        self::ensureActivityLogsTable();
+
         $format = $request->get('format', 'json');
         $timestamp = date('Y-m-d_H-i-s');
 
-        // تحميل ملف SQLite الخام مباشرة إن طلب المستخدم ذلك
         if ($format === 'sqlite') {
             $dbPath = config('database.connections.sqlite.database', database_path('database.sqlite'));
             if (file_exists($dbPath)) {
@@ -2574,20 +2765,14 @@ class CompanyErpController extends Controller
             }
         }
 
-        // تصدير نسخة احتياطية شاملة ومحمولة بصيغة JSON لجميع جداول النظام
-        $tablesToBackup = [
-            'users', 'offices', 'owners', 'tenants', 'properties', 'property_units',
-            'lease_contracts', 'property_types', 'property_type_attributes', 'property_categories',
-            'custom_field_types', 'accounts', 'custom_account_types', 'custom_payment_methods',
-            'vouchers', 'journal_entries', 'journal_entry_items', 'system_settings'
-        ];
+        $tablesToBackup = $this->getAllBackupTableNames();
 
         $backupPayload = [
             'meta' => [
                 'system' => 'Real Estate ERP System',
                 'exported_at' => now()->toDateTimeString(),
                 'exported_by' => Auth::user()->username ?? 'admin',
-                'version' => '2.5',
+                'version' => '3.0',
             ],
             'tables' => [],
         ];
@@ -2607,6 +2792,30 @@ class CompanyErpController extends Controller
         ]);
     }
 
+    private function syncTableColumnsForRestore(string $tableName, array $sampleRow): void
+    {
+        if (empty($sampleRow) || !Schema::hasTable($tableName)) {
+            return;
+        }
+
+        $existingColumns = Schema::getColumnListing($tableName);
+        $missingColumns = array_diff(array_keys($sampleRow), $existingColumns);
+
+        if (!empty($missingColumns)) {
+            Schema::table($tableName, function (Blueprint $table) use ($missingColumns) {
+                foreach ($missingColumns as $col) {
+                    if (str_ends_with($col, '_id')) {
+                        $table->unsignedBigInteger($col)->nullable();
+                    } elseif (str_contains($col, 'amount') || str_contains($col, 'balance') || str_contains($col, 'rate') || str_contains($col, 'fee') || str_contains($col, 'price')) {
+                        $table->decimal($col, 15, 2)->nullable()->default(0);
+                    } else {
+                        $table->text($col)->nullable();
+                    }
+                }
+            });
+        }
+    }
+
     public function restoreSystemBackup(Request $request)
     {
         $request->validate([
@@ -2616,15 +2825,26 @@ class CompanyErpController extends Controller
         ]);
 
         try {
+            $this->ensureDefaultAdminExists();
+            $this->ensureDynamicPropertyTables();
+            $this->ensureDynamicAccountTables();
+            $this->ensurePaymentMethodsTable();
+            $this->ensureJournalTables();
+            $this->ensureTaxInvoicesTable();
+            $this->ensureOfficePlansTable();
+            $this->ensureSystemMonitoringTables();
+            self::ensureContractInstallmentsTable();
+            self::ensureActivityLogsTable();
+
             $uploadedFile = $request->file('backup_file');
             $realPath = $uploadedFile->getRealPath();
             $ext = strtolower($uploadedFile->getClientOriginalExtension());
 
-            // قراءة أول 16 بايت لمعرفة هل الملف قاعدة بيانات SQLite خام (حتى لو تغير امتداده)
             $header = file_get_contents($realPath, false, null, 0, 16);
             $isSqliteFile = str_starts_with($header ?: '', 'SQLite format 3') || in_array($ext, ['sqlite', 'sqlite3', 'db']);
 
-            // الحالة 1: إذا كان الملف المرفوع هو نسخة SQLite الخام (.sqlite)
+            $tables = $this->getAllBackupTableNames();
+
             if ($isSqliteFile) {
                 $tempSqlite = storage_path('app/temp_restore_' . time() . '.sqlite');
                 copy($realPath, $tempSqlite);
@@ -2635,19 +2855,15 @@ class CompanyErpController extends Controller
                     'prefix' => '',
                 ]]);
 
-                $tables = [
-                    'users', 'offices', 'owners', 'tenants', 'properties', 'property_units',
-                    'lease_contracts', 'property_types', 'property_type_attributes', 'property_categories',
-                    'custom_field_types', 'accounts', 'custom_account_types', 'custom_payment_methods',
-                    'vouchers', 'journal_entries', 'journal_entry_items', 'system_settings'
-                ];
-
                 DB::statement('PRAGMA foreign_keys = OFF;');
                 try {
                     DB::transaction(function () use ($tables) {
                         foreach ($tables as $tableName) {
                             if (Schema::hasTable($tableName) && Schema::connection('sqlite_restore_tmp')->hasTable($tableName)) {
                                 $rows = DB::connection('sqlite_restore_tmp')->table($tableName)->get()->toArray();
+                                if (!empty($rows)) {
+                                    $this->syncTableColumnsForRestore($tableName, (array) $rows[0]);
+                                }
                                 DB::table($tableName)->delete();
                                 foreach (array_chunk($rows, 100) as $chunk) {
                                     $cleanChunk = array_map(fn($r) => (array) $r, $chunk);
@@ -2662,12 +2878,10 @@ class CompanyErpController extends Controller
                     @unlink($tempSqlite);
                 }
 
-                return back()->with('success', 'تم استعادة قاعدة البيانات (.SQLite) وجميع السجلات والحسابات بنجاح!');
+                return back()->with('success', 'تم استعادة قاعدة البيانات (.SQLite) وكافة الجداول والدفعات والفواتير وسجل التتبع بنجاح!');
             }
 
-            // الحالة 2: إذا كان الملف المرفوع بصيغة JSON (.json)
             $content = file_get_contents($realPath);
-            // إزالة BOM إن وجد في بداية الملف
             $content = preg_replace('/^\xEF\xBB\xBF/', '', $content);
             $data = json_decode($content, true);
 
@@ -2680,9 +2894,19 @@ class CompanyErpController extends Controller
                 DB::transaction(function () use ($data) {
                     foreach ($data['tables'] as $tableName => $rows) {
                         if (Schema::hasTable($tableName) && is_array($rows)) {
+                            if (!empty($rows) && is_array($rows[0])) {
+                                $this->syncTableColumnsForRestore($tableName, (array) $rows[0]);
+                            }
+                            $hasSettingKeyCol = ($tableName === 'system_settings' && Schema::hasColumn('system_settings', 'setting_key'));
                             DB::table($tableName)->delete();
                             foreach (array_chunk($rows, 100) as $chunk) {
-                                $cleanChunk = array_map(fn($r) => (array) $r, $chunk);
+                                $cleanChunk = array_map(function ($r) use ($hasSettingKeyCol) {
+                                    $arr = (array) $r;
+                                    if ($hasSettingKeyCol && empty($arr['setting_key']) && isset($arr['key'])) {
+                                        $arr['setting_key'] = $arr['key'];
+                                    }
+                                    return $arr;
+                                }, $chunk);
                                 DB::table($tableName)->insert($cleanChunk);
                             }
                         }
@@ -2692,10 +2916,10 @@ class CompanyErpController extends Controller
                 DB::statement('PRAGMA foreign_keys = ON;');
             }
 
-            return back()->with('success', 'تم استعادة النسخة الاحتياطية (.JSON) وجميع بيانات المكاتب والملاك والعائلة والحسابات بنجاح!');
+            return back()->with('success', 'تم استعادة النسخة الاحتياطية (.JSON) وجميع بيانات المكاتب والملاك والدفعات والفواتير وسجل التتبع بنجاح!');
         } catch (\Throwable $e) {
             try { DB::statement('PRAGMA foreign_keys = ON;'); } catch (\Throwable $ignore) {}
-            self::logSystemIssue('Restore Backup', $e->getMessage(), 'ERROR', $e->getFile() . ':' .$e->getLine());
+            self::logSystemIssue('Restore Backup', $e->getMessage(), 'ERROR', $e->getFile() . ':' . $e->getLine());
             return back()->withErrors(['حدث خطأ أثناء استعادة النسخة الاحتياطية: ' . $e->getMessage()]);
         }
     }
@@ -3026,9 +3250,13 @@ class CompanyErpController extends Controller
              . "الإجمالي شامل الضريبة: *" . number_format($inv->total_amount, 2) . " ر.س*\n"
              . "تاريخ الإصدار: {$inv->issue_date}";
 
-        $sent = self::sendWhatsAppMessage($inv->office_phone, $msg, null);
+        $pdfToken = self::generateInvoicePublicToken($inv->id, $inv->invoice_number);
+        $pdfDirectUrl = route('public.invoice_pdf', ['id' => $inv->id, 'token' => $pdfToken]);
+        $msg .= "\n📥 رابط ملف الفاتورة الضريبية الأصلية (PDF):\n" . $pdfDirectUrl;
+
+        $sent = self::sendWhatsAppDocument($inv->office_phone, $pdfDirectUrl, $inv->invoice_number . '.pdf', $msg, null);
         if ($sent) {
-            return back()->with('success', "تم إرسال الفاتورة رقم ({$inv->invoice_number}) عبر الواتساب إلى ({$inv->buyer_name}) بنجاح.");
+            return back()->with('success', "تم إرسال الفاتورة الضريبية رقم ({$inv->invoice_number}) كملف PDF أصلي عبر الواتساب إلى ({$inv->buyer_name}) بنجاح.");
         }
 
         $cleanPhone = ltrim(self::formatSaudiPhone($inv->office_phone), '+');
@@ -3444,18 +3672,28 @@ class CompanyErpController extends Controller
                 return;
             }
 
+            $user = Auth::user();
+
+            // عدم تتبع الأدمن (مالك المنصة) نهائياً حتى أثناء دخوله لمعاينة المكاتب، وحصر التتبع في صاحب المكتب والموظفين
+            if (!$user || $user->user_type === 'company_admin' || session()->has('impersonate_office_id') || session()->has('impersonate_owner_id')) {
+                return;
+            }
+
+            if (!in_array($user->user_type, ['office_admin', 'office_staff', 'owner_family'])) {
+                return;
+            }
+
             $path = $req->path();
             if (str_contains($path, 'logout') || str_contains($path, 'login')) {
                 return;
             }
 
             self::ensureActivityLogsTable();
-            $user = Auth::user();
 
             $actionType = 'عملية';
-            if (str_contains($path, 'store') || str_contains($path, 'seed')) {
+            if (str_contains($path, 'store') || str_contains($path, 'seed') || str_contains($path, 'pay')) {
                 $actionType = 'إضافة';
-            } elseif (str_contains($path, 'update') || str_contains($path, 'save') || str_contains($path, 'toggle')) {
+            } elseif (str_contains($path, 'update') || str_contains($path, 'save') || str_contains($path, 'toggle') || str_contains($path, 'approve')) {
                 $actionType = 'تعديل';
             } elseif (str_contains($path, 'delete') || str_contains($path, 'clear')) {
                 $actionType = 'حذف';
@@ -3468,6 +3706,7 @@ class CompanyErpController extends Controller
                 'units' => 'الوحدات العقارية',
                 'tenants' => 'المستأجرين',
                 'contracts' => 'عقود الإيجار',
+                'installments' => 'جدولة الدفعات',
                 'accounts' => 'شجرة الحسابات',
                 'account-types' => 'أنواع الحسابات',
                 'vouchers' => 'سندات القبض والصرف',
@@ -3475,9 +3714,6 @@ class CompanyErpController extends Controller
                 'invoices' => 'الفواتير الضريبية',
                 'staff' => 'موظفي المكتب',
                 'family' => 'أفراد العائلة والوكلاء',
-                'property-types' => 'أنواع العقارات',
-                'property-categories' => 'تصنيفات العقارات',
-                'property-attributes' => 'متطلبات العقارات',
                 'payment-methods' => 'طرق الدفع',
                 'whatsapp' => 'إعدادات واتساب',
                 'tax-profile' => 'الإعدادات الضريبية',
@@ -3492,21 +3728,16 @@ class CompanyErpController extends Controller
                 }
             }
 
+            $roleAr = $user->user_type === 'office_admin' ? 'مدير المكتب' : ($user->user_type === 'office_staff' ? 'موظف المكتب' : 'فرد العائلة');
             $actionLabel = "{$actionType} في قسم ({$sectionLabel})";
-
-            // استخراج الاسم الأول أو اسم المستخدم بشكل نظيف
             $actorName = trim(explode('(', $user->name)[0]) ?: ($user->username ?: 'المستخدم');
 
-            // التقاط اسم العنصر المضاف أو المعدل (مثل: عمارة سكنية، اسم المكتب، رقم الوحدة، البيان...)
             $targetItem = $req->input('name')
                        ?: $req->input('title')
                        ?: $req->input('unit_number')
-                       ?: $req->input('attribute_name')
                        ?: $req->input('description')
                        ?: $req->input('general_notes')
-                       ?: $req->input('notes')
-                       ?: $req->input('legal_name')
-                       ?: $req->input('site_name');
+                       ?: $req->input('notes');
 
             if (is_array($targetItem)) {
                 $targetItem = implode('، ', array_filter($targetItem));
@@ -3514,27 +3745,21 @@ class CompanyErpController extends Controller
             if (empty($targetItem) && is_array($req->input('names'))) {
                 $targetItem = implode('، ', array_filter($req->input('names')));
             }
-            if (empty($targetItem) && is_array($req->input('attribute_names'))) {
-                $targetItem = implode('، ', array_filter($req->input('attribute_names')));
-            }
             $targetItem = trim((string) $targetItem);
 
-            // صياغة جملة عربية مبسطة وواضحة للجميع (الأدمن، المكتب، والمالك)
             if (str_contains($path, 'contracts') && $actionType === 'إضافة') {
-                $simpleDetails = "{$actorName} أنشأ عقد إيجار جديد" . ($req->input('total_rent_amount') ? " بقيمة {$req->input('total_rent_amount')} ر.س" : "");
+                $simpleDetails = "{$actorName} ({$roleAr}) أنشأ عقد إيجار جديد" . ($req->input('total_rent_amount') ? " بقيمة {$req->input('total_rent_amount')} ر.س" : "");
             } elseif (str_contains($path, 'sync-ejar')) {
-                $simpleDetails = "{$actorName} وثّق عقد إيجار في منصة إيجار";
+                $simpleDetails = "{$actorName} ({$roleAr}) وثّق عقد إيجار في منصة إيجار";
+            } elseif (str_contains($path, 'installments/pay')) {
+                $simpleDetails = "{$actorName} ({$roleAr}) حصّل دفعة إيجار بمبلغ " . ($req->input('amount') ?: '') . " ر.س";
             } elseif (str_contains($path, 'vouchers') && $actionType === 'إضافة') {
                 $vTypeAr = $req->input('voucher_type') === 'payment' ? 'سند صرف' : 'سند قبض';
-                $simpleDetails = "{$actorName} أصدر {$vTypeAr}" . ($req->input('amount') ? " بمبلغ {$req->input('amount')} ر.س" : "") . ($targetItem ? " ({$targetItem})" : "");
+                $simpleDetails = "{$actorName} ({$roleAr}) أصدر {$vTypeAr}" . ($req->input('amount') ? " بمبلغ {$req->input('amount')} ر.س" : "") . ($targetItem ? " ({$targetItem})" : "");
             } elseif (str_contains($path, 'invoices') && $actionType === 'إضافة') {
-                $simpleDetails = "{$actorName} أصدر فاتورة ضريبية" . ($targetItem ? " ({$targetItem})" : "");
+                $simpleDetails = "{$actorName} ({$roleAr}) أصدر فاتورة ضريبية" . ($targetItem ? " ({$targetItem})" : "");
             } elseif (str_contains($path, 'journal-entries') && $actionType === 'إضافة') {
-                $simpleDetails = "{$actorName} أنشأ قيد يومي" . ($targetItem ? " ({$targetItem})" : "");
-            } elseif (str_contains($path, 'seed')) {
-                $simpleDetails = "{$actorName} قام بتوليد شجرة الحسابات القياسية";
-            } elseif (str_contains($path, 'diagnostics')) {
-                $simpleDetails = "{$actorName} شغّل الفحص الأوتوماتيكي الشامل للنظام";
+                $simpleDetails = "{$actorName} ({$roleAr}) أنشأ قيد يومي" . ($targetItem ? " ({$targetItem})" : "");
             } else {
                 $verb = match ($actionType) {
                     'إضافة' => 'أضاف',
@@ -3542,24 +3767,19 @@ class CompanyErpController extends Controller
                     'حذف'   => 'حذف',
                     default => 'نفّذ عملية في',
                 };
-                if ($targetItem !== '') {
-                    $simpleDetails = "{$actorName} {$verb} {$targetItem} ({$sectionLabel})";
-                } else {
-                    $simpleDetails = "{$actorName} {$verb} في {$sectionLabel}";
-                }
+                $simpleDetails = $targetItem !== ''
+                    ? "{$actorName} ({$roleAr}) {$verb} {$targetItem} ({$sectionLabel})"
+                    : "{$actorName} ({$roleAr}) {$verb} في {$sectionLabel}";
             }
 
             $netInfo = self::detectClientIpAndMac($req);
 
-            $effectiveOfficeId = session('impersonate_office_id') ?: $user->office_id;
-            $effectiveOwnerId  = session('impersonate_owner_id') ?: $user->owner_id;
-
             DB::table('activity_logs')->insert([
                 'user_id' => $user->id,
-                'user_name' => $user->name . ' (' . ($user->username ?: $user->phone) . ')',
+                'user_name' => $actorName . ' — [' . $roleAr . ': ' . ($user->username ?: $user->phone) . ']',
                 'user_type' => $user->user_type,
-                'office_id' => $effectiveOfficeId,
-                'owner_id' => $effectiveOwnerId,
+                'office_id' => $user->office_id,
+                'owner_id' => $user->owner_id,
                 'action_type' => $actionType,
                 'action_label' => $actionLabel,
                 'details' => $simpleDetails,
@@ -3570,21 +3790,29 @@ class CompanyErpController extends Controller
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+
+            $keepGlobalIds = DB::table('activity_logs')->orderBy('id', 'desc')->limit(500)->pluck('id');
+            if ($keepGlobalIds->count() >= 500) {
+                DB::table('activity_logs')->whereNotIn('id', $keepGlobalIds)->delete();
+            }
         } catch (\Throwable $e) {
             // تجاهل أي خطأ لعدم تعطيل العملية الأساسية
         }
     }
 
     /**
-     * جلب سجل التتبع حسب الصلاحيات المطلوبة بدقة:
-     * 1. الأدمن (company_admin): يرى الجميع + يرى الـ IP والـ MAC Address.
-     * 2. المكتب (office_admin / office_staff): يرى موظفي مكتبه فقط، ولا يرى الملاك أو العائلة.
-     * 3. المالك (owner): يرى أفراد عائلته فقط (owner_family).
+     * جلب سجل التتبع مع استبعاد الأدمن مالك المنصة نهائياً، وحصره في صاحب المكتب والموظفين فقط
      */
     public static function getFilteredActivityLogs(?int $officeId = null, ?int $ownerId = null, string $viewerRole = 'company_admin')
     {
         self::ensureActivityLogsTable();
-        $query = DB::table('activity_logs')->orderBy('id', 'desc');
+
+        // مسح أي سجلات قديمة مسجلة باسم الأدمن مالك المنصة لضمان عدم ظهوره إطلاقاً في أي سجل تتبع
+        DB::table('activity_logs')->where('user_type', 'company_admin')->delete();
+
+        $query = DB::table('activity_logs')
+            ->where('user_type', '!=', 'company_admin')
+            ->orderBy('id', 'desc');
 
         if ($viewerRole === 'office') {
             $query->where('office_id', $officeId)
@@ -3592,9 +3820,348 @@ class CompanyErpController extends Controller
         } elseif ($viewerRole === 'owner') {
             $query->where('owner_id', $ownerId)
                   ->where('user_type', 'owner_family');
+        } else {
+            // حتى في لوحة الإدارة المركزية، يعرض فقط حركات أصحاب المكاتب والموظفين وأفراد العائلة بدون الأدمن
+            $query->whereIn('user_type', ['office_admin', 'office_staff', 'owner_family']);
         }
 
-        return $query->limit(350)->get();
+        return $query->limit(300)->get();
+    }
+
+    /**
+     * زر توليد جميع البيانات التجريبية الشاملة للنظام من حساب الأدمن (لتجربة كافة المميزات والصفحات 1, 2, 3...)
+     */
+    public function seedFullSystemDemoData(Request $request)
+    {
+        $this->ensureDefaultAdminExists();
+        $this->ensureDynamicPropertyTables();
+        $this->ensureDynamicAccountTables();
+        $this->ensurePaymentMethodsTable();
+        $this->ensureJournalTables();
+        $this->ensureTaxInvoicesTable();
+        $this->ensureOfficePlansTable();
+        $this->ensureSystemMonitoringTables();
+        self::ensureContractInstallmentsTable();
+        self::ensureActivityLogsTable();
+
+        if (DB::table('accounts')->whereNull('office_id')->count() === 0) {
+            $this->seedDefaultAccounts();
+        }
+
+        DB::transaction(function () {
+            $compCashAcc = DB::table('accounts')->whereNull('office_id')->where('code', '1102')->first()
+                        ?: DB::table('accounts')->whereNull('office_id')->where('is_group', 0)->first();
+            $compRevAcc = DB::table('accounts')->whereNull('office_id')->where('code', '4101')->first() ?: $compCashAcc;
+            $compOfficesParent = DB::table('accounts')->whereNull('office_id')->where('code', '1103')->first();
+            $proPlan = DB::table('office_plans')->orderBy('id', 'desc')->first();
+            $allTabsJson = json_encode(array_keys(self::getAvailableOfficeTabs()), JSON_UNESCAPED_UNICODE);
+
+            // 1. التأكد من وجود أنواع عقارات ومتطلباتها
+            $propTypeIds = [];
+            $demoPropTypes = [
+                ['name' => 'عمارة سكنية استثمارية', 'cat' => 'سكني', 'units' => 1],
+                ['name' => 'مجمع تجاري ومكاتب', 'cat' => 'تجاري', 'units' => 1],
+                ['name' => 'فيلا سكنية مستقلة', 'cat' => 'سكني', 'units' => 0],
+            ];
+            foreach ($demoPropTypes as $dpt) {
+                $existingPt = DB::table('property_types')->where('name', $dpt['name'])->first();
+                if ($existingPt) {
+                    $propTypeIds[] = $existingPt->id;
+                } else {
+                    $ptId = DB::table('property_types')->insertGetId([
+                        'name' => $dpt['name'], 'category' => $dpt['cat'],
+                        'account_id' => $compCashAcc->id ?? null, 'has_units' => $dpt['units'],
+                        'is_active' => 1, 'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                    DB::table('property_type_attributes')->insert([
+                        ['property_type_id' => $ptId, 'attribute_name' => 'عدد الأدوار', 'field_type' => 'رقم / مساحة (Number)', 'is_required' => 1, 'created_at' => now(), 'updated_at' => now()],
+                        ['property_type_id' => $ptId, 'attribute_name' => 'عمر العقار', 'field_type' => 'رقم / مساحة (Number)', 'is_required' => 1, 'created_at' => now(), 'updated_at' => now()],
+                    ]);
+                    $propTypeIds[] = $ptId;
+                }
+            }
+
+            // 2. إنشاء مكتب عقاري نموذجي متكامل (أو استخدام المكتب الأول وتغذيته بـ 35+ عميل لتجربة الـ Pagination)
+            $demoOffices = [
+                ['name' => 'شركة صروح طيبة للتطوير وإدارة الأملاك', 'user' => 'surouh_office', 'phone' => '+966551001001', 'cr' => '1010884411', 'fal' => '120004411', 'tax' => '300445566778893', 'type' => 'annual_subscription', 'fee' => 3000, 'rate' => 0],
+                ['name' => 'مكتب روافد نجد العقاري', 'user' => 'rawafed_najd', 'phone' => '+966551001002', 'cr' => '1010884422', 'fal' => '120004422', 'tax' => '300445566778894', 'type' => 'hybrid', 'fee' => 1500, 'rate' => 2.5],
+            ];
+
+            $mainOfficeId = null;
+            foreach ($demoOffices as $idx => $do) {
+                $offRow = DB::table('offices')->where('name', $do['name'])->first();
+                if (!$offRow) {
+                    $offAccId = self::createSequentialSubAccount(null, $compOfficesParent->id ?? null, 'حساب ' . $do['name']);
+                    $offId = DB::table('offices')->insertGetId([
+                        'name' => $do['name'], 'cr_number' => $do['cr'], 'fal_license' => $do['fal'],
+                        'tax_number' => $do['tax'], 'national_address' => 'الرياض - طريق الملك فهد',
+                        'phone' => $do['phone'], 'email' => $do['user'] . '@office.local',
+                        'address' => 'الرياض - حي الملقا', 'billing_type' => $do['type'],
+                        'annual_fee' => $do['fee'], 'company_commission_rate' => $do['rate'],
+                        'plan_id' => $proPlan->id ?? null, 'allowed_tabs' => $allTabsJson,
+                        'allow_owner_tax_invoice' => 1, 'subscription_ends_at' => now()->addMonths($idx === 0 ? 10 : 1)->toDateString(),
+                        'status' => 'active', 'account_id' => $offAccId, 'use_custom_whatsapp' => 0,
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+
+                    if (!DB::table('users')->where('username', $do['user'])->exists()) {
+                        DB::table('users')->insert([
+                            'name' => 'مدير ' . $do['name'], 'username' => $do['user'],
+                            'phone' => $do['phone'], 'email' => $do['user'] . '@office.local',
+                            'password' => Hash::make('123456'), 'user_type' => 'office_admin',
+                            'office_id' => $offId, 'is_active' => 1, 'created_at' => now(), 'updated_at' => now(),
+                        ]);
+                    }
+                } else {
+                    $offId = $offRow->id;
+                    DB::table('offices')->where('id', $offId)->update(['allowed_tabs' => $allTabsJson, 'allow_owner_tax_invoice' => 1]);
+                }
+
+                if ($idx === 0) {
+                    $mainOfficeId = $offId;
+                }
+            }
+
+            if (!$mainOfficeId) {
+                return;
+            }
+
+            // 3. تأسيس شجرة الحسابات الخاصة بالمكتب النموذجي
+            if (DB::table('accounts')->where('office_id', $mainOfficeId)->count() === 0) {
+                $r1 = DB::table('accounts')->insertGetId(['office_id' => $mainOfficeId, 'parent_id' => null, 'code' => '1000', 'name' => 'الأصول (صناديق وبنوك المكتب)', 'type' => 'الأصول', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('accounts')->insert([
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r1, 'code' => '1101', 'name' => 'صندوق وخزينة المكتب', 'type' => 'الأصول', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r1, 'code' => '1102', 'name' => 'حساب المكتب البنكي (تحصيل الإيجارات)', 'type' => 'الأصول', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r1, 'code' => '1103', 'name' => 'ذمم المستأجرين (حسابات المستأجرين)', 'type' => 'الأصول', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                ]);
+                $r2 = DB::table('accounts')->insertGetId(['office_id' => $mainOfficeId, 'parent_id' => null, 'code' => '2000', 'name' => 'الخصوم والأمانات', 'type' => 'الخصوم والالتزامات', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('accounts')->insert([
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r2, 'code' => '2101', 'name' => 'حساب أمانات الملاك (صافي الإيجارات)', 'type' => 'الخصوم والالتزامات', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r2, 'code' => '2102', 'name' => 'تأمينات المستأجرين المستردة', 'type' => 'الخصوم والالتزامات', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                ]);
+                $r4 = DB::table('accounts')->insertGetId(['office_id' => $mainOfficeId, 'parent_id' => null, 'code' => '4000', 'name' => 'إيرادات المكتب العقاري', 'type' => 'الإيرادات', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('accounts')->insert([
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r4, 'code' => '4101', 'name' => 'إيرادات عمولات إدارة الأملاك', 'type' => 'الإيرادات', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                ]);
+                $r5 = DB::table('accounts')->insertGetId(['office_id' => $mainOfficeId, 'parent_id' => null, 'code' => '5000', 'name' => 'مصروفات المكتب والصيانة', 'type' => 'المصروفات التشغيلية', 'is_group' => 1, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('accounts')->insert([
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r5, 'code' => '5101', 'name' => 'مصروفات صيانة العقارات والوحدات', 'type' => 'المصروفات التشغيلية', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                    ['office_id' => $mainOfficeId, 'parent_id' => $r5, 'code' => '5102', 'name' => 'مصروفات رواتب موظفي المكتب', 'type' => 'المصروفات التشغيلية', 'is_group' => 0, 'balance' => 0, 'created_at' => now(), 'updated_at' => now()],
+                ]);
+            }
+
+            $offBankAcc = DB::table('accounts')->where('office_id', $mainOfficeId)->where('code', '1102')->first();
+            $offTenantsParent = DB::table('accounts')->where('office_id', $mainOfficeId)->where('code', '1103')->first();
+            $offOwnersParent = DB::table('accounts')->where('office_id', $mainOfficeId)->where('code', '2101')->first();
+            $offRevAcc = DB::table('accounts')->where('office_id', $mainOfficeId)->where('code', '4101')->first();
+            $offMaintAcc = DB::table('accounts')->where('office_id', $mainOfficeId)->where('code', '5101')->first();
+
+            // 4. إضافة 6 ملاك عقارات + 8 عقارات + 40 وحدة عقارية + 36 مستأجراً وعقداً (لتجربة نظام الصفحات 30 في الصفحة الأولى والباقي في الصفحة الثانية)
+            $ownerNames = [
+                'الشيخ عمر بن إبراهيم المهيدب',
+                'الشيخ عبدالرحمن بن عبدالعزيز الراجحي',
+                'سليمان بن محمد العليان',
+                'خالد بن فهد السديري',
+                'سلطان بن بندر العتيبي',
+                'شركة دار الأصول العقارية القابضة'
+            ];
+            $ownerIds = [];
+            foreach ($ownerNames as $oIdx => $oName) {
+                $existingOw = DB::table('owners')->where('office_id', $mainOfficeId)->where('name', $oName)->first();
+                if ($existingOw) {
+                    $ownerIds[] = $existingOw->id;
+                } else {
+                    $owAccId = self::createSequentialSubAccount($mainOfficeId, $offOwnersParent->id ?? null, 'أمانات المالك: ' . $oName);
+                    $owPhone = '+96650440010' . ($oIdx + 1);
+                    $owUser = 'owner_demo_' . ($oIdx + 1) . '_' . rand(10, 99);
+                    $owId = DB::table('owners')->insertGetId([
+                        'office_id' => $mainOfficeId, 'name' => $oName,
+                        'national_id' => '102030405' . $oIdx, 'tax_number' => '30011223344556' . $oIdx,
+                        'national_address' => 'الرياض - حي حطين', 'phone' => $owPhone,
+                        'email' => $owUser . '@owner.local', 'iban' => 'SA448000000060801016751' . $oIdx,
+                        'bank_name' => 'مصرف الراجحي', 'office_management_fee_rate' => 5.0,
+                        'account_id' => $owAccId, 'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                    DB::table('users')->insert([
+                        'name' => $oName, 'username' => $owUser, 'phone' => $owPhone,
+                        'email' => $owUser . '@owner.local', 'national_id' => '102030405' . $oIdx,
+                        'password' => Hash::make('123456'), 'user_type' => 'owner',
+                        'office_id' => $mainOfficeId, 'owner_id' => $owId, 'is_active' => 1,
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                    $ownerIds[] = $owId;
+                }
+            }
+
+            // 5. إنشاء العقارات والوحدات
+            $propTitles = [
+                'مجمع الخزامى السكني - رقم 68',
+                'عمارة سرايا الغدير - رقم 69',
+                'برج الملقا للأعمال والتجارة',
+                'مجمع الياسمين بلازا',
+                'عمارة النخيل الذهبية',
+                'مجمع قرطبة السكني الحديث'
+            ];
+            $propIds = [];
+            foreach ($propTitles as $pIdx => $pTitle) {
+                $existingPr = DB::table('properties')->where('office_id', $mainOfficeId)->where('title', $pTitle)->first();
+                if ($existingPr) {
+                    $propIds[] = $existingPr->id;
+                } else {
+                    $prId = DB::table('properties')->insertGetId([
+                        'office_id' => $mainOfficeId, 'owner_id' => $ownerIds[$pIdx % count($ownerIds)],
+                        'property_type_id' => $propTypeIds[$pIdx % count($propTypeIds)],
+                        'title' => $pTitle, 'deed_number' => '31018877660' . ($pIdx + 1),
+                        'deed_date' => '2023-05-10', 'total_area' => 950 + ($pIdx * 120),
+                        'estimated_value' => 4500000 + ($pIdx * 500000), 'city' => 'الرياض',
+                        'district' => 'حي الملقا', 'street' => 'طريق أنس بن مالك',
+                        'building_number' => (string)(4100 + $pIdx), 'postal_code' => '13521',
+                        'custom_attributes' => json_encode(['عدد الأدوار' => '4', 'عمر العقار' => '2'], JSON_UNESCAPED_UNICODE),
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                    $propIds[] = $prId;
+                }
+            }
+
+            // 6. إنشاء 35 مستأجراً وعقداً ووحدات ودفعات وسندات (لكي يظهر 30 في الصفحة 1 والباقي في الصفحة 2)
+            $firstNames = ['صالح', 'عبدالله', 'فهد', 'ناصر', 'سعود', 'محمد', 'خالد', 'فيصل', 'تركي', 'بندر', 'سلطان', 'ماجد'];
+            $midNames = ['بن سليمان', 'بن سعد', 'بن إبراهيم', 'بن عبدالعزيز', 'بن حمد', 'بن راشد', 'بن منصور'];
+            $lastNames = ['الدوسري', 'الموسى', 'التميمي', 'السبيعي', 'القحطاني', 'العتيبي', 'الشمري', 'الحربي', 'المطيري', 'الشهري', 'الزهراني', 'الغامدي'];
+
+            $existingTenantsCount = DB::table('tenants')->where('office_id', $mainOfficeId)->count();
+            $neededTenants = max(0, 35 - $existingTenantsCount);
+
+            for ($i = 1; $i <= $neededTenants; $i++) {
+                $seqNum = $existingTenantsCount + $i;
+                $tName = $firstNames[$seqNum % count($firstNames)] . ' ' . $midNames[$seqNum % count($midNames)] . ' ' . $lastNames[($seqNum * 3) % count($lastNames)];
+                $tPhone = '+966556000' . str_pad((string)(200 + $seqNum), 3, '0', STR_PAD_LEFT);
+                $tIdNo = '1088776' . str_pad((string)(100 + $seqNum), 3, '0', STR_PAD_LEFT);
+
+                $tAccId = self::createSequentialSubAccount($mainOfficeId, $offTenantsParent->id ?? null, 'المستأجر: ' . $tName);
+                $tId = DB::table('tenants')->insertGetId([
+                    'office_id' => $mainOfficeId, 'name' => $tName, 'id_type' => 'national_id',
+                    'id_number' => $tIdNo, 'tax_number' => ($seqNum % 4 === 0) ? ('300998877665' . str_pad((string)$seqNum, 3, '0', STR_PAD_LEFT)) : null,
+                    'national_address' => 'الرياض - حي الياسمين', 'phone' => $tPhone,
+                    'account_id' => $tAccId, 'created_at' => now(), 'updated_at' => now(),
+                ]);
+
+                $chosenPropId = $propIds[$seqNum % count($propIds)];
+                $chosenProp = DB::table('properties')->where('id', $chosenPropId)->first();
+                $rentAmount = 24000 + (($seqNum % 6) * 4000);
+
+                $unitId = DB::table('property_units')->insertGetId([
+                    'property_id' => $chosenPropId, 'property_type_id' => $chosenProp->property_type_id,
+                    'unit_number' => 'شقة ' . $seqNum, 'floor_number' => ($seqNum % 4) + 1,
+                    'area' => 145, 'electricity_meter' => 'ELC-880' . $seqNum,
+                    'water_meter' => 'WTR-440' . $seqNum, 'default_rent_price' => $rentAmount,
+                    'status' => 'rented', 'custom_attributes' => json_encode(['rooms' => 4, 'unit_kind' => 'شقة'], JSON_UNESCAPED_UNICODE),
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+
+                // توزيع التواريخ بحيث تكون هناك عقود ودفعات متأخرة (30، 60، 90، +90 يوماً) ودفعات سارية
+                $monthsAgo = ($seqNum % 5) * 2;
+                $startDate = now()->subMonths($monthsAgo)->toDateString();
+                $endDate = now()->subMonths($monthsAgo)->addYear()->toDateString();
+                $cycle = ($seqNum % 3 === 0) ? 'quarterly' : (($seqNum % 2 === 0) ? 'semi_annual' : 'annual');
+
+                $contractNo = 'CNT-' . date('Y') . '-' . str_pad((string)(1000 + $seqNum), 5, '0', STR_PAD_LEFT);
+                $cId = DB::table('lease_contracts')->insertGetId([
+                    'contract_number' => $contractNo,
+                    'ejar_contract_number' => 'EJR-99001122' . str_pad((string)$seqNum, 2, '0', STR_PAD_LEFT),
+                    'ejar_status' => ($seqNum % 5 === 0) ? 'not_sent' : 'active',
+                    'office_id' => $mainOfficeId, 'property_id' => $chosenPropId, 'property_unit_id' => $unitId,
+                    'owner_id' => $chosenProp->owner_id, 'tenant_id' => $tId,
+                    'start_date' => $startDate, 'end_date' => $endDate,
+                    'payment_cycle' => $cycle, 'total_rent_amount' => $rentAmount,
+                    'security_deposit' => 2000, 'office_commission' => ($rentAmount * 5) / 100,
+                    'company_fee_amount' => 0, 'status' => 'active',
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+
+                $contractObj = DB::table('lease_contracts')->where('id', $cId)->first();
+                self::generateInstallmentsForContract($contractObj);
+
+                // إصدار سند قبض لبعض المستأجرين لتجربة السندات وكشوف الحسابات
+                if ($seqNum <= 22 && $offBankAcc) {
+                    $paidAmt = ($seqNum % 2 === 0) ? $rentAmount : ($rentAmount / 2);
+                    $vNo = self::generateSequentialVoucherNumber('receipt', $mainOfficeId);
+                    $vId = DB::table('vouchers')->insertGetId([
+                        'voucher_number' => $vNo, 'voucher_type' => 'receipt',
+                        'office_id' => $mainOfficeId, 'owner_id' => $chosenProp->owner_id,
+                        'tenant_id' => $tId, 'lease_contract_id' => $cId,
+                        'property_id' => $chosenPropId, 'property_unit_id' => $unitId,
+                        'debit_account_id' => $offBankAcc->id, 'credit_account_id' => $tAccId,
+                        'amount' => $paidAmt, 'payment_method' => 'bank_transfer',
+                        'voucher_date' => now()->subDays($seqNum)->toDateString(),
+                        'notes' => 'تحصيل دفعة إيجار للعقد ' . $contractNo . ' - ' . $tName,
+                        'approval_status' => 'approved', 'created_by' => Auth::id() ?? 1,
+                        'created_at' => now()->subDays($seqNum), 'updated_at' => now(),
+                    ]);
+                    self::applyAccountMovement((int)$offBankAcc->id, (float)$paidAmt, 0);
+                    self::applyAccountMovement((int)$tAccId, 0, (float)$paidAmt);
+
+                    $firstInst = DB::table('contract_installments')->where('lease_contract_id', $cId)->orderBy('installment_number')->first();
+                    if ($firstInst) {
+                        $applied = min($paidAmt, (float)$firstInst->amount);
+                        DB::table('contract_installments')->where('id', $firstInst->id)->update([
+                            'paid_amount' => $applied,
+                            'status' => $applied >= $firstInst->amount ? 'paid' : 'partial_overdue',
+                            'last_voucher_id' => $vId,
+                        ]);
+                    }
+                }
+            }
+
+            // إضافة وحدات شاغرة لتجربة فلتر الوحدات الشاغرة وتصدير ZIP
+            foreach ($propIds as $idx => $pId) {
+                $pr = DB::table('properties')->where('id', $pId)->first();
+                if (!DB::table('property_units')->where('property_id', $pId)->where('status', 'vacant')->exists()) {
+                    DB::table('property_units')->insert([
+                        'property_id' => $pId, 'property_type_id' => $pr->property_type_id,
+                        'unit_number' => 'وحدة شاغرة A-' . ($idx + 1), 'floor_number' => 2,
+                        'area' => 165, 'electricity_meter' => 'ELC-VAC-' . $idx,
+                        'water_meter' => 'WTR-VAC-' . $idx, 'default_rent_price' => 32000,
+                        'status' => 'vacant', 'custom_attributes' => json_encode(['rooms' => 5, 'unit_kind' => 'شقة'], JSON_UNESCAPED_UNICODE),
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            // 7. إضافة قيد يومي وفاتورة ضريبية وسجل تتبع إن لم تكن موجودة
+            if (DB::table('journal_entries')->where('office_id', $mainOfficeId)->count() === 0 && $offMaintAcc && $offBankAcc) {
+                $jeId = DB::table('journal_entries')->insertGetId([
+                    'office_id' => $mainOfficeId, 'entry_number' => 1, 'entry_date' => date('Y-m-d'),
+                    'general_notes' => 'قيد إثبات مصروفات صيانة دورية للمصاعد والمضخات',
+                    'total_debit' => 3500, 'total_credit' => 3500, 'total_tax' => 0,
+                    'created_by' => Auth::id() ?? 1, 'created_at' => now(), 'updated_at' => now(),
+                ]);
+                DB::table('journal_entry_items')->insert([
+                    ['journal_entry_id' => $jeId, 'account_id' => $offMaintAcc->id, 'debit' => 3500, 'credit' => 0, 'tax' => 0, 'notes' => 'صيانة مصاعد العقارات', 'created_at' => now(), 'updated_at' => now()],
+                    ['journal_entry_id' => $jeId, 'account_id' => $offBankAcc->id, 'debit' => 0, 'credit' => 3500, 'tax' => 0, 'notes' => 'سداد من البنك', 'created_at' => now(), 'updated_at' => now()],
+                ]);
+            }
+
+            if (DB::table('activity_logs')->where('office_id', $mainOfficeId)->count() < 5) {
+                $sampleActs = [
+                    ['type' => 'إضافة', 'label' => 'إضافة في قسم (عقود الإيجار)', 'det' => 'مدير المكتب أنشأ عقد إيجار جديد وتوثيقه في منصة إيجار'],
+                    ['type' => 'إضافة', 'label' => 'إضافة في قسم (سندات القبض والصرف)', 'det' => 'مدير المكتب أصدر سند قبض إيجار بمبلغ 28,000 ر.س'],
+                    ['type' => 'تعديل', 'label' => 'تعديل في قسم (العقارات والصكوك)', 'det' => 'مدير المكتب عدّل بيانات الصك والوحدات في مجمع الخزامى'],
+                    ['type' => 'حذف', 'label' => 'حذف في قسم (سندات القبض والصرف)', 'det' => 'محاسب المكتب حذف مسودة سند مكرر وعكس قيده المالي'],
+                ];
+                foreach ($sampleActs as $sa) {
+                    DB::table('activity_logs')->insert([
+                        'user_id' => Auth::id() ?? 1, 'user_name' => 'مدير المكتب (surouh_office)',
+                        'user_type' => 'office_admin', 'office_id' => $mainOfficeId, 'owner_id' => $ownerIds[0] ?? null,
+                        'action_type' => $sa['type'], 'action_label' => $sa['label'], 'details' => $sa['det'],
+                        'request_path' => 'office/dashboard', 'ip_address' => '192.168.1.105',
+                        'mac_address' => 'A4:83:E7:2B:99:1C (بصمة جهاز)', 'user_agent' => 'Mozilla/5.0',
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                }
+            }
+        });
+
+        return back()->with('success', '🎉 تم توليد وإضافة جميع البيانات التجريبية الشاملة للنظام بنجاح! (35+ مستأجراً وعقداً، ملاك، عقارات، وحدات شاغرة ومؤجرة، دفعات، سندات، قيود، وسجل تتبع) لتجربة كافة المميزات ونظام الصفحات (1, 2, 3...) فوراً.');
     }
 
     // =========================================================================
@@ -3607,6 +4174,8 @@ class CompanyErpController extends Controller
             'owners' => 'إدارة الملاك',
             'properties' => 'العقارات والصكوك والوحدات',
             'contracts' => 'المستأجرون وعقود (إيجار)',
+            'installments' => 'جدولة الدفعات وأعمار الديون',
+            'legal_notices' => 'مولد الإنذارات القانونية الذكي',
             'accounting' => 'شجرة الحسابات المحاسبية',
             'vouchers' => 'سندات القبض والصرف',
             'journal' => 'القيود اليومية',
@@ -3614,8 +4183,8 @@ class CompanyErpController extends Controller
             'account_statement' => 'كشف الحساب التفصيلي',
             'statements' => 'الأستاذ العام والقوائم المالية',
             'staff' => 'إدارة الموظفين والصلاحيات',
-            'activity_logs' => 'سجل تتبع حركات الموظفين',
-            'whatsapp' => 'إعدادات الربط مع واتساب والضريبة',
+            'activity_logs' => 'سجل تتبع حركات الموظفين وكاشف الشذوذ',
+            'whatsapp' => 'إعدادات واتساب والشذوذ والاعتماد',
         ];
     }
 
@@ -3804,5 +4373,364 @@ class CompanyErpController extends Controller
 
         return redirect()->route('erp.dashboard', ['tab' => 'office_plans'])
             ->with('success', 'تم حذف الباقة وتحديث الواجهة الرئيسية.');
+    }
+
+    // =========================================================================
+    // الميزات الذكية الجديدة: جدولة الدفعات + إرسال PDF واتساب + المساعد الذكي + الاعتماد
+    // =========================================================================
+    public static function ensureContractInstallmentsTable(): void
+    {
+        if (!Schema::hasTable('contract_installments')) {
+            Schema::create('contract_installments', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('lease_contract_id')->index();
+                $table->unsignedBigInteger('property_id')->nullable();
+                $table->unsignedBigInteger('property_unit_id')->nullable();
+                $table->unsignedBigInteger('owner_id')->nullable();
+                $table->unsignedBigInteger('tenant_id')->nullable();
+                $table->integer('installment_number')->default(1);
+                $table->date('due_date')->index();
+                $table->decimal('amount', 15, 2)->default(0);
+                $table->decimal('paid_amount', 15, 2)->default(0);
+                $table->string('status')->default('due'); // due | partial | overdue | paid
+                $table->unsignedBigInteger('last_voucher_id')->nullable();
+                $table->text('voucher_ids_json')->nullable();
+                $table->timestamps();
+            });
+        }
+    }
+
+    /**
+     * توليد جدول دفعات العقد تلقائياً حسب دورة الإيجار (شهري: 12، ربع سنوي: 4، نصف سنوي: 2، سنوي: 1)
+     */
+    public static function generateInstallmentsForContract(object $contract): void
+    {
+        self::ensureContractInstallmentsTable();
+        $exists = DB::table('contract_installments')->where('lease_contract_id', $contract->id)->exists();
+        if ($exists) return;
+
+        $count = match ($contract->payment_cycle) {
+            'monthly' => 12,
+            'quarterly' => 4,
+            'semi_annual' => 2,
+            default => 1,
+        };
+        $monthsStep = (int) (12 / $count);
+        $basePart = floor(($contract->total_rent_amount / $count) * 100) / 100;
+        $startDate = \Carbon\Carbon::parse($contract->start_date ?: date('Y-m-d'));
+
+        for ($i = 1; $i <= $count; $i++) {
+            $amt = ($i === $count)
+                ? round($contract->total_rent_amount - ($basePart * ($count - 1)), 2)
+                : $basePart;
+            $dueDate = $startDate->copy()->addMonths(($i - 1) * $monthsStep)->toDateString();
+
+            DB::table('contract_installments')->insert([
+                'office_id' => $contract->office_id,
+                'lease_contract_id' => $contract->id,
+                'property_id' => $contract->property_id,
+                'property_unit_id' => $contract->property_unit_id,
+                'owner_id' => $contract->owner_id,
+                'tenant_id' => $contract->tenant_id,
+                'installment_number' => $i,
+                'due_date' => $dueDate,
+                'amount' => $amt,
+                'paid_amount' => 0,
+                'status' => $dueDate < date('Y-m-d') ? 'overdue' : 'due',
+                'voucher_ids_json' => json_encode([]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+    }
+
+    /**
+     * إرسال ملف PDF أصلي مرفق مباشرة عبر WhatsApp API (Base64 PDF) بدون روابط نصية
+     * ومع استخدام الرسالة المخصصة التي حددها المكتب في الإعدادات (أو بدون رسالة إذا تركها فارغة)
+     */
+    public static function sendWhatsAppDocument(string $toPhone, string $pdfBase64OrUrl, string $fileName, string $caption = '', ?int $officeId = null): bool
+    {
+        $apiUrl = self::getSetting('whatsapp_api_url', env('WHATSAPP_API_URL'));
+        $apiToken = self::getSetting('whatsapp_api_token', env('WHATSAPP_API_TOKEN'));
+        $instanceId = self::getSetting('whatsapp_instance_id', '');
+
+        if ($officeId && Schema::hasTable('offices')) {
+            $office = DB::table('offices')->where('id', $officeId)->first();
+            $isCustom = (!empty($office->use_custom_whatsapp) || ($office->whatsapp_mode ?? '') === 'custom');
+            if ($office && $isCustom && !empty($office->whatsapp_api_url)) {
+                $apiUrl = $office->whatsapp_api_url;
+                $apiToken = $office->whatsapp_api_token;
+                $instanceId = $office->whatsapp_instance_id ?? '';
+            }
+        }
+
+        if (empty($apiUrl) || empty($apiToken)) {
+            return false;
+        }
+
+        try {
+            $payload = [
+                'token' => $apiToken,
+                'instance_id' => $instanceId,
+                'to' => self::formatSaudiPhone($toPhone),
+                'type' => 'document',
+                'document' => $pdfBase64OrUrl,
+                'file' => $pdfBase64OrUrl,
+                'filename' => $fileName,
+            ];
+            if (trim($caption) !== '') {
+                $payload['caption'] = trim($caption);
+                $payload['message'] = trim($caption);
+            }
+
+            $response = Http::timeout(15)->post($apiUrl, $payload);
+            return $response->successful();
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * استقبال ملف الـ PDF المولّد من المتصفح بصيغة Base64 وحفظه كملف PDF أصلي وإرساله كمرفق Document عبر الواتساب
+     */
+    public function sendRawPdfViaWhatsapp(Request $request)
+    {
+        $user = Auth::user();
+        if (!in_array($user->user_type, ['company_admin', 'office_admin', 'office_staff'], true)) {
+            abort(403);
+        }
+
+        $phone = trim((string) $request->input('phone', ''));
+        $pdfBase64 = (string) $request->input('pdf_base64', '');
+        $cleanBaseName = pathinfo(trim((string) $request->input('filename', 'Document.pdf')), PATHINFO_FILENAME);
+        $fileName = preg_replace('/[^a-zA-Z0-9_\-\x{0600}-\x{06FF}]/u', '_', $cleanBaseName) ?: 'Document';
+        $fileName .= '.pdf';
+
+        $docType = (string) $request->input('doc_type', 'general');
+
+        // عزل المكتب لمنع أي مستخدم من الإرسال عبر إعدادات مكتب آخر
+        if ($user->user_type === 'company_admin') {
+            $officeId = $request->filled('office_id') ? (int) $request->office_id : (session('impersonate_office_id') ? (int) session('impersonate_office_id') : null);
+        } else {
+            $officeId = (int) $user->office_id;
+        }
+
+        if (empty($phone) || empty($pdfBase64)) {
+            return response()->json(['success' => false, 'message' => 'يرجى التأكد من وجود رقم الجوال للعميل.']);
+        }
+
+        $rawBase64 = $pdfBase64;
+        if (str_contains($rawBase64, 'base64,')) {
+            $rawBase64 = explode('base64,', $rawBase64, 2)[1];
+        }
+        $pdfBinary = base64_decode($rawBase64, true);
+
+        // التحقق من أن المحتوى ملف PDF حقيقي وألا يتجاوز حجمه 10 ميغابايت
+        if ($pdfBinary === false || !str_starts_with($pdfBinary, '%PDF-') || strlen($pdfBinary) > 10 * 1024 * 1024) {
+            return response()->json(['success' => false, 'message' => 'ملف الـ PDF غير صالح أو يتجاوز الحجم المسموح (10MB).']);
+        }
+
+        $pdfDir = public_path('uploads/whatsapp_pdfs');
+        if (!is_dir($pdfDir)) {
+            @mkdir($pdfDir, 0775, true);
+        }
+        $storedName = time() . '_' . bin2hex(random_bytes(4)) . '_' . $fileName;
+        @file_put_contents($pdfDir . '/' . $storedName, $pdfBinary);
+
+        $caption = '';
+        if ($officeId && Schema::hasTable('offices')) {
+            $office = DB::table('offices')->where('id', $officeId)->first();
+            if ($office) {
+                if ($docType === 'invoice') $caption = trim((string) ($office->wa_invoice_caption ?? ''));
+                elseif ($docType === 'voucher') $caption = trim((string) ($office->wa_voucher_caption ?? ''));
+                elseif ($docType === 'legal') $caption = trim((string) ($office->wa_legal_caption ?? ''));
+            }
+        }
+
+        $sent = self::sendWhatsAppDocument($phone, $pdfBase64, $fileName, $caption, $officeId);
+
+        return response()->json([
+            'success' => $sent,
+            'pdf_url' => asset('uploads/whatsapp_pdfs/' . $storedName),
+            'message' => $sent
+                ? "تم إرسال ملف الـ PDF الأصلي ({$fileName}) كمرفق عبر الواتساب بنجاح."
+                : "تم تجهيز ملف الـ PDF الأصلي ({$fileName})؛ يرجى التأكد من تفعيل توكن WhatsApp API في الإعدادات."
+        ]);
+    }
+
+    /**
+     * استقبال رسائل الواتساب (Webhook) لاعتماد سندات الصرف المعلقة بالكلمات المحددة من صاحب المكتب
+     */
+    public function handleWhatsappWebhook(Request $request)
+    {
+        $fromPhone = $request->input('from', $request->input('sender', $request->input('phone', '')));
+        $body = trim((string) $request->input('message', $request->input('body', $request->input('text', ''))));
+
+        if (empty($fromPhone) || empty($body)) {
+            return response()->json(['status' => 'ignored']);
+        }
+
+        $formattedPhone = self::formatSaudiPhone($fromPhone);
+        $localPhone = self::toLocalPhone($formattedPhone);
+
+        $user = DB::table('users')
+            ->where('user_type', 'office_admin')
+            ->where('is_active', 1)
+            ->where(function ($q) use ($formattedPhone, $localPhone) {
+                $q->where('phone', $formattedPhone)->orWhere('phone', $localPhone);
+            })
+            ->first();
+
+        if ($user && $user->office_id) {
+            $office = DB::table('offices')->where('id', $user->office_id)->first();
+            if (!$office) {
+                return response()->json(['status' => 'ignored']);
+            }
+
+            // التحقق من توكن الـ Webhook في حال تم إرساله في الهيدر أو الطلب لمنع الانتحال الخارجي
+            $incomingToken = $request->header('X-Webhook-Token') ?: $request->input('token', $request->input('api_token'));
+            $expectedToken = (!empty($office->use_custom_whatsapp) && !empty($office->whatsapp_api_token))
+                ? $office->whatsapp_api_token
+                : self::getSetting('whatsapp_api_token', env('WHATSAPP_API_TOKEN'));
+
+            if (!empty($incomingToken) && !empty($expectedToken) && !hash_equals((string) $expectedToken, (string) $incomingToken)) {
+                return response()->json(['status' => 'unauthorized'], 403);
+            }
+
+            $keywordsRaw = $office->wa_approval_keywords ?: 'اعتمد,تم,اوك,موافق,نعم';
+            $keywords = array_filter(array_map('trim', preg_split('/[,،|]+/u', $keywordsRaw)));
+
+            $matchedApproval = false;
+            foreach ($keywords as $kw) {
+                if ($kw !== '' && (mb_strtolower($body) === mb_strtolower($kw) || str_starts_with(mb_strtolower($body), mb_strtolower($kw) . ' '))) {
+                    $matchedApproval = true;
+                    break;
+                }
+            }
+
+            if ($matchedApproval) {
+                $pendingQuery = DB::table('vouchers')
+                    ->where('office_id', $office->id)
+                    ->where('approval_status', 'pending')
+                    ->orderBy('id', 'desc');
+
+                if (preg_match('/(\d{3,6})/', $body, $m)) {
+                    $pendingQuery->where(function ($q) use ($m) {
+                        $q->where('approval_code', $m[1])->orWhere('id', $m[1]);
+                    });
+                }
+
+                $pendingVoucher = $pendingQuery->first();
+                if ($pendingVoucher) {
+                    DB::transaction(function () use ($pendingVoucher) {
+                        DB::table('vouchers')->where('id', $pendingVoucher->id)->update([
+                            'approval_status' => 'approved',
+                            'approval_code' => null,
+                            'updated_at' => now(),
+                        ]);
+                        self::applyAccountMovement((int) $pendingVoucher->debit_account_id, (float) $pendingVoucher->amount, 0);
+                        self::applyAccountMovement((int) $pendingVoucher->credit_account_id, 0, (float) $pendingVoucher->amount);
+                    });
+
+                    $confirmMsg = "✅ *تم اعتماد سند الصرف بنجاح عبر الواتساب!*\n"
+                                . "رقم السند: *{$pendingVoucher->voucher_number}*\n"
+                                . "المبلغ: *" . number_format($pendingVoucher->amount, 2) . " ر.س*\n"
+                                . "تم ترحيل المبلغ إلى شجرة الحسابات الآن.";
+                    self::sendWhatsAppMessage($formattedPhone, $confirmMsg, $office->id);
+                    return response()->json(['status' => 'voucher_approved', 'voucher_id' => $pendingVoucher->id]);
+                }
+            }
+        }
+
+        return response()->json(['status' => 'ok']);
+    }
+
+    /**
+     * إقفال السنة المالية للشركة الأم وترحيل صافي الأرباح لحقوق الملكية (3101)
+     */
+    public function closeCompanyFiscalYear(Request $request)
+    {
+        $this->ensureJournalTables();
+        $accounts = DB::table('accounts')->whereNull('office_id')->where('is_group', 0)->get();
+        $revAccounts = $accounts->filter(fn($a) => str_contains($a->type, 'إيراد') || str_starts_with($a->code, '4'));
+        $expAccounts = $accounts->filter(fn($a) => str_contains($a->type, 'مصروف') || str_starts_with($a->code, '5'));
+
+        $totalRev = $revAccounts->sum(fn($a) => abs($a->balance));
+        $totalExp = $expAccounts->sum(fn($a) => abs($a->balance));
+        $netProfit = $totalRev - $totalExp;
+
+        if ($totalRev == 0 && $totalExp == 0) {
+            return back()->withErrors(['لا توجد أرصدة إيرادات أو مصروفات مفتوحة لإقفالها في هذه السنة.']);
+        }
+
+        DB::transaction(function () use ($revAccounts, $expAccounts, $netProfit) {
+            $equityAcc = DB::table('accounts')->whereNull('office_id')->where('code', '3101')->first();
+            if (!$equityAcc) {
+                $eqId = DB::table('accounts')->insertGetId([
+                    'office_id' => null, 'parent_id' => null, 'code' => '3101',
+                    'name' => 'الأرباح المبقاة وحقوق الملكية (إقفال سنوي)', 'type' => 'حقوق الملكية',
+                    'is_group' => 0, 'balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+            } else {
+                $eqId = $equityAcc->id;
+            }
+
+            foreach ($revAccounts as $r) {
+                DB::table('accounts')->where('id', $r->id)->update(['balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0]);
+            }
+            foreach ($expAccounts as $e) {
+                DB::table('accounts')->where('id', $e->id)->update(['balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0]);
+            }
+
+            self::applyAccountMovement((int) $eqId, $netProfit < 0 ? abs($netProfit) : 0, $netProfit >= 0 ? $netProfit : 0);
+        });
+
+        return back()->with('success', 'تم إقفال السنة المالية بنجاح وتصفير حسابات الإيرادات والمصروفات وترحيل صافي الربح (' . number_format($netProfit, 2) . ' ر.س) لحساب الأرباح المبقاة.');
+    }
+
+    /**
+     * عرض وتحميل الفاتورة الضريبية (PDF) عبر الرابط المباشر المرسل للواتساب
+     */
+    public function showPublicInvoicePdf($id, $token)
+    {
+        $this->ensureTaxInvoicesTable();
+        $inv = DB::table('tax_invoices')->where('id', $id)->first();
+        if (!$inv) {
+            abort(404, 'رابط الفاتورة غير صالح.');
+        }
+
+        $expectedHmac = self::generateInvoicePublicToken($inv->id, $inv->invoice_number);
+        $legacyMd5 = md5($inv->id . '|' . $inv->invoice_number . '|zatca_pdf');
+        if (!hash_equals($expectedHmac, (string) $token) && !hash_equals($legacyMd5, (string) $token)) {
+            abort(404, 'رابط الفاتورة غير صالح.');
+        }
+
+        $qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' . urlencode($inv->zatca_qr ?? '');
+        $typeTitle = $inv->invoice_type === 'tax' ? 'فاتورة ضريبية' : 'فاتورة ضريبية مبسطة';
+
+        $html = '<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>' . e($inv->invoice_number) . '</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@400;600;700&display=swap" rel="stylesheet">
+        <style>body{font-family:"Readex Pro",sans-serif;background:#f8fafc;}</style></head>
+        <body class="p-6"><div class="max-w-2xl mx-auto bg-white p-8 rounded-2xl border-2 border-slate-900 space-y-6">
+        <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
+            <div><h1 class="text-xl font-bold text-slate-900">' . e($typeTitle) . '</h1>
+            <p class="text-xs text-slate-500 mt-1">رقم الفاتورة: <b>' . e($inv->invoice_number) . '</b> | التاريخ: ' . e($inv->issue_date) . '</p></div>
+            <img src="' . $qrImg . '" class="w-24 h-24 border p-1 rounded-lg">
+        </div>
+        <div class="grid grid-cols-2 gap-4 text-xs">
+            <div class="p-3 bg-slate-50 rounded-xl border"><b>المورّد:</b> ' . e($inv->seller_name) . '<br>الرقم الضريبي: ' . e($inv->seller_tax_number ?: '-') . '</div>
+            <div class="p-3 bg-slate-50 rounded-xl border"><b>العميل:</b> ' . e($inv->buyer_name) . '<br>الرقم الضريبي: ' . e($inv->buyer_tax_number ?: '-') . '</div>
+        </div>
+        <table class="w-full text-xs text-right border">
+            <thead class="bg-slate-900 text-white"><tr><th class="p-2.5">البيان</th><th class="p-2.5">قبل الضريبة</th><th class="p-2.5">الضريبة (' . (float)$inv->vat_rate . '%)</th><th class="p-2.5">الإجمالي</th></tr></thead>
+            <tbody><tr><td class="p-3 font-bold border">' . e($inv->description) . '</td><td class="p-3 border">' . number_format($inv->subtotal, 2) . ' ر.س</td><td class="p-3 border">' . number_format($inv->vat_amount, 2) . ' ر.س</td><td class="p-3 font-bold text-emerald-700 border">' . number_format($inv->total_amount, 2) . ' ر.س</td></tr></tbody>
+        </table>
+        <div class="text-center pt-4 print:hidden"><button onclick="window.print()" class="px-6 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold">🖨️ طباعة / حفظ PDF</button></div>
+        </div></body></html>';
+
+        return response($html);
     }
 }

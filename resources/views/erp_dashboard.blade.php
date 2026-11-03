@@ -19,11 +19,17 @@
     </style>
     
     <style id="modern-minimal-ui">
-    /* 1. توحيد الخلفية والخطوط بهدوء بصري */
+
+    /* 1. توحيد الخلفية والخطوط مع منع تقطع الحروف العربية نهائياً */
+    body, body *, table, th, td, div, span, p, h1, h2, h3, h4 {
+        letter-spacing: 0px !important;
+        word-spacing: normal !important;
+        font-kerning: normal !important;
+        font-feature-settings: "liga" 1, "calt" 1 !important;
+    }
     body {
         background-color: #f8fafc !important;
         color: #0f172a !important;
-        letter-spacing: -0.01em;
     }
 
     /* 2. توحيد القوائم الجانبية بلون كحلي داكن رسمي بدون تدرجات صارخة */
@@ -134,8 +140,692 @@
     }
 </style>
 
+<!-- المحرك الشامل لجميع أزرار ونوافذ لوحة الإدارة المركزية -->
+    <script id="erp-admin-master-engine">
+        window.currentVoucherNumber = 'Voucher';
+        window.currentCompanyInvoiceNo = 'Tax_Invoice';
+
+        window.openModal = function(id) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.remove('hidden');
+                el.classList.add('flex');
+            }
+        };
+
+        window.closeModal = function(id) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.add('hidden');
+                el.classList.remove('flex');
+            }
+        };
+
+        window.openAccModal = function(id) { window.openModal(id); };
+        window.closeAccModal = function(id) { window.closeModal(id); };
+
+        window.openOfficeStatementModal = function(officeId) {
+            window.openModal('officeStatementModal_' + officeId);
+        };
+
+        window.filterTableRows = function(inputId, tbodyId) {
+            const input = document.getElementById(inputId);
+            const tbody = document.getElementById(tbodyId);
+            if (!input || !tbody) return;
+            const q = input.value.trim().toLowerCase();
+            tbody.querySelectorAll('tr').forEach(row => {
+                const hay = (row.getAttribute('data-search') || row.innerText || '').toLowerCase();
+                row.style.display = hay.includes(q) ? '' : 'none';
+            });
+        };
+
+        window.filterOfficesTable = function() {
+            const q = (document.getElementById('officeInstantSearch')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('.office-row').forEach(row => {
+                const hay = (row.getAttribute('data-search') || row.innerText || '').toLowerCase();
+                row.style.display = hay.includes(q) ? '' : 'none';
+            });
+        };
+
+        window.filterPropTypesTable = function() {
+            const q = (document.getElementById('propTypeInstantSearch')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('.prop-type-row').forEach(row => {
+                const hay = (row.getAttribute('data-search') || row.innerText || '').toLowerCase();
+                row.style.display = hay.includes(q) ? '' : 'none';
+            });
+        };
+
+        window.filterVouchersTable = function() {
+            const q = (document.getElementById('voucherInstantSearch')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('.voucher-row').forEach(row => {
+                const hay = (row.getAttribute('data-search') || row.innerText || '').toLowerCase();
+                row.style.display = hay.includes(q) ? '' : 'none';
+            });
+        };
+
+        window.filterJournalTable = function() {
+            const q = (document.getElementById('journalInstantSearch')?.value || '').trim().toLowerCase();
+            document.querySelectorAll('.journal-row').forEach(row => {
+                const hay = (row.getAttribute('data-search') || row.innerText || '').toLowerCase();
+                row.style.display = hay.includes(q) ? '' : 'none';
+            });
+        };
+
+        window.toggleBillingInputs = function(prefix) {
+            const typeEl = document.getElementById(prefix + '_billing_type');
+            if (!typeEl) return;
+            const type = typeEl.value;
+            const feeBox = document.getElementById(prefix + '_annual_fee_box');
+            const rateBox = document.getElementById(prefix + '_commission_rate_box');
+            if (type === 'annual_subscription') {
+                if (feeBox) feeBox.classList.remove('hidden');
+                if (rateBox) rateBox.classList.add('hidden');
+            } else if (type === 'per_property_percentage') {
+                if (feeBox) feeBox.classList.add('hidden');
+                if (rateBox) rateBox.classList.remove('hidden');
+            } else {
+                if (feeBox) feeBox.classList.remove('hidden');
+                if (rateBox) rateBox.classList.remove('hidden');
+            }
+        };
+
+        window.applyPlanToOfficeForm = function(prefix) {
+            const sel = document.getElementById(prefix + '_plan_id');
+            if (!sel || !sel.value) return;
+            const opt = sel.options[sel.selectedIndex];
+            const billing = opt.getAttribute('data-billing') || 'annual_subscription';
+            const price = opt.getAttribute('data-price') || 0;
+            const rate = opt.getAttribute('data-rate') || 0;
+            const tabsRaw = opt.getAttribute('data-tabs') || '[]';
+
+            const bEl = document.getElementById(prefix + '_billing_type');
+            if (bEl) bEl.value = billing;
+
+            const feeEl = document.getElementById(prefix + '_annual_fee');
+            if (feeEl) feeEl.value = price;
+
+            const rateEl = document.getElementById(prefix === 'add' ? 'add_commission_rate' : 'edit_company_commission_rate');
+            if (rateEl) rateEl.value = rate;
+
+            window.toggleBillingInputs(prefix);
+
+            try {
+                const allowed = JSON.parse(tabsRaw);
+                document.querySelectorAll('.' + prefix + '-office-tab-cb').forEach(cb => {
+                    cb.checked = (cb.value === 'overview') || allowed.includes(cb.value);
+                });
+            } catch (e) {}
+        };
+
+        window.toggleAllOfficeTabs = function(prefix, selectAll) {
+            const basicTabs = ['overview', 'owners', 'properties', 'contracts'];
+            document.querySelectorAll('.' + prefix + '-office-tab-cb').forEach(cb => {
+                cb.checked = selectAll ? true : basicTabs.includes(cb.value);
+            });
+        };
+
+        window.openEditOfficeModal = function(office) {
+            const form = document.getElementById('editOfficeForm');
+            if (form) form.action = '/offices/' + office.id + '/update';
+
+            if (document.getElementById('edit_name')) document.getElementById('edit_name').value = office.name || '';
+            if (document.getElementById('edit_cr_number')) document.getElementById('edit_cr_number').value = office.cr_number || '';
+            if (document.getElementById('edit_fal_license')) document.getElementById('edit_fal_license').value = office.fal_license || '';
+            if (document.getElementById('edit_phone')) document.getElementById('edit_phone').value = office.phone || '';
+            if (document.getElementById('edit_username')) document.getElementById('edit_username').value = office.username || '';
+            if (document.getElementById('edit_plan_id')) document.getElementById('edit_plan_id').value = office.plan_id || '';
+            if (document.getElementById('edit_billing_type')) document.getElementById('edit_billing_type').value = office.billing_type || 'annual_subscription';
+            if (document.getElementById('edit_annual_fee')) document.getElementById('edit_annual_fee').value = office.annual_fee || 0;
+            if (document.getElementById('edit_company_commission_rate')) document.getElementById('edit_company_commission_rate').value = office.company_commission_rate || 0;
+            if (document.getElementById('edit_subscription_ends_at')) document.getElementById('edit_subscription_ends_at').value = office.subscription_ends_at || '';
+            if (document.getElementById('edit_status')) document.getElementById('edit_status').value = office.status || 'active';
+
+            const allowed = Array.isArray(office.allowed_tabs) ? office.allowed_tabs : [];
+            document.querySelectorAll('.edit-office-tab-cb').forEach(cb => {
+                cb.checked = (cb.value === 'overview') || allowed.includes(cb.value);
+            });
+
+            window.toggleBillingInputs('edit');
+            window.openModal('editOfficeModal');
+        };
+
+        window.closeEditOfficeModal = function() {
+            window.closeModal('editOfficeModal');
+        };
+
+        window.addMoreAttributeRow = function() {
+            const container = document.getElementById('dynamicAttributesContainer');
+            if (!container) return;
+            const firstRow = container.querySelector('.attribute-row');
+            if (!firstRow) return;
+            const clone = firstRow.cloneNode(true);
+            clone.querySelectorAll('input').forEach(inp => inp.value = '');
+            container.appendChild(clone);
+        };
+
+        window.openAddBranchesModal = function(parentId, parentName, parentType) {
+            const parentSel = document.getElementById('branch_parent_id');
+            if (parentSel) parentSel.value = parentId || '';
+            const typeSel = document.getElementById('branch_acc_type');
+            if (typeSel && parentType) typeSel.value = parentType;
+            const titleEl = document.getElementById('addBranchesTitle');
+            if (titleEl) titleEl.innerText = parentName ? ('إضافة فرع تحت: ' + parentName) : 'إضافة حساب رئيسي أو فروع';
+            window.openModal('addBranchesModal');
+        };
+
+        window.addAnotherBranchRow = function() {
+            const container = document.getElementById('multiBranchesContainer');
+            if (!container) return;
+            const firstRow = container.querySelector('.branch-row');
+            if (!firstRow) return;
+            const clone = firstRow.cloneNode(true);
+            clone.querySelectorAll('input').forEach(inp => inp.value = '');
+            container.appendChild(clone);
+        };
+
+        window.openQuickVoucherModal = function(type, accountId, accountLabel) {
+            const typeInput = document.getElementById('qv_type');
+            if (typeInput) typeInput.value = type;
+            const titleEl = document.getElementById('qv_title');
+            if (titleEl) titleEl.innerText = type === 'receipt' ? '📥 إصدار سند قبض فوري' : '📤 إصدار سند صرف فوري';
+            const subEl = document.getElementById('qv_subtitle');
+            if (subEl) subEl.innerText = 'الحساب المحدد: ' + (accountLabel || '');
+            const debitSel = document.getElementById('qv_debit');
+            const creditSel = document.getElementById('qv_credit');
+            if (type === 'receipt' && creditSel && accountId) {
+                creditSel.value = accountId;
+            } else if (type === 'payment' && debitSel && accountId) {
+                debitSel.value = accountId;
+            }
+            window.openModal('quickVoucherModal');
+        };
+
+        window.syncAutoVoucherAccounts = function() {
+            const vType = document.getElementById('auto_voucher_type')?.value || 'receipt';
+            const offSel = document.getElementById('auto_voucher_office');
+            const pmSel = document.getElementById('auto_voucher_pm');
+            const debitSel = document.getElementById('auto_voucher_debit');
+            const creditSel = document.getElementById('auto_voucher_credit');
+            if (!debitSel || !creditSel) return;
+
+            const offAcc = offSel && offSel.selectedIndex >= 0 ? (offSel.options[offSel.selectedIndex].getAttribute('data-account') || '') : '';
+            const pmAcc = pmSel && pmSel.selectedIndex >= 0 ? (pmSel.options[pmSel.selectedIndex].getAttribute('data-account') || '') : '';
+
+            if (vType === 'receipt') {
+                if (pmAcc) debitSel.value = pmAcc;
+                if (offAcc) creditSel.value = offAcc;
+            } else {
+                if (offAcc) debitSel.value = offAcc;
+                if (pmAcc) creditSel.value = pmAcc;
+            }
+        };
+
+        window.openOfficialVoucherPreview = function(v) {
+            window.currentVoucherNumber = v.number || 'Voucher';
+            const methodVal = v.payment_method || v.method || 'حوالة بنكية';
+            if (document.getElementById('pdf_issuer')) document.getElementById('pdf_issuer').innerText = v.issuer || 'الإدارة المركزية - منظومة العقارات';
+            if (document.getElementById('pdf_voucher_title')) document.getElementById('pdf_voucher_title').innerText = (v.type === 'receipt' || v.type === 'سند قبض') ? 'سند قبض رسمي' : 'سند صرف رسمي';
+            if (document.getElementById('pdf_voucher_no')) document.getElementById('pdf_voucher_no').innerText = v.number || '';
+            if (document.getElementById('pdf_date')) document.getElementById('pdf_date').innerText = v.date || '';
+            if (document.getElementById('pdf_method')) document.getElementById('pdf_method').innerText = methodVal;
+            if (document.getElementById('pdf_amount')) document.getElementById('pdf_amount').innerText = v.amount || '0.00';
+            if (document.getElementById('pdf_party')) document.getElementById('pdf_party').innerText = v.party || '';
+            if (document.getElementById('pdf_notes')) document.getElementById('pdf_notes').innerText = v.notes || '';
+            window.openModal('officialVoucherModal');
+        };
+
+        window.previewOfficialVoucher = window.openOfficialVoucherPreview;
+
+        window.downloadVoucherPDF = function() {
+            const el = document.getElementById('printableVoucherArea');
+            if (!el) return;
+            html2pdf().set({
+                margin: 10,
+                filename: (window.currentVoucherNumber || 'Voucher') + '.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            }).from(el).save();
+        };
+
+        window.directDownloadSingleVoucherPDF = function(v) {
+            window.openOfficialVoucherPreview(v);
+            setTimeout(() => { window.downloadVoucherPDF(); }, 250);
+        };
+
+        window.directDownloadSingleVoucherExcel = function(v) {
+            const rows = [
+                ['رقم السند', 'النوع', 'التاريخ', 'المبلغ (ر.س)', 'الطرف المرتبط', 'طريقة الدفع', 'البيان', 'الجهة المصدرة'],
+                [v.number || '', v.type || '', v.date || '', v.amount || '', v.party || '', v.payment_method || v.method || '', v.notes || '', v.issuer || '']
+            ];
+            let csv = '\uFEFF' + rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = (v.number || 'Voucher') + '.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        window.addMoreJournalTableBlock = function() {
+            const container = document.getElementById('journalTablesContainer');
+            if (!container) return;
+            const blocks = container.querySelectorAll('.journal-table-block');
+            if (blocks.length === 0) return;
+            const clone = blocks[0].cloneNode(true);
+            const nextIdx = blocks.length + 1;
+            const titleEl = clone.querySelector('.journal-block-title');
+            if (titleEl) titleEl.innerText = 'جدول العملية (' + nextIdx + ') — طرف إضافي';
+            clone.querySelectorAll('input').forEach(inp => {
+                if (inp.type === 'number') inp.value = '0';
+                else inp.value = '';
+            });
+            const removeBtn = clone.querySelector('.remove-journal-row-btn');
+            if (removeBtn) removeBtn.classList.remove('hidden');
+            container.appendChild(clone);
+        };
+
+        window.removeJournalTableBlock = function(btn) {
+            const container = document.getElementById('journalTablesContainer');
+            if (!container) return;
+            if (container.querySelectorAll('.journal-table-block').length <= 2) {
+                alert('يجب أن يحتوي القيد اليومي على طرفين على الأقل.');
+                return;
+            }
+            const block = btn.closest('.journal-table-block');
+            if (block) block.remove();
+        };
+
+        window.exportJournalPDF = function(entryId, entryNumber) {
+            window.closeModal('printChoiceJournalModal_' + entryId);
+            window.openModal('viewJournalModal_' + entryId);
+            setTimeout(() => {
+                window.exportElementToPDF('printableJournalArea_' + entryId, 'Journal_Entry_' + entryNumber + '.pdf');
+            }, 250);
+        };
+
+        window.exportTableToCSV = function(tableId, filename) {
+            const table = document.getElementById(tableId);
+            if (!table) {
+                alert('الجدول المطلوب غير موجود في الصفحة الحالية.');
+                return;
+            }
+            const rows = [];
+            table.querySelectorAll('tr').forEach(tr => {
+                if (tr.style.display === 'none') return;
+                const cols = [];
+                tr.querySelectorAll('th, td').forEach(cell => {
+                    let text = (cell.innerText || '').replace(/\s+/g, ' ').trim();
+                    cols.push('"' + text.replace(/"/g, '""') + '"');
+                });
+                if (cols.length > 0) rows.push(cols.join(','));
+            });
+            const csvContent = '\uFEFF' + rows.join('\r\n');
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const cleanName = (filename || 'Report.csv').replace(/\.xlsx$/i, '.csv');
+            link.href = URL.createObjectURL(blob);
+            link.download = cleanName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        window.exportElementToPDF = function(elementId, filename) {
+            const el = document.getElementById(elementId);
+            if (!el) {
+                alert('العنصر المطلوب للطباعة غير موجود.');
+                return;
+            }
+            html2pdf().set({
+                margin: 8,
+                filename: filename || 'Document.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            }).from(el).save();
+        };
+
+        window.exportCurrentTaxInvoiceExcel = function(prefix) {
+            const p = prefix || 'ti';
+            const getVal = id => document.getElementById(p + '_' + id)?.innerText?.trim() || '';
+            const rows = [
+                ['نوع الفاتورة', 'رقم الفاتورة', 'التاريخ', 'المورد', 'الرقم الضريبي للمورد', 'العميل', 'الرقم الضريبي للعميل', 'البيان', 'قبل الضريبة', 'الضريبة', 'الإجمالي'],
+                [getVal('type'), getVal('number'), getVal('date'), getVal('seller_name'), getVal('seller_tax'), getVal('buyer_name'), getVal('buyer_tax'), getVal('desc'), getVal('subtotal'), getVal('vat'), getVal('total')]
+            ];
+            let csv = '\uFEFF' + rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = (getVal('number') || 'Tax_Invoice') + '.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        window.exportStatementPDF = function() {
+            window.exportElementToPDF('financialStatementPrintable', 'General_Ledger_Statement.pdf');
+        };
+
+        window.switchLedgerView = function(view) {
+            ['ledger', 'cards', 'trial', 'income'].forEach(v => {
+                const sec = document.getElementById(v + '_view_section');
+                const btn = document.getElementById('btn_view_' + v);
+                if (sec) sec.classList.toggle('hidden', v !== view);
+                if (btn) {
+                    btn.className = (v === view)
+                        ? 'px-4 py-2 rounded-2xl bg-emerald-600 text-white text-xs font-bold shadow-sm transition'
+                        : 'px-4 py-2 rounded-2xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition';
+                }
+            });
+        };
+
+        window.setLedgerQuickDate = function(period) {
+            const fromEl = document.getElementById('stmt_from_date');
+            const toEl = document.getElementById('stmt_to_date');
+            if (!fromEl || !toEl) return;
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const today = `${yyyy}-${mm}-${dd}`;
+
+            if (period === 'today') {
+                fromEl.value = today;
+                toEl.value = today;
+            } else if (period === 'month') {
+                fromEl.value = `${yyyy}-${mm}-01`;
+                toEl.value = today;
+            } else if (period === 'year') {
+                fromEl.value = `${yyyy}-01-01`;
+                toEl.value = `${yyyy}-12-31`;
+            } else {
+                fromEl.value = '';
+                toEl.value = '';
+            }
+            window.applyStatementFilters();
+        };
+
+        window.applyStatementFilters = function() {
+            const q = (document.getElementById('ledgerInstantSearch')?.value || '').trim().toLowerCase();
+            const mode = document.getElementById('stmt_filter_mode')?.value || 'all';
+            const expBox = document.getElementById('stmt_specific_expense_box');
+            const accBox = document.getElementById('stmt_specific_account_box');
+
+            if (expBox) expBox.classList.toggle('hidden', mode !== 'specific_expense');
+            if (accBox) accBox.classList.toggle('hidden', mode !== 'specific_account');
+
+            const specExp = document.getElementById('stmt_expense_select')?.value || '';
+            const specAcc = document.getElementById('stmt_account_select')?.value || '';
+            const officeId = document.getElementById('stmt_office_select')?.value || '';
+            const fromDate = document.getElementById('stmt_from_date')?.value || '';
+            const toDate = document.getElementById('stmt_to_date')?.value || '';
+
+            let debitSum = 0, creditSum = 0;
+
+            document.querySelectorAll('.stmt-movement-row').forEach(row => {
+                const rSearch = (row.getAttribute('data-search') || '').toLowerCase();
+                const rDate = row.getAttribute('data-date') || '';
+                const rAcc = row.getAttribute('data-account-id') || '';
+                const rOff = row.getAttribute('data-office-id') || '';
+                const isExp = row.getAttribute('data-is-expense') === '1';
+                const isRev = row.getAttribute('data-is-revenue') === '1';
+
+                let show = true;
+                if (q && !rSearch.includes(q)) show = false;
+                if (mode === 'all_expenses' && !isExp) show = false;
+                if (mode === 'all_revenues' && !isRev) show = false;
+                if (mode === 'specific_expense' && specExp && rAcc !== specExp) show = false;
+                if (mode === 'specific_account' && specAcc && rAcc !== specAcc) show = false;
+                if (officeId && rOff !== officeId) show = false;
+                if (fromDate && rDate < fromDate) show = false;
+                if (toDate && rDate > toDate) show = false;
+
+                row.style.display = show ? '' : 'none';
+                if (show) {
+                    debitSum += parseFloat(row.getAttribute('data-debit') || 0);
+                    creditSum += parseFloat(row.getAttribute('data-credit') || 0);
+                }
+            });
+
+            const net = debitSum - creditSum;
+            const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            if (document.getElementById('filteredDebitSum')) document.getElementById('filteredDebitSum').innerText = fmt(debitSum);
+            if (document.getElementById('filteredCreditSum')) document.getElementById('filteredCreditSum').innerText = fmt(creditSum);
+            if (document.getElementById('filteredNetSum')) document.getElementById('filteredNetSum').innerText = fmt(net);
+            if (document.getElementById('ledgerClosingBalance')) document.getElementById('ledgerClosingBalance').innerText = fmt(net);
+        };
+
+        window.quickFilterByAccount = function(accId) {
+            window.switchLedgerView('ledger');
+            const modeEl = document.getElementById('stmt_filter_mode');
+            const accEl = document.getElementById('stmt_account_select');
+            if (modeEl) modeEl.value = 'specific_account';
+            if (accEl) accEl.value = accId;
+            window.applyStatementFilters();
+        };
+
+        window.quickFilterSpecificExpense = function(accId) {
+            window.switchLedgerView('ledger');
+            const modeEl = document.getElementById('stmt_filter_mode');
+            const expEl = document.getElementById('stmt_expense_select');
+            if (modeEl) modeEl.value = 'specific_expense';
+            if (expEl) expEl.value = accId;
+            window.applyStatementFilters();
+        };
+
+        document.addEventListener('DOMContentLoaded', function() {
+            if (document.querySelectorAll('.stmt-movement-row').length > 0) {
+                window.applyStatementFilters();
+            }
+            @if(session('open_diagnostics_modal'))
+                window.openModal('systemDiagnosticsModal');
+            @endif
+        });
+    </script>
 </head>
 <body class="text-slate-800 flex min-h-screen">
+
+    <!-- النوافذ العامة لنظام الإدارة المركزية (الفحص، سجل الأخطاء، النسخ الاحتياطي، أنواع الحسابات، ومعاينة السند) -->
+    <div id="systemDiagnosticsModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 mb-4">
+                <div>
+                    <h3 class="font-bold text-base text-slate-900">🤖 الفحص الأوتوماتيكي الشامل لجميع بوابات النظام</h3>
+                    <p class="text-xs text-slate-500">يختبر قاعدة البيانات، الشجرة المحاسبية، السندات، المكاتب، الملاك، والعقود تلقائياً</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <form action="{{ route('erp.system.diagnostics') }}" method="POST">
+                        @csrf
+                        <button type="submit" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow">
+                            ⚡ تشغيل الفحص الشامل الآن
+                        </button>
+                    </form>
+                    <button type="button" onclick="closeModal('systemDiagnosticsModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                </div>
+            </div>
+            <div class="overflow-y-auto flex-1 rounded-2xl border border-slate-200">
+                <table class="w-full text-xs text-right">
+                    <thead class="bg-slate-50 text-slate-600 border-b">
+                        <tr>
+                            <th class="py-3 px-4">الميزة / الاختبار</th>
+                            <th class="py-3 px-4">الوحدة</th>
+                            <th class="py-3 px-4">الحالة</th>
+                            <th class="py-3 px-4">التفاصيل</th>
+                            <th class="py-3 px-4">الزمن</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        @forelse(($diagnosticRuns ?? collect()) as $run)
+                            <tr>
+                                <td class="py-3 px-4 font-bold text-slate-900">{{ $run->feature_name }}</td>
+                                <td class="py-3 px-4 text-slate-600">{{ $run->module }}</td>
+                                <td class="py-3 px-4">
+                                    @if($run->status === 'passed')
+                                        <span class="px-2.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">ناجح ✔</span>
+                                    @elseif($run->status === 'warning')
+                                        <span class="px-2.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">تنبيه ⚠️</span>
+                                    @else
+                                        <span class="px-2.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">فشل ✖</span>
+                                    @endif
+                                </td>
+                                <td class="py-3 px-4 text-slate-600">{{ $run->details }}</td>
+                                <td class="py-3 px-4 font-mono text-slate-400">{{ $run->execution_ms }}</td>
+                            </tr>
+                        @empty
+                            <tr><td colspan="5" class="py-8 text-center text-slate-400">اضغط على "تشغيل الفحص الشامل الآن" لبدء اختبار النظام.</td></tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="systemLogsModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 mb-4">
+                <div>
+                    <h3 class="font-bold text-base text-slate-900">🚨 سجل الأخطاء والتنبيهات التقنية (System Logs)</h3>
+                    <p class="text-xs text-slate-500">يعرض أي أخطاء برمجية مسجلة في النظام مع إمكانية تصفير السجل</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <form action="{{ route('erp.system.clear_logs') }}" method="POST" onsubmit="return confirm('تصفير سجل الأخطاء؟');">
+                        @csrf
+                        <button type="submit" class="px-4 py-2 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 text-xs font-bold">
+                            🗑️ تصفير السجل
+                        </button>
+                    </form>
+                    <button type="button" onclick="closeModal('systemLogsModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                </div>
+            </div>
+            <div class="overflow-y-auto flex-1 rounded-2xl border border-slate-200">
+                <table class="w-full text-xs text-right">
+                    <thead class="bg-slate-50 text-slate-600 border-b">
+                        <tr>
+                            <th class="py-3 px-4">المستوى</th>
+                            <th class="py-3 px-4">المصدر</th>
+                            <th class="py-3 px-4">الرسالة</th>
+                            <th class="py-3 px-4">التاريخ</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        @forelse(($systemLogs ?? collect()) as $lg)
+                            <tr>
+                                <td class="py-3 px-4 font-mono font-bold {{ $lg->level === 'ERROR' ? 'text-rose-600' : 'text-amber-600' }}">{{ $lg->level }}</td>
+                                <td class="py-3 px-4 font-semibold">{{ $lg->source }}</td>
+                                <td class="py-3 px-4 text-slate-700 max-w-md break-words">{{ $lg->message }}</td>
+                                <td class="py-3 px-4 font-mono text-slate-400" dir="ltr">{{ $lg->created_at }}</td>
+                            </tr>
+                        @empty
+                            <tr><td colspan="4" class="py-8 text-center text-emerald-600 font-bold">لا توجد أخطاء مسجلة، النظام يعمل بكفاءة عالية ✔</td></tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="systemBackupModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-5">
+            <div class="flex items-center justify-between pb-3 border-b">
+                <h3 class="font-bold text-base text-slate-900">💾 النسخ الاحتياطي الشامل واستعادة النظام</h3>
+                <button type="button" onclick="closeModal('systemBackupModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+            </div>
+            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                <div class="text-xs font-bold text-slate-900">1. تحميل نسخة احتياطية فورية لكامل النظام:</div>
+                <div class="grid grid-cols-2 gap-3">
+                    <a href="{{ route('erp.system.backup', ['format' => 'json']) }}" class="p-3 rounded-xl bg-slate-900 text-white text-center text-xs font-bold">
+                        📥 تحميل نسخة شاملة (.JSON)
+                    </a>
+                    <a href="{{ route('erp.system.backup', ['format' => 'sqlite']) }}" class="p-3 rounded-xl bg-emerald-600 text-white text-center text-xs font-bold">
+                        🗄️ تحميل قاعدة البيانات (.SQLite)
+                    </a>
+                </div>
+            </div>
+            <form action="{{ route('erp.system.restore') }}" method="POST" enctype="multipart/form-data" class="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-3">
+                @csrf
+                <div class="text-xs font-bold text-amber-950">2. استعادة النظام من ملف نسخة احتياطية (.json أو .sqlite):</div>
+                <input type="file" name="backup_file" required accept=".json,.sqlite,.sqlite3,.db" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white">
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                    🔄 استعادة البيانات الآن
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div id="manageAccountTypesModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
+                <h3 class="font-bold text-base text-slate-900">⚙️ إدارة أنواع الحسابات المحاسبية</h3>
+                <button type="button" onclick="closeModal('manageAccountTypesModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+            </div>
+            <form action="{{ route('erp.account_types.store') }}" method="POST" class="flex gap-2 mb-5">
+                @csrf
+                <input type="text" name="name" required placeholder="مسمى النوع (مثال: أصول متداولة...)" class="flex-1 rounded-xl border px-3 py-2 text-xs">
+                <button type="submit" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">+ إضافة</button>
+            </form>
+            <div class="space-y-2 max-h-64 overflow-y-auto">
+                @foreach(($accountTypes ?? collect()) as $at)
+                    <div class="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 border">
+                        <form action="{{ route('erp.account_types.update', $at->id) }}" method="POST" class="flex-1 flex gap-2">
+                            @csrf
+                            <input type="text" name="name" value="{{ $at->name }}" required class="flex-1 rounded-lg border px-3 py-1.5 text-xs font-bold bg-white">
+                            <button type="submit" class="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs">تعديل</button>
+                        </form>
+                        <form action="{{ route('erp.account_types.delete', $at->id) }}" method="POST" onsubmit="return confirm('حذف نوع الحساب؟');">
+                            @csrf
+                            <button type="submit" class="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs">حذف</button>
+                        </form>
+                    </div>
+                @endforeach
+            </div>
+        </div>
+    </div>
+
+    @if(($tab ?? '') != 'vouchers')
+        <div id="officialVoucherModal" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+            <div class="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200">
+                <div class="flex items-center justify-between pb-4 border-b mb-4 no-print">
+                    <h3 class="font-bold text-base text-slate-900">معاينة السند المالي الرسمي</h3>
+                    <div class="flex items-center gap-2">
+                        <button type="button" onclick="downloadVoucherPDF()" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold shadow">📥 تحميل PDF</button>
+                        <button type="button" onclick="closeModal('officialVoucherModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                    </div>
+                </div>
+                <div id="printableVoucherArea" class="p-8 rounded-3xl border-2 border-slate-800 bg-white space-y-6 text-slate-900">
+                    <div class="flex items-center justify-between border-b-2 border-slate-800 pb-5">
+                        <div>
+                            <h2 id="pdf_issuer" class="text-xl font-bold text-slate-900">الإدارة المركزية - منظومة العقارات</h2>
+                            <p class="text-xs text-slate-500 mt-1">سند مالي رسمي معتمد إلكترونياً</p>
+                        </div>
+                        <div class="text-center px-6 py-2.5 rounded-2xl border-2 border-slate-900 bg-slate-50">
+                            <div id="pdf_voucher_title" class="text-lg font-extrabold text-emerald-800">سند قبض</div>
+                            <div id="pdf_voucher_no" class="font-mono text-xs font-bold text-slate-700 mt-0.5">RV-2026-00001</div>
+                        </div>
+                        <div class="text-left text-xs space-y-1">
+                            <div>التاريخ: <b id="pdf_date" class="font-mono">2026-01-01</b></div>
+                            <div>طريقة الدفع: <b id="pdf_method" class="text-emerald-800">حوالة بنكية</b></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-12 gap-4 items-center bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                        <div class="col-span-4 text-xs font-bold text-slate-600">المبلغ المعتمد بالريال السعودي:</div>
+                        <div class="col-span-8 text-2xl font-extrabold text-emerald-700 font-mono"><span id="pdf_amount">0.00</span> ر.س</div>
+                    </div>
+                    <div class="space-y-3 text-sm">
+                        <div class="flex items-center justify-between p-3.5 rounded-xl border border-slate-200">
+                            <span class="text-slate-500 font-semibold">الطرف المرتبط:</span>
+                            <span id="pdf_party" class="font-bold text-slate-900"></span>
+                        </div>
+                        <div class="flex items-center justify-between p-3.5 rounded-xl border border-slate-200">
+                            <span class="text-slate-500 font-semibold">وذلك عن (البيان والتفاصيل):</span>
+                            <span id="pdf_notes" class="font-bold text-slate-900"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    @endif
 
     <!-- القائمة الجانبية العصرية -->
     <aside class="w-72 glass-sidebar text-white flex flex-col shrink-0 shadow-2xl sticky top-0 h-screen no-print">
@@ -257,8 +947,160 @@
                 </a>
             </div>
 
-            <!-- شريط أدوات الأدمن الذكي: الفحص الأوتوماتيكي الشامل + سجل الأخطاء + النسخة الاحتياطية -->
+            <!-- مكتبة SheetJS لتصدير ملفات Excel (.xlsx) الحقيقية + نظام الصفحات (30 سجل) + إضافة صفوف لتعديل القيود -->
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+            <style>
+                .erp-pagination-bar {
+                    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+                    padding: 12px 18px; background: #f8fafc; border-top: 1px solid #e2e8f0; font-size: 0.75rem;
+                }
+                .erp-page-btn {
+                    min-width: 32px; height: 32px; padding: 0 10px; border-radius: 8px;
+                    border: 1px solid #cbd5e1; background: #ffffff; color: #0f172a;
+                    font-weight: 700; font-size: 0.75rem; cursor: pointer; transition: all 0.15s ease;
+                }
+                .erp-page-btn:hover:not(:disabled) { background: #e2e8f0; border-color: #94a3b8; }
+                .erp-page-btn.active { background: #0f172a !important; color: #ffffff !important; border-color: #0f172a !important; }
+                .erp-page-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+            </style>
+            <script>
+                window.ADMIN_PAGE_SIZE = 30;
+                window.refreshAdminTablePagination = function(table, resetPage = false) {
+                    if (!table) return;
+                    const tbody = table.querySelector('tbody');
+                    if (!tbody) return;
+                    const allRows = Array.from(tbody.querySelectorAll('tr')).filter(r => !r.querySelector('td[colspan]'));
+                    if (allRows.length === 0) return;
+
+                    if (resetPage || !table._currentPage) table._currentPage = 1;
+                    const matched = allRows.filter(r => r.dataset.searchMatched !== '0');
+                    const total = matched.length;
+                    const totalPages = Math.max(1, Math.ceil(total / window.ADMIN_PAGE_SIZE));
+                    if (table._currentPage > totalPages) table._currentPage = totalPages;
+
+                    const start = (table._currentPage - 1) * window.ADMIN_PAGE_SIZE;
+                    const end = start + window.ADMIN_PAGE_SIZE;
+
+                    allRows.forEach(r => r.style.display = 'none');
+                    matched.slice(start, end).forEach(r => r.style.display = '');
+
+                    let bar = table._paginationBar;
+                    if (!bar) {
+                        bar = document.createElement('div');
+                        bar.className = 'erp-pagination-bar no-print';
+                        table.parentElement.after(bar);
+                        table._paginationBar = bar;
+                    }
+
+                    const fromNum = total === 0 ? 0 : start + 1;
+                    const toNum = Math.min(end, total);
+                    let btns = `<button type="button" class="erp-page-btn" ${table._currentPage <= 1 ? 'disabled' : ''} data-page="${table._currentPage - 1}">السابق</button>`;
+                    for (let p = 1; p <= totalPages; p++) {
+                        btns += `<button type="button" class="erp-page-btn ${p === table._currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`;
+                    }
+                    btns += `<button type="button" class="erp-page-btn" ${table._currentPage >= totalPages ? 'disabled' : ''} data-page="${table._currentPage + 1}">التالي</button>`;
+
+                    bar.innerHTML = `
+                        <div class="text-slate-600 font-semibold">عرض <b class="font-mono text-slate-900">${fromNum}</b> إلى <b class="font-mono text-slate-900">${toNum}</b> من أصل <b class="font-mono text-emerald-700">${total}</b> سجل</div>
+                        <div class="flex items-center gap-1.5 flex-wrap">${btns}</div>
+                    `;
+                    bar.querySelectorAll('button[data-page]').forEach(b => {
+                        b.onclick = function() {
+                            table._currentPage = parseInt(this.getAttribute('data-page'), 10);
+                            window.refreshAdminTablePagination(table, false);
+                        };
+                    });
+                };
+
+                document.addEventListener('DOMContentLoaded', function() {
+                    // تفعيل ترقيم الصفحات (30 سجل) في جميع جداول لوحة الأدمن
+                    document.querySelectorAll('main table').forEach(tbl => {
+                        if (tbl.closest('[id*="Modal"]')) return;
+                        window.refreshAdminTablePagination(tbl, false);
+                    });
+
+                    // ربط جميع خانات البحث في لوحة الأدمن لتفلتر عبر كل الصفحات
+                    document.querySelectorAll('main input[type="text"][oninput]').forEach(inp => {
+                        inp.addEventListener('input', function() {
+                            const q = this.value.trim().toLowerCase();
+                            const section = this.closest('.bg-white') || document.querySelector('main');
+                            const tbl = section ? section.querySelector('table') : null;
+                            if (!tbl) return;
+                            tbl.querySelectorAll('tbody tr').forEach(r => {
+                                if (r.querySelector('td[colspan]')) return;
+                                const hay = (r.getAttribute('data-search') || r.innerText || '').toLowerCase();
+                                r.dataset.searchMatched = (!q || hay.includes(q)) ? '1' : '0';
+                            });
+                            window.refreshAdminTablePagination(tbl, true);
+                        });
+                    });
+
+                    // تحويل تصدير الإكسل في لوحة الأدمن إلى ملف .xlsx حقيقي بأعمدة مستقلة
+                    window.exportTableToCSV = function(tableId, filename) {
+                        const table = document.getElementById(tableId);
+                        if (!table || typeof XLSX === 'undefined') return;
+                        const skipHeaders = ['إجراءات', 'إجراء', 'الإجراءات', 'حذف', 'تعديل'];
+                        const skipCols = new Set();
+                        const aoa = [];
+                        const hRow = table.querySelector('thead tr');
+                        if (hRow) {
+                            const h = [];
+                            hRow.querySelectorAll('th').forEach((th, idx) => {
+                                const txt = (th.innerText || '').replace(/\s+/g, ' ').trim();
+                                if (skipHeaders.some(s => txt.includes(s))) skipCols.add(idx);
+                                else h.push(txt);
+                            });
+                            aoa.push(h);
+                        }
+                        table.querySelectorAll('tbody tr, tfoot tr').forEach(tr => {
+                            if (tr.dataset.searchMatched === '0') return;
+                            const cells = tr.querySelectorAll('td, th');
+                            if (cells.length <= 1) return;
+                            const row = [];
+                            cells.forEach((td, idx) => {
+                                if (!skipCols.has(idx)) row.push((td.innerText || '').replace(/\s+/g, ' ').trim());
+                            });
+                            aoa.push(row);
+                        });
+                        const ws = XLSX.utils.aoa_to_sheet(aoa);
+                        ws['!views'] = [{ rightToLeft: true }];
+                        const wb = XLSX.utils.book_new();
+                        wb.Workbook = { Views: [{ RTL: true }] };
+                        XLSX.utils.book_append_sheet(wb, ws, 'البيانات');
+                        XLSX.writeFile(wb, (filename || 'Report.xlsx').replace(/\.(csv|xls|xlsx)$/i, '') + '.xlsx');
+                    };
+
+                    // إضافة زر "+ إضافة صف" في نافذة تعديل القيد اليومي للأدمن
+                    document.querySelectorAll('[id^="editJournalModal_"]').forEach(modal => {
+                        const rowsContainer = modal.querySelector('.space-y-2\\.5');
+                        if (!rowsContainer || modal.dataset.jeEnhanced === '1') return;
+                        modal.dataset.jeEnhanced = '1';
+                        const addBtn = document.createElement('button');
+                        addBtn.type = 'button';
+                        addBtn.className = 'w-full py-2.5 rounded-2xl border-2 border-dashed border-emerald-500 text-emerald-700 hover:bg-emerald-50 text-xs font-bold transition mt-2';
+                        addBtn.innerText = '+ إضافة جدول / صف عملية جديدة في هذا القيد اليومي';
+                        addBtn.onclick = function() {
+                            const firstRow = rowsContainer.querySelector('.grid.grid-cols-12');
+                            if (!firstRow) return;
+                            const clone = firstRow.cloneNode(true);
+                            clone.querySelectorAll('input').forEach(i => i.value = i.type === 'number' ? '0' : '');
+                            rowsContainer.appendChild(clone);
+                        };
+                        rowsContainer.after(addBtn);
+                    });
+                });
+            </script>
+
+            <!-- شريط أدوات الأدمن الذكي: توليد البيانات التجريبية + الفحص الأوتوماتيكي + سجل الأخطاء + النسخة الاحتياطية -->
             <div class="flex flex-wrap items-center gap-2.5">
+                <form action="{{ route('erp.system.seed_demo') }}" method="POST" onsubmit="return confirm('هل ترغب بتوليد وإضافة جميع البيانات التجريبية الشاملة للنظام (مكاتب، ملاك، عقارات، 35+ مستأجراً وعقداً، دفعات، سندات، قيود، وسجل تتبع) لتجربة كافة المميزات؟');">
+                    @csrf
+                    <button type="submit" class="px-4 py-2 rounded-2xl bg-amber-50 hover:bg-amber-500 text-amber-900 hover:text-white border border-amber-300 text-xs font-bold transition flex items-center gap-2 shadow-sm">
+                        <span>🧪</span>
+                        <span>إضافة جميع بيانات النظام التجريبية</span>
+                    </button>
+                </form>
+
                 <button type="button" onclick="openModal('systemDiagnosticsModal')"
                         class="px-4 py-2 rounded-2xl bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 text-xs font-bold transition flex items-center gap-2 shadow-sm">
                     <span>🤖</span>
@@ -334,32 +1176,50 @@
                 </div>
 
                 <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden">
-                    <div class="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
-                        <h3 class="font-bold text-slate-900">أحدث مكاتب العقار </h3>
-                        <a href="{{ route('erp.dashboard', ['tab' => 'offices']) }}" class="text-xs font-bold text-emerald-600 hover:underline">إدارة المكاتب وكشوف الحسابات ←</a>
+                    <div class="px-6 py-5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h3 class="font-bold text-slate-900">أحدث مكاتب العقار وكشف تنبيهات الاشتراكات والمستحقات</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">متابعة حالة اشتراكات المكاتب والأيام المتبقية وصافي الربح</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="exportTableToCSV('adminOverviewOfficesTable', 'كشف_اشتراكات_وتنبيهات_المكاتب.xlsx')"
+                                    class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                📊 تصدير Excel
+                            </button>
+                            <button type="button" onclick="exportElementToPDF('adminOverviewOfficesWrap', 'كشف_اشتراكات_وتنبيهات_المكاتب.pdf')"
+                                    class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                                📥 تصدير PDF
+                            </button>
+                            <a href="{{ route('erp.dashboard', ['tab' => 'offices']) }}" class="px-3.5 py-2 rounded-xl bg-slate-100 text-slate-800 text-xs font-bold hover:bg-slate-200">إدارة المكاتب ←</a>
+                        </div>
                     </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-sm text-right">
+                    <div id="adminOverviewOfficesWrap" class="overflow-x-auto">
+                        <table class="w-full text-sm text-right" id="adminOverviewOfficesTable">
                             <thead class="bg-slate-50 text-slate-600 text-xs uppercase border-b border-slate-200/60">
                                 <tr>
-                                    <th class="py-3.5 px-6">اسم المكتب</th>
-                                    <th class="py-3.5 px-6">رقم الجوال</th>
-                                    <th class="py-3.5 px-6">نوع الاشتراك</th>
-                                    <th class="py-3.5 px-6">صافي الربح من المكتب</th>
-                                    <th class="py-3.5 px-6">الحالة</th>
+                                    <th class="py-3.5 px-5">اسم المكتب</th>
+                                    <th class="py-3.5 px-4">رقم الجوال</th>
+                                    <th class="py-3.5 px-4">نوع الاشتراك والرسوم</th>
+                                    <th class="py-3.5 px-4">تاريخ انتهاء الاشتراك</th>
+                                    <th class="py-3.5 px-4">الأيام المتبقية</th>
+                                    <th class="py-3.5 px-4">حالة التنبيه</th>
+                                    <th class="py-3.5 px-4">صافي الربح من المكتب</th>
+                                    <th class="py-3.5 px-4">الحالة</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100">
-                                @forelse($offices->take(5) as $office)
+                                @forelse($offices as $office)
                                     @php
                                         $officeReceipts = $vouchers->where('office_id', $office->id)->where('voucher_type', 'receipt')->sum('amount');
                                         $officePayments = $vouchers->where('office_id', $office->id)->where('voucher_type', 'payment')->sum('amount');
                                         $netProfit = $officeReceipts - $officePayments;
+                                        $subEnd = $office->subscription_ends_at ?: now()->addYear()->toDateString();
+                                        $daysLeft = (int) now()->startOfDay()->diffInDays(\Carbon\Carbon::parse($subEnd)->startOfDay(), false);
                                     @endphp
                                     <tr class="hover:bg-slate-50/80 transition">
-                                        <td class="py-4 px-6 font-bold text-slate-900">{{ $office->name }}</td>
-                                        <td class="py-4 px-6 font-mono text-xs text-emerald-700 font-semibold" dir="ltr">{{ $office->phone }}</td>
-                                        <td class="py-4 px-6">
+                                        <td class="py-4 px-5 font-bold text-slate-900">{{ $office->name }}</td>
+                                        <td class="py-4 px-4 font-mono text-xs text-emerald-700 font-semibold" dir="ltr">{{ $office->phone }}</td>
+                                        <td class="py-4 px-4">
                                             @if($office->billing_type == 'annual_subscription')
                                                 <span class="px-2.5 py-1 rounded-xl text-xs font-semibold bg-blue-50 text-blue-700">اشتراك سنوي ({{ number_format($office->annual_fee, 0) }} ر.س)</span>
                                             @elseif($office->billing_type == 'per_property_percentage')
@@ -368,10 +1228,21 @@
                                                 <span class="px-2.5 py-1 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-700">مدمج ({{ number_format($office->annual_fee, 0) }} ر.س + {{ $office->company_commission_rate }}%)</span>
                                             @endif
                                         </td>
-                                        <td class="py-4 px-6 font-bold {{ $netProfit >= 0 ? 'text-emerald-600' : 'text-red-600' }}">
+                                        <td class="py-4 px-4 font-mono text-xs">{{ $subEnd }}</td>
+                                        <td class="py-4 px-4 font-mono text-xs font-bold {{ $daysLeft <= 30 ? 'text-rose-600' : 'text-emerald-700' }}">{{ $daysLeft }} يوم</td>
+                                        <td class="py-4 px-4">
+                                            @if($daysLeft < 0)
+                                                <span class="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 text-xs font-bold">منتهي (يتطلب تجديد)</span>
+                                            @elseif($daysLeft <= 30)
+                                                <span class="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-xs font-bold">قرب الانتهاء 🔔</span>
+                                            @else
+                                                <span class="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-bold">ساري</span>
+                                            @endif
+                                        </td>
+                                        <td class="py-4 px-4 font-bold {{ $netProfit >= 0 ? 'text-emerald-600' : 'text-red-600' }}">
                                             {{ number_format($netProfit, 2) }} ر.س
                                         </td>
-                                        <td class="py-4 px-6">
+                                        <td class="py-4 px-4">
                                             @if($office->status == 'active')
                                                 <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">نشط</span>
                                             @else
@@ -380,7 +1251,7 @@
                                         </td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="6" class="py-8 text-center text-slate-400">لا توجد مكاتب مضافة بعد.</td></tr>
+                                    <tr><td colspan="8" class="py-8 text-center text-slate-400">لا توجد مكاتب مضافة بعد.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
@@ -2213,11 +3084,8 @@
                         <div class="flex items-center justify-between pb-4 border-b mb-4 no-print">
                             <h3 class="font-bold text-base text-slate-900">معاينة السند المالي الرسمي</h3>
                             <div class="flex items-center gap-2">
-                                <button type="button" onclick="downloadVoucherPDF()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow">
-                                     تحميل PDF
-                                </button>
-                                <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold">
-                                    🖨️ طباعة
+                                <button type="button" onclick="downloadVoucherPDF()" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold shadow">
+                                    📥 تحميل PDF
                                 </button>
                                 <button type="button" onclick="closeModal('officialVoucherModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                             </div>
@@ -2973,10 +3841,7 @@
                         const accId = opt.getAttribute('data-acc') || '';
                         if (accId && document.getElementById('cmp_inv_debit_acc')) {
                             document.getElementById('cmp_inv_debit_acc').value = accId;
-                        }
-                        const fee = parseFloat(opt.getAttribute('data-fee') || 0);
-                        if (fee > 0 && !document.getElementById('cmp_inv_sub').value) {
-                            document.getElementById('cmp_inv_sub').value = fee;
+                            document.getElementById('cmp_inv_debit_acc').dispatchEvent(new Event('change', { bubbles: true }));
                         }
                         calcCompanyInvTotal();
                     }
@@ -3032,8 +3897,8 @@
                             <p class="text-xs text-slate-500">صفحة مستقلة لاستخراج كشف حساب تفصيلي لأي مكتب عقار أو أي حساب فرعي في الشجرة مع الرصيد التراكمي</p>
                         </div>
                         <div class="flex items-center gap-2">
-                            <button type="button" onclick="window.print()" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">🖨️ طباعة الكشف</button>
-                            <button type="button" onclick="exportTableToCSV('standaloneAccountStatementTable', 'Account_Statement.csv')" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📊 تصدير Excel</button>
+                            <button type="button" onclick="exportElementToPDF('standaloneAccountStatementTable', 'كشف_الحساب_التفصيلي.pdf')" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">📥 تصدير PDF</button>
+                            <button type="button" onclick="exportTableToCSV('standaloneAccountStatementTable', 'كشف_الحساب_التفصيلي.xlsx')" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📊 تصدير Excel</button>
                         </div>
                     </div>
 
@@ -3254,15 +4119,18 @@
                                 <p class="text-xs text-slate-500 mt-0.5">يدعم حساب الرصيد الافتتاحي للفترة، الحساب المقابل، الفلترة بمركز التكلفة (المكتب)، وميزان المراجعة بالمجاميع والأرصدة</p>
                             </div>
                             <div class="flex items-center gap-2">
-                                <button type="button" onclick="window.print()" class="px-4 py-2.5 rounded-2xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition">
-                                     طباعة 
-                                </button>
                                 <button type="button" onclick="exportStatementPDF()" class="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow flex items-center gap-1.5">
-                                <span>تصدير PDF</span>
+                                    <span>📥 تصدير PDF</span>
                                 </button>
                                 <button type="button" onclick="exportTableToCSV('generalStatementTable', 'General_Ledger_Pro.csv')" class="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow flex items-center gap-1.5">
-                                <span>تصدير Excel</span>
+                                    <span>📊 تصدير Excel</span>
                                 </button>
+                                <form action="{{ route('erp.accounting.close_year') }}" method="POST" onsubmit="return confirm('هل أنت متأكد من إقفال السنة المالية للشركة الأم وترحيل صافي الربح إلى حقوق الملكية؟');">
+                                    @csrf
+                                    <button type="submit" class="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow flex items-center gap-1.5">
+                                        <span>🔒 إقفال السنة المالية</span>
+                                    </button>
+                                </form>
                             </div>
                         </div>
 
@@ -5666,5 +6534,135 @@
             closeModal('propertiesPdfExportChoiceModal');
         }
     </script>
+    <style>
+    /* منع تقطع أسطر الجداول والبطاقات عند تعدد صفحات الـ PDF */
+    tr, td, th, .rounded-2xl, .rounded-3xl {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+</style>
+
+<script>
+    // 1. دالة موحدة لتصدير أي عنصر أو جدول إلى PDF متعدد الصفحات بدون تقطع في البيانات
+    function exportElementToPDF(elementId, fileName) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        const opt = {
+            margin: [8, 8, 8, 8],
+            filename: fileName || 'Document.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+        };
+        html2pdf().set(opt).from(el).save();
+    }
+
+    // 2. دالة تصدير PDF العام لصفحة العقارات والوحدات (تعرض الـ 6 أعمدة المطلوبة فقط بدون الترقيم # وبدون الأزرار والإجراءات)
+    function exportGeneralPropertiesPDF() {
+        const rows = Array.from(document.querySelectorAll('#officePropertiesMainTable tbody tr.office-prop-row'))
+            .filter(r => r.style.display !== 'none');
+
+        const wrapper = document.createElement('div');
+        wrapper.dir = 'rtl';
+        wrapper.style.padding = '16px';
+        wrapper.style.fontFamily = "'Readex Pro', sans-serif";
+        wrapper.style.background = '#ffffff';
+
+        let tbodyHtml = '';
+        rows.forEach(r => {
+            const cells = r.querySelectorAll('td');
+            if (cells.length >= 7) {
+                const propTitle = cells[1].innerText.replace(/\s+/g, ' ').trim();
+                const ownerName = cells[2].innerText.trim();
+                const deedArea  = cells[3].innerText.replace(/\s+/g, ' | ').trim();
+                const address   = cells[4].innerText.replace(/\s+/g, ' - ').trim();
+                const specs     = cells[5].innerText.replace(/\(عرض المرفق\)/g, '').trim();
+                const vacantCnt = r.getAttribute('data-vacant-count') || '0';
+                const unitsText = cells[6].innerText.includes('عقار مستقل')
+                    ? 'عقار مستقل'
+                    : ('إجمالي الوحدات (الشاغر: ' + vacantCnt + ')');
+
+                tbodyHtml += `
+                    <tr style="page-break-inside: avoid; border-bottom: 1px solid #cbd5e1;">
+                        <td style="padding:10px; font-weight:bold;">${propTitle}</td>
+                        <td style="padding:10px;">${ownerName}</td>
+                        <td style="padding:10px;">${deedArea}</td>
+                        <td style="padding:10px;">${address}</td>
+                        <td style="padding:10px;">${specs}</td>
+                        <td style="padding:10px; font-weight:bold; text-align:center;">${unitsText}</td>
+                    </tr>
+                `;
+            }
+        });
+
+        wrapper.innerHTML = `
+            <h2 style="font-size:16px; font-weight:bold; margin-bottom:12px; text-align:center;">بيان العقارات والصكوك والوحدات التابعة لها</h2>
+            <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:right; border:1px solid #334155;">
+                <thead>
+                    <tr style="background:#0f172a; color:#ffffff;">
+                        <th style="padding:10px;">مسمى العقار والنوع</th>
+                        <th style="padding:10px;">المالك</th>
+                        <th style="padding:10px;">رقم الصك والمساحة</th>
+                        <th style="padding:10px;">العنوان الوطني</th>
+                        <th style="padding:10px;">المواصفات والمرفقات</th>
+                        <th style="padding:10px; text-align:center;">الوحدات الداخلية</th>
+                    </tr>
+                </thead>
+                <tbody>${tbodyHtml}</tbody>
+            </table>
+        `;
+
+        html2pdf().set({
+            margin: 8,
+            filename: 'بيان_العقارات_والوحدات_العام.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+        }).from(wrapper).save();
+
+        if (typeof closeModal === 'function') closeModal('propertiesPdfExportChoiceModal');
+    }
+
+    // 3. دالة إرسال أي عنصر (فاتورة، سند، إنذار قانوني، جدول) كملف PDF أصلي مرفق مباشرة بالواتساب بدون روابط
+    function sendElementAsOriginalPdfWhatsapp(elementId, targetPhone, fileName, docType = 'general') {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        let phone = targetPhone || prompt('أدخل رقم جوال المستلم لإرسال ملف الـ PDF الأصلي على الواتساب (مثال: 05XXXXXXXX):');
+        if (!phone) return;
+
+        const opt = {
+            margin: 8,
+            filename: fileName || 'Document.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+        };
+
+        html2pdf().set(opt).from(el).outputPdf('datauristring').then(function (pdfBase64) {
+            fetch('{{ route('erp.whatsapp.send_raw_pdf') }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({
+                    phone: phone,
+                    pdf_base64: pdfBase64,
+                    filename: fileName || 'Document.pdf',
+                    doc_type: docType
+                })
+            })
+            .then(r => r.json())
+            .then(d => alert(d.message || 'تمت العملية'))
+            .catch(() => alert('حدث خطأ أثناء الاتصال ببوابة الواتساب.'));
+        });
+    }
+    
+</script>
 </body>
 </html>

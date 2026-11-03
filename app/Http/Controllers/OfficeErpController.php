@@ -9,11 +9,53 @@ use Illuminate\Support\Facades\Auth;
 
 class OfficeErpController extends Controller
 {
+    /**
+     * بوابة حماية المكتب: تمنع الملاك وأفراد العائلة من الدخول لبوابة المكتب، وتمنع الموظف العادي من تنفيذ مهام مدير المكتب الحساسة
+     */
+    public function callAction($method, $parameters)
+    {
+        $user = Auth::user();
+        if (!$user) {
+            abort(403);
+        }
+
+        if ($user->user_type === 'company_admin' && session()->has('impersonate_office_id')) {
+            return $this->{$method}(...array_values($parameters));
+        }
+
+        if (!in_array($user->user_type, ['office_admin', 'office_staff'], true)) {
+            abort(403, 'غير مصرح لهذا الحساب بالدخول إلى بوابة إدارة المكتب العقاري.');
+        }
+
+        $officeAdminOnlyMethods = [
+            'storeStaff',
+            'updateStaff',
+            'deleteStaff',
+            'saveSmartOfficeSettings',
+            'approvePendingVoucher',
+            'closeFiscalYear',
+            'updateOfficeWhatsappSettings',
+            'updateOfficeWhatsapp',
+        ];
+
+        if ($user->user_type === 'office_staff' && in_array($method, $officeAdminOnlyMethods, true)) {
+            abort(403, 'هذا الإجراء مخصص لمدير المكتب العقاري فقط.');
+        }
+
+        return $this->{$method}(...array_values($parameters));
+    }
+
     private function getCurrentOfficeId(): ?int
     {
         $user = Auth::user();
+        if (!$user) {
+            return null;
+        }
         if ($user->user_type === 'company_admin' && session()->has('impersonate_office_id')) {
             return (int) session('impersonate_office_id');
+        }
+        if (!in_array($user->user_type, ['office_admin', 'office_staff'], true)) {
+            abort(403, 'غير مصرح لك بالوصول لبيانات المكتب.');
         }
         return $user->office_id ? (int) $user->office_id : null;
     }
@@ -119,10 +161,8 @@ class OfficeErpController extends Controller
             ->orderBy('property_units.id', 'desc')
             ->get();
 
-        $officeAccountIds = $accounts->pluck('id')->toArray();
         $vouchers = DB::table('vouchers')
             ->where('vouchers.office_id', $officeId)
-            ->whereIn('vouchers.debit_account_id', $officeAccountIds)
             ->leftJoin('accounts as debit_acc', 'vouchers.debit_account_id', '=', 'debit_acc.id')
             ->leftJoin('accounts as credit_acc', 'vouchers.credit_account_id', '=', 'credit_acc.id')
             ->leftJoin('owners', 'vouchers.owner_id', '=', 'owners.id')
@@ -220,6 +260,101 @@ class OfficeErpController extends Controller
         $defaultVatRate = (float) CompanyErpController::getSetting('default_vat_rate', '15');
         $activityLogs = CompanyErpController::getFilteredActivityLogs($officeId, null, 'office');
 
+        // توليد وتحديث جدول الدفعات تلقائياً لجميع العقود وتحديث حالتها (مستحق، متأخر جزئي، متأخر، مسدد)
+        CompanyErpController::ensureContractInstallmentsTable();
+        foreach ($contracts as $cntItem) {
+            CompanyErpController::generateInstallmentsForContract($cntItem);
+        }
+
+        $todayStr = date('Y-m-d');
+        DB::table('contract_installments')
+            ->where('office_id', $officeId)
+            ->where('status', '!=', 'paid')
+            ->where('due_date', '<', $todayStr)
+            ->whereRaw('paid_amount <= 0')
+            ->update(['status' => 'overdue']);
+
+        DB::table('contract_installments')
+            ->where('office_id', $officeId)
+            ->where('status', '!=', 'paid')
+            ->where('due_date', '<', $todayStr)
+            ->whereRaw('paid_amount > 0 AND paid_amount < amount')
+            ->update(['status' => 'partial_overdue']);
+
+        $installments = DB::table('contract_installments')
+            ->join('lease_contracts', 'contract_installments.lease_contract_id', '=', 'lease_contracts.id')
+            ->join('properties', 'contract_installments.property_id', '=', 'properties.id')
+            ->join('owners', 'contract_installments.owner_id', '=', 'owners.id')
+            ->join('tenants', 'contract_installments.tenant_id', '=', 'tenants.id')
+            ->leftJoin('property_units', 'contract_installments.property_unit_id', '=', 'property_units.id')
+            ->where('contract_installments.office_id', $officeId)
+            ->select(
+                'contract_installments.*',
+                'lease_contracts.contract_number',
+                'lease_contracts.payment_cycle',
+                'properties.title as property_title',
+                'owners.name as owner_name',
+                'tenants.name as tenant_name',
+                'tenants.phone as tenant_phone',
+                'property_units.unit_number'
+            )
+            ->orderBy('contract_installments.due_date', 'asc')
+            ->get();
+
+        // حساب أعمار الديون العقارية (Aging Receivables: 1-30، 31-60، 61-90، +90 يوم)
+        $agingBuckets = ['b_30' => 0, 'b_60' => 0, 'b_90' => 0, 'b_plus' => 0, 'rows' => []];
+        foreach ($installments->where('status', '!=', 'paid') as $inst) {
+            $rem = round($inst->amount - $inst->paid_amount, 2);
+            if ($rem <= 0 || $inst->due_date >= $todayStr) continue;
+            $daysLate = (int) \Carbon\Carbon::parse($inst->due_date)->diffInDays(now());
+            if ($daysLate <= 30) $agingBuckets['b_30'] += $rem;
+            elseif ($daysLate <= 60) $agingBuckets['b_60'] += $rem;
+            elseif ($daysLate <= 90) $agingBuckets['b_90'] += $rem;
+            else $agingBuckets['b_plus'] += $rem;
+            $inst->days_late = $daysLate;
+            $inst->remaining_amount = $rem;
+            $agingBuckets['rows'][] = $inst;
+        }
+
+        // فحص كاشف الشذوذ المحاسبي حسب الشروط التي حددها صاحب المكتب
+        $anomalyAlerts = collect();
+        if ($office->enable_anomaly_detector ?? 1) {
+            $maxAmt = (float) ($office->anomaly_max_amount ?? 20000);
+            $nStart = (int) ($office->anomaly_night_start ?? 23);
+            $nEnd = (int) ($office->anomaly_night_end ?? 5);
+
+            foreach ($vouchers as $v) {
+                $hour = (int) date('G', strtotime($v->created_at ?? now()));
+                $isNight = ($nStart > $nEnd) ? ($hour >= $nStart || $hour <= $nEnd) : ($hour >= $nStart && $hour <= $nEnd);
+                if ($v->amount >= $maxAmt) {
+                    $anomalyAlerts->push((object)[
+                        'type' => 'مبلغ يتجاوز سقف التنبيه (' . number_format($maxAmt, 0) . ' ر.س)',
+                        'details' => "سند رقم {$v->voucher_number} بمبلغ " . number_format($v->amount, 2) . " ر.س ({$v->notes})",
+                        'time' => $v->created_at,
+                        'severity' => 'high'
+                    ]);
+                }
+                if ($isNight) {
+                    $anomalyAlerts->push((object)[
+                        'type' => 'عملية مالية في وقت متأخر من الليل',
+                        'details' => "تم إصدار السند {$v->voucher_number} الساعة {$hour}:00 ليلاً",
+                        'time' => $v->created_at,
+                        'severity' => 'warning'
+                    ]);
+                }
+            }
+            if ($office->anomaly_alert_on_delete ?? 1) {
+                foreach ($activityLogs->where('action_type', 'حذف') as $delLog) {
+                    $anomalyAlerts->push((object)[
+                        'type' => 'عملية حذف حساسة في النظام',
+                        'details' => $delLog->details . ' بواسطة ' . $delLog->user_name,
+                        'time' => $delLog->created_at,
+                        'severity' => 'high'
+                    ]);
+                }
+            }
+        }
+
         $stats = [
             'owners_count' => $owners->count(),
             'properties_count' => $properties->count(),
@@ -239,7 +374,8 @@ class OfficeErpController extends Controller
             'accounts', 'vouchers', 'journalEntries', 'journalItems', 'journalItemsByEntry',
             'staff', 'stats', 'defaultTenantParentAcc', 'defaultOwnerParentAcc',
             'companyAdminPhone', 'nextReceiptNo', 'nextPaymentNo',
-            'paymentMethods', 'officeInvoices', 'defaultVatRate', 'activityLogs'
+            'paymentMethods', 'officeInvoices', 'defaultVatRate', 'activityLogs',
+            'installments', 'agingBuckets', 'anomalyAlerts'
         ));
     }
 
@@ -385,7 +521,13 @@ class OfficeErpController extends Controller
             'custom_files.*.max' => 'حجم الملف المرفق يجب ألا يتجاوز 5 ميغابايت (5MB).',
         ]);
 
+        $ownerExists = DB::table('owners')->where('id', $request->owner_id)->where('office_id', $officeId)->exists();
+        if (!$ownerExists) {
+            return back()->withErrors(['المالك المحدد غير مسجل ضمن هذا المكتب.']);
+        }
+
         $customAttrs = $request->input('custom_attrs', []);
+        $allowedExtensions = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif'];
 
         if ($request->hasFile('custom_files')) {
             $uploadDir = public_path('uploads/properties');
@@ -394,8 +536,11 @@ class OfficeErpController extends Controller
             }
             foreach ($request->file('custom_files') as $attrKey => $fileObj) {
                 if ($fileObj && $fileObj->isValid()) {
-                    $ext = strtolower($fileObj->getClientOriginalExtension());
-                    $fileName = 'prop_' . time() . '_' . uniqid() . '.' . $ext;
+                    $guessedExt = strtolower($fileObj->extension() ?: $fileObj->getClientOriginalExtension());
+                    if (!in_array($guessedExt, $allowedExtensions, true)) {
+                        continue;
+                    }
+                    $fileName = 'prop_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $guessedExt;
                     $fileObj->move($uploadDir, $fileName);
                     $customAttrs[$attrKey] = '/uploads/properties/' . $fileName;
                 }
@@ -444,6 +589,11 @@ class OfficeErpController extends Controller
             'district' => 'required',
         ]);
 
+        $ownerExists = DB::table('owners')->where('id', $request->owner_id)->where('office_id', $officeId)->exists();
+        if (!$ownerExists) {
+            return back()->withErrors(['المالك المحدد غير مسجل ضمن هذا المكتب.']);
+        }
+
         DB::table('properties')->where('id', $id)->where('office_id', $officeId)->update([
             'owner_id' => $request->owner_id,
             'property_type_id' => $request->property_type_id,
@@ -467,23 +617,35 @@ class OfficeErpController extends Controller
     public function deleteProperty($id)
     {
         $officeId = $this->getCurrentOfficeId();
-        DB::table('properties')->where('id', $id)->where('office_id', $officeId)->delete();
+        $prop = DB::table('properties')->where('id', $id)->where('office_id', $officeId)->first();
+        if ($prop) {
+            DB::table('property_units')->where('property_id', $prop->id)->delete();
+            DB::table('properties')->where('id', $prop->id)->where('office_id', $officeId)->delete();
+        }
         return redirect()->route('office.dashboard', ['tab' => 'properties'])
             ->with('success', 'تم حذف العقار بنجاح.');
     }
 
     public function storeUnit(Request $request)
     {
+        $officeId = $this->getCurrentOfficeId();
         $request->validate([
             'property_id' => 'required',
             'unit_number' => 'required',
             'default_rent_price' => 'required|numeric',
         ]);
 
-        $property = DB::table('properties')->where('id', $request->property_id)->first();
+        $property = DB::table('properties')
+            ->where('id', $request->property_id)
+            ->where('office_id', $officeId)
+            ->first();
+
+        if (!$property) {
+            return back()->withErrors(['العقار المحدد غير موجود ضمن هذا المكتب.']);
+        }
 
         DB::table('property_units')->insert([
-            'property_id' => $request->property_id,
+            'property_id' => $property->id,
             'property_type_id' => $property->property_type_id,
             'unit_number' => trim($request->unit_number),
             'floor_number' => $request->floor_number ?: 0,
@@ -506,9 +668,16 @@ class OfficeErpController extends Controller
 
     public function updateUnit(Request $request, $id)
     {
-        $unit = DB::table('property_units')->where('id', $id)->first();
+        $officeId = $this->getCurrentOfficeId();
+        $unit = DB::table('property_units')
+            ->join('properties', 'property_units.property_id', '=', 'properties.id')
+            ->where('property_units.id', $id)
+            ->where('properties.office_id', $officeId)
+            ->select('property_units.*')
+            ->first();
+
         if ($unit) {
-            DB::table('property_units')->where('id', $id)->update([
+            DB::table('property_units')->where('id', $unit->id)->update([
                 'unit_number' => trim($request->unit_number),
                 'floor_number' => $request->floor_number ?: 0,
                 'area' => $request->area ?: 0,
@@ -526,7 +695,17 @@ class OfficeErpController extends Controller
 
     public function deleteUnit($id)
     {
-        DB::table('property_units')->where('id', $id)->delete();
+        $officeId = $this->getCurrentOfficeId();
+        $unit = DB::table('property_units')
+            ->join('properties', 'property_units.property_id', '=', 'properties.id')
+            ->where('property_units.id', $id)
+            ->where('properties.office_id', $officeId)
+            ->select('property_units.id')
+            ->first();
+
+        if ($unit) {
+            DB::table('property_units')->where('id', $unit->id)->delete();
+        }
         return redirect()->route('office.dashboard', ['tab' => 'properties'])
             ->with('success', 'تم حذف الوحدة العقارية.');
     }
@@ -546,7 +725,11 @@ class OfficeErpController extends Controller
         $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
 
         DB::transaction(function () use ($request, $officeId, $formattedPhone) {
-            $parentAccId = $request->filled('parent_account_id') ? (int) $request->parent_account_id : null;
+            $parentAccId = null;
+            if ($request->filled('parent_account_id')) {
+                $validParent = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->parent_account_id)->first();
+                $parentAccId = $validParent ? $validParent->id : null;
+            }
             if (!$parentAccId) {
                 $defaultParent = DB::table('accounts')->where('office_id', $officeId)->where('code', '1103')->first();
                 $parentAccId = $defaultParent ? $defaultParent->id : null;
@@ -586,16 +769,17 @@ class OfficeErpController extends Controller
         if ($tenant) {
             $accountId = $tenant->account_id;
             if (!$accountId && $request->filled('parent_account_id')) {
+                $validParent = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->parent_account_id)->first();
                 $accountId = CompanyErpController::createSequentialSubAccount(
                     $officeId,
-                    (int) $request->parent_account_id,
+                    $validParent ? $validParent->id : null,
                     'المستأجر: ' . trim($request->name)
                 );
             } elseif ($accountId) {
-                DB::table('accounts')->where('id', $accountId)->update(['name' => 'المستأجر: ' . trim($request->name)]);
+                DB::table('accounts')->where('id', $accountId)->where('office_id', $officeId)->update(['name' => 'المستأجر: ' . trim($request->name)]);
             }
 
-            DB::table('tenants')->where('id', $id)->update([
+            DB::table('tenants')->where('id', $id)->where('office_id', $officeId)->update([
                 'name' => trim($request->name),
                 'id_type' => $request->id_type ?: $tenant->id_type,
                 'id_number' => trim($request->id_number),
@@ -632,8 +816,19 @@ class OfficeErpController extends Controller
             'total_rent_amount' => 'required|numeric',
         ]);
 
-        $property = DB::table('properties')->where('id', $request->property_id)->first();
-        $owner = DB::table('owners')->where('id', $property->owner_id)->first();
+        $property = DB::table('properties')->where('id', $request->property_id)->where('office_id', $officeId)->first();
+        $tenant = DB::table('tenants')->where('id', $request->tenant_id)->where('office_id', $officeId)->first();
+        if (!$property || !$tenant) {
+            return back()->withErrors(['العقار أو المستأجر غير مسجل ضمن هذا المكتب.']);
+        }
+
+        $unitId = null;
+        if ($request->filled('property_unit_id')) {
+            $unit = DB::table('property_units')->where('id', $request->property_unit_id)->where('property_id', $property->id)->first();
+            $unitId = $unit ? $unit->id : null;
+        }
+
+        $owner = DB::table('owners')->where('id', $property->owner_id)->where('office_id', $officeId)->first();
 
         $companyFee = 0;
         if (in_array($office->billing_type, ['per_property_percentage', 'hybrid']) && $office->company_commission_rate > 0) {
@@ -644,18 +839,18 @@ class OfficeErpController extends Controller
             ? $request->office_commission
             : (($request->total_rent_amount * ($owner->office_management_fee_rate ?? 5)) / 100);
 
-        $contractNumber = 'CNT-' . date('Y') . '-' . rand(10000, 99999);
+        $contractNumber = 'CNT-' . date('Y') . '-' . random_int(10000, 99999);
 
-        DB::transaction(function () use ($request, $officeId, $property, $contractNumber, $officeCommission, $companyFee) {
+        DB::transaction(function () use ($request, $officeId, $property, $tenant, $unitId, $contractNumber, $officeCommission, $companyFee) {
             DB::table('lease_contracts')->insert([
                 'contract_number' => $contractNumber,
                 'ejar_contract_number' => $request->ejar_contract_number ?: null,
                 'ejar_status' => $request->filled('ejar_contract_number') ? 'active' : 'not_sent',
                 'office_id' => $officeId,
                 'property_id' => $property->id,
-                'property_unit_id' => $request->property_unit_id ?: null,
+                'property_unit_id' => $unitId,
                 'owner_id' => $property->owner_id,
-                'tenant_id' => $request->tenant_id,
+                'tenant_id' => $tenant->id,
                 'start_date' => $request->start_date,
                 'end_date' => $request->end_date,
                 'payment_cycle' => $request->payment_cycle ?: 'annual',
@@ -668,8 +863,8 @@ class OfficeErpController extends Controller
                 'updated_at' => now(),
             ]);
 
-            if ($request->filled('property_unit_id')) {
-                DB::table('property_units')->where('id', $request->property_unit_id)->update(['status' => 'rented']);
+            if ($unitId) {
+                DB::table('property_units')->where('id', $unitId)->update(['status' => 'rented']);
             }
         });
 
@@ -687,8 +882,25 @@ class OfficeErpController extends Controller
             return back()->withErrors(['العقد غير موجود.']);
         }
 
-        $property = DB::table('properties')->where('id', $request->property_id ?: $contract->property_id)->first();
-        $owner = DB::table('owners')->where('id', $property->owner_id)->first();
+        $property = DB::table('properties')->where('id', $request->property_id ?: $contract->property_id)->where('office_id', $officeId)->first();
+        if (!$property) {
+            return back()->withErrors(['العقار غير موجود ضمن هذا المكتب.']);
+        }
+
+        $owner = DB::table('owners')->where('id', $property->owner_id)->where('office_id', $officeId)->first();
+        $tenantId = $contract->tenant_id;
+        if ($request->filled('tenant_id')) {
+            $validTenant = DB::table('tenants')->where('id', $request->tenant_id)->where('office_id', $officeId)->first();
+            if ($validTenant) {
+                $tenantId = $validTenant->id;
+            }
+        }
+
+        $unitId = null;
+        if ($request->filled('property_unit_id')) {
+            $validUnit = DB::table('property_units')->where('id', $request->property_unit_id)->where('property_id', $property->id)->first();
+            $unitId = $validUnit ? $validUnit->id : null;
+        }
 
         $totalRent = (float) ($request->total_rent_amount ?? $contract->total_rent_amount);
         $companyFee = 0;
@@ -702,9 +914,9 @@ class OfficeErpController extends Controller
 
         DB::table('lease_contracts')->where('id', $id)->where('office_id', $officeId)->update([
             'property_id' => $property->id,
-            'property_unit_id' => $request->property_unit_id ?: null,
+            'property_unit_id' => $unitId,
             'owner_id' => $property->owner_id,
-            'tenant_id' => $request->tenant_id ?: $contract->tenant_id,
+            'tenant_id' => $tenantId,
             'start_date' => $request->start_date ?: $contract->start_date,
             'end_date' => $request->end_date ?: $contract->end_date,
             'payment_cycle' => $request->payment_cycle ?: $contract->payment_cycle,
@@ -730,7 +942,8 @@ class OfficeErpController extends Controller
             if ($contract->property_unit_id) {
                 DB::table('property_units')->where('id', $contract->property_unit_id)->update(['status' => 'vacant']);
             }
-            DB::table('lease_contracts')->where('id', $id)->delete();
+            DB::table('contract_installments')->where('lease_contract_id', $contract->id)->where('office_id', $officeId)->delete();
+            DB::table('lease_contracts')->where('id', $id)->where('office_id', $officeId)->delete();
         }
         return redirect()->route('office.dashboard', ['tab' => 'contracts'])
             ->with('success', 'تم حذف عقد الإيجار.');
@@ -960,9 +1173,16 @@ class OfficeErpController extends Controller
         $officeId = $this->getCurrentOfficeId();
         app(CompanyErpController::class)->ensurePaymentMethodsTable();
         $request->validate(['name' => 'required']);
+
+        $validAccId = null;
+        if ($request->filled('account_id')) {
+            $accRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->account_id)->first();
+            $validAccId = $accRow ? $accRow->id : null;
+        }
+
         DB::table('custom_payment_methods')->insert([
             'office_id' => $officeId,
-            'account_id' => $request->filled('account_id') ? (int) $request->account_id : null,
+            'account_id' => $validAccId,
             'name' => trim($request->name),
             'code' => trim($request->name),
             'created_at' => now(),
@@ -973,12 +1193,18 @@ class OfficeErpController extends Controller
 
     public function updateOfficePaymentMethod(Request $request, $id)
     {
-        $old = DB::table('custom_payment_methods')->where('id', $id)->first();
+        $officeId = $this->getCurrentOfficeId();
+        $old = DB::table('custom_payment_methods')->where('id', $id)->where('office_id', $officeId)->first();
         if ($old) {
-            DB::table('custom_payment_methods')->where('id', $id)->update([
+            $validAccId = null;
+            if ($request->filled('account_id')) {
+                $accRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->account_id)->first();
+                $validAccId = $accRow ? $accRow->id : null;
+            }
+            DB::table('custom_payment_methods')->where('id', $id)->where('office_id', $officeId)->update([
                 'name' => trim($request->name),
                 'code' => trim($request->name),
-                'account_id' => $request->filled('account_id') ? (int) $request->account_id : null,
+                'account_id' => $validAccId,
                 'updated_at' => now(),
             ]);
         }
@@ -987,62 +1213,187 @@ class OfficeErpController extends Controller
 
     public function deleteOfficePaymentMethod($id)
     {
-        DB::table('custom_payment_methods')->where('id', $id)->delete();
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('custom_payment_methods')->where('id', $id)->where('office_id', $officeId)->delete();
         return back()->with('success', 'تم حذف طريقة الدفع.');
     }
 
     public function storeOfficeVoucher(Request $request)
     {
+        app(CompanyErpController::class)->ensureDefaultAdminExists();
         $officeId = $this->getCurrentOfficeId();
-        $voucherNumber = CompanyErpController::generateNextVoucherNumber($request->voucher_type, $officeId);
+        $office = DB::table('offices')->where('id', $officeId)->first();
+        $vType = $request->voucher_type ?: 'receipt';
+        $voucherNumber = CompanyErpController::generateNextVoucherNumber($vType, $officeId);
 
-        // ذكاء تلقائي: إذا اختار المحاسب المستأجر ولم يحدد المالك، نجلب المالك والعقد تلقائياً من جدول العقود
-        $ownerId = $request->owner_id ?: null;
-        $tenantId = $request->tenant_id ?: null;
-        $contractId = $request->lease_contract_id ?: null;
+        $ownerId = null;
+        if ($request->filled('owner_id')) {
+            $validOwner = DB::table('owners')->where('id', (int) $request->owner_id)->where('office_id', $officeId)->first();
+            $ownerId = $validOwner ? (int) $validOwner->id : null;
+        }
 
-        if ($tenantId && !$ownerId) {
+        $tenantId = null;
+        if ($request->filled('tenant_id')) {
+            $validTenant = DB::table('tenants')->where('id', (int) $request->tenant_id)->where('office_id', $officeId)->first();
+            $tenantId = $validTenant ? (int) $validTenant->id : null;
+        }
+
+        $contractId = $request->filled('lease_contract_id') ? (int) $request->lease_contract_id : null;
+        $propertyId = $request->filled('property_id') ? (int) $request->property_id : null;
+        $unitId = $request->filled('property_unit_id') ? (int) $request->property_unit_id : null;
+        $installmentId = $request->filled('installment_id') ? (int) $request->installment_id : null;
+
+        // 1. إذا تم تحديد المستأجر، نتعرف تلقائياً على عقده، العقار، الوحدة، والمالك
+        if ($tenantId) {
             $activeContract = DB::table('lease_contracts')
                 ->where('office_id', $officeId)
                 ->where('tenant_id', $tenantId)
                 ->orderBy('id', 'desc')
                 ->first();
             if ($activeContract) {
-                $ownerId = $activeContract->owner_id;
-                $contractId = $contractId ?: $activeContract->id;
+                $ownerId = $ownerId ?: (int) $activeContract->owner_id;
+                $contractId = $contractId ?: (int) $activeContract->id;
+                $propertyId = $propertyId ?: (int) $activeContract->property_id;
+                $unitId = $unitId ?: ($activeContract->property_unit_id ? (int) $activeContract->property_unit_id : null);
             }
         }
 
-        DB::transaction(function () use ($request, $officeId, $voucherNumber, $ownerId, $tenantId, $contractId) {
-            DB::table('vouchers')->insert([
+        // 2. إذا تم تحديد العقار ولم يحدد المالك، نتعرف على المالك من العقار تلقائياً
+        if ($propertyId) {
+            $propRow = DB::table('properties')->where('id', $propertyId)->where('office_id', $officeId)->first();
+            if ($propRow) {
+                $ownerId = $ownerId ?: (int) $propRow->owner_id;
+            } else {
+                $propertyId = null;
+            }
+        }
+
+        // 3. تحديد الحساب المدين والدائن تلقائياً من شجرة هذا المكتب حصراً
+        $defaultCashAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '1102')->first()
+                       ?: DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->first();
+        $fallbackAccId = $defaultCashAcc ? (int) $defaultCashAcc->id : 1;
+
+        $debitAccId = $fallbackAccId;
+        if ($request->filled('debit_account_id')) {
+            $dRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->debit_account_id)->first();
+            if ($dRow) $debitAccId = (int) $dRow->id;
+        }
+
+        $creditAccId = $fallbackAccId;
+        if ($request->filled('credit_account_id')) {
+            $cRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->credit_account_id)->first();
+            if ($cRow) $creditAccId = (int) $cRow->id;
+        }
+
+        if ($vType === 'receipt' && $tenantId) {
+            $tRow = DB::table('tenants')->where('id', $tenantId)->where('office_id', $officeId)->first();
+            if ($tRow && $tRow->account_id) {
+                $creditAccId = (int) $tRow->account_id;
+            }
+        } elseif ($vType === 'payment' && $ownerId) {
+            $oRow = DB::table('owners')->where('id', $ownerId)->where('office_id', $officeId)->first();
+            if ($oRow && $oRow->account_id) {
+                $debitAccId = (int) $oRow->account_id;
+            }
+        }
+
+        $amount = (float) ($request->amount ?? 0);
+        if ($amount <= 0) {
+            return back()->withErrors(['يرجى إدخال مبلغ صحيح أكبر من الصفر.']);
+        }
+
+        // فحص هل سند الصرف يتطلب اعتماد صاحب المكتب عبر الواتساب؟
+        $needsWaApproval = false;
+        $approvalCode = (string) random_int(1000, 9999);
+        if (
+            $vType === 'payment' &&
+            !empty($office->enable_wa_voucher_approval) &&
+            $amount >= (float) ($office->wa_approval_threshold ?? 10000) &&
+            Auth::user()->user_type !== 'office_admin' &&
+            Auth::user()->user_type !== 'company_admin'
+        ) {
+            $needsWaApproval = true;
+        }
+
+        $newVoucherId = null;
+        DB::transaction(function () use (
+            $request, $officeId, $voucherNumber, $vType, $debitAccId, $creditAccId,
+            $ownerId, $tenantId, $contractId, $propertyId, $unitId, $installmentId,
+            $amount, $needsWaApproval, $approvalCode, &$newVoucherId
+        ) {
+            $payload = [
                 'voucher_number' => $voucherNumber,
-                'voucher_type' => $request->voucher_type,
+                'voucher_type' => $vType,
                 'office_id' => $officeId,
-                'debit_account_id' => $request->debit_account_id,
-                'credit_account_id' => $request->credit_account_id,
+                'debit_account_id' => $debitAccId,
+                'credit_account_id' => $creditAccId,
                 'owner_id' => $ownerId,
                 'tenant_id' => $tenantId,
                 'lease_contract_id' => $contractId,
-                'amount' => $request->amount,
+                'amount' => $amount,
                 'payment_method' => CompanyErpController::normalizeVoucherPaymentMethod($request->payment_method),
                 'voucher_date' => $request->voucher_date ?: date('Y-m-d'),
-                'notes' => trim($request->notes),
+                'notes' => trim($request->notes ?: 'سند مالي'),
                 'created_by' => Auth::id(),
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
 
-            CompanyErpController::applyAccountMovement((int) $request->debit_account_id, (float) $request->amount, 0);
-            CompanyErpController::applyAccountMovement((int) $request->credit_account_id, 0, (float) $request->amount);
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_id')) {
+                $payload['property_id'] = $propertyId;
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_unit_id')) {
+                $payload['property_unit_id'] = $unitId;
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'installment_id')) {
+                $payload['installment_id'] = $installmentId;
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'approval_status')) {
+                $payload['approval_status'] = $needsWaApproval ? 'pending' : 'approved';
+                $payload['approval_code'] = $needsWaApproval ? $approvalCode : null;
+            }
+
+            $newVoucherId = DB::table('vouchers')->insertGetId($payload);
+
+            if (!$needsWaApproval) {
+                CompanyErpController::applyAccountMovement($debitAccId, $amount, 0);
+                CompanyErpController::applyAccountMovement($creditAccId, 0, $amount);
+
+                if ($vType === 'receipt' && $ownerId) {
+                    $ownerObj = DB::table('owners')->where('id', $ownerId)->where('office_id', $officeId)->first();
+                    if ($ownerObj && $ownerObj->account_id && (int)$ownerObj->account_id !== $creditAccId) {
+                        CompanyErpController::applyAccountMovement($creditAccId, $amount, 0);
+                        CompanyErpController::applyAccountMovement((int) $ownerObj->account_id, 0, $amount);
+                    }
+                }
+
+                if ($vType === 'receipt' && ($installmentId || $tenantId)) {
+                    $this->allocateReceiptToInstallments($officeId, $tenantId, $installmentId, $amount, $newVoucherId);
+                }
+            }
         });
+
+        if ($needsWaApproval && !empty($office->phone)) {
+            $keywordsHint = $office->wa_approval_keywords ?: 'اعتمد, تم, اوك';
+            $waMsg = "🔔 *طلب اعتماد سند صرف*\nرقم السند: *{$voucherNumber}*\nالمبلغ: *" . number_format($amount, 2) . " ر.س*\nالبيان: {$request->notes}\nكود السند: *{$approvalCode}*\n\nأرسل رد بكلمة: *({$keywordsHint})* لاعتماده.";
+            CompanyErpController::dispatchWhatsappMessage($office->phone, $waMsg, $officeId);
+
+            return redirect()->route('office.dashboard', ['tab' => 'vouchers'])
+                ->with('success', "تم حفظ سند الصرف رقم ({$voucherNumber}) بانتظار الاعتماد عبر الواتساب.");
+        }
 
         if ($request->filled('stay_in_accounting')) {
             return redirect()->route('office.dashboard', ['tab' => 'accounting'])
                 ->with('success', 'تم إصدار السند المالي رقم (' . $voucherNumber . ') وتحديث رصيد الحساب في شجرة المكتب فوراً.');
         }
 
+        if ($request->filled('stay_in_installments')) {
+            return redirect()->route('office.dashboard', ['tab' => 'installments'])
+                ->with('success', 'تم تسجيل سداد الدفعة بالسند رقم (' . $voucherNumber . ') وتحديث حالة القسط تلقائياً.');
+        }
+
         return redirect()->route('office.dashboard', ['tab' => 'vouchers'])
-            ->with('success', 'تم إصدار السند الرسمي للمكتب رقم (' . $voucherNumber . ') وربطه بالمالك وترحيل القيد بنجاح.');
+            ->with('success', 'تم إصدار السند الرسمي للمكتب رقم (' . $voucherNumber . ') وربطه بالمالك والعقار والشجرة بنجاح.');
     }
 
     public function updateOfficeVoucher(Request $request, $id)
@@ -1053,14 +1404,25 @@ class OfficeErpController extends Controller
             return back()->withErrors(['السند غير موجود.']);
         }
 
-        DB::transaction(function () use ($request, $id, $oldVoucher) {
-            CompanyErpController::applyAccountMovement((int) $oldVoucher->debit_account_id, (float) $oldVoucher->amount, 0, true);
-            CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, 0, (float) $oldVoucher->amount, true);
+        DB::transaction(function () use ($request, $id, $officeId, $oldVoucher) {
+            if (($oldVoucher->approval_status ?? 'approved') === 'approved') {
+                CompanyErpController::applyAccountMovement((int) $oldVoucher->debit_account_id, (float) $oldVoucher->amount, 0, true);
+                CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, 0, (float) $oldVoucher->amount, true);
+            }
 
-            $newDebitId = $request->debit_account_id ?: $oldVoucher->debit_account_id;
-            $newCreditId = $request->credit_account_id ?: $oldVoucher->credit_account_id;
+            $newDebitId = $oldVoucher->debit_account_id;
+            if ($request->filled('debit_account_id')) {
+                $dRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->debit_account_id)->first();
+                if ($dRow) $newDebitId = $dRow->id;
+            }
 
-            DB::table('vouchers')->where('id', $id)->update([
+            $newCreditId = $oldVoucher->credit_account_id;
+            if ($request->filled('credit_account_id')) {
+                $cRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->credit_account_id)->first();
+                if ($cRow) $newCreditId = $cRow->id;
+            }
+
+            DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->update([
                 'voucher_type' => $request->voucher_type ?: $oldVoucher->voucher_type,
                 'debit_account_id' => $newDebitId,
                 'credit_account_id' => $newCreditId,
@@ -1073,8 +1435,10 @@ class OfficeErpController extends Controller
                 'updated_at' => now(),
             ]);
 
-            CompanyErpController::applyAccountMovement((int) $newDebitId, (float) $request->amount, 0);
-            CompanyErpController::applyAccountMovement((int) $newCreditId, 0, (float) $request->amount);
+            if (($oldVoucher->approval_status ?? 'approved') === 'approved') {
+                CompanyErpController::applyAccountMovement((int) $newDebitId, (float) $request->amount, 0);
+                CompanyErpController::applyAccountMovement((int) $newCreditId, 0, (float) $request->amount);
+            }
         });
 
         return back()->with('success', 'تم تعديل السند رقم (' . $oldVoucher->voucher_number . ') وتحديث أرصدة المكتب.');
@@ -1085,10 +1449,12 @@ class OfficeErpController extends Controller
         $officeId = $this->getCurrentOfficeId();
         $oldVoucher = DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->first();
         if ($oldVoucher) {
-            DB::transaction(function () use ($id, $oldVoucher) {
-                CompanyErpController::applyAccountMovement((int) $oldVoucher->debit_account_id, (float) $oldVoucher->amount, 0, true);
-                CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, 0, (float) $oldVoucher->amount, true);
-                DB::table('vouchers')->where('id', $id)->delete();
+            DB::transaction(function () use ($id, $officeId, $oldVoucher) {
+                if (($oldVoucher->approval_status ?? 'approved') === 'approved') {
+                    CompanyErpController::applyAccountMovement((int) $oldVoucher->debit_account_id, (float) $oldVoucher->amount, 0, true);
+                    CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, 0, (float) $oldVoucher->amount, true);
+                }
+                DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->delete();
             });
         }
 
@@ -1099,6 +1465,8 @@ class OfficeErpController extends Controller
     {
         $officeId = $this->getCurrentOfficeId();
         app(CompanyErpController::class)->ensureJournalTables();
+
+        $allowedAccountIds = DB::table('accounts')->where('office_id', $officeId)->pluck('id')->map(fn($v) => (int) $v)->toArray();
 
         $accountIds = $request->input('account_ids', []);
         $debits     = $request->input('debits', []);
@@ -1112,7 +1480,7 @@ class OfficeErpController extends Controller
         $totalTax = 0;
 
         foreach ($accountIds as $idx => $accId) {
-            if (empty($accId)) continue;
+            if (empty($accId) || !in_array((int) $accId, $allowedAccountIds, true)) continue;
             $d = (float) ($debits[$idx] ?? 0);
             $c = (float) ($credits[$idx] ?? 0);
             $t = (float) ($taxes[$idx] ?? 0);
@@ -1132,7 +1500,7 @@ class OfficeErpController extends Controller
         }
 
         if (count($rows) === 0) {
-            return back()->withErrors(['يرجى إدخال سطر واحد على الأقل في القيد اليومي.']);
+            return back()->withErrors(['يرجى إدخال سطر واحد صحيح على الأقل في القيد اليومي.']);
         }
 
         DB::transaction(function () use ($request, $officeId, $rows, $totalDebit, $totalCredit, $totalTax) {
@@ -1178,6 +1546,8 @@ class OfficeErpController extends Controller
         $entry = DB::table('journal_entries')->where('id', $id)->where('office_id', $officeId)->first();
         if (!$entry) return back()->withErrors(['القيد غير موجود.']);
 
+        $allowedAccountIds = DB::table('accounts')->where('office_id', $officeId)->pluck('id')->map(fn($v) => (int) $v)->toArray();
+
         $accountIds = $request->input('account_ids', []);
         $debits     = $request->input('debits', []);
         $credits    = $request->input('credits', []);
@@ -1190,7 +1560,7 @@ class OfficeErpController extends Controller
         $totalTax = 0;
 
         foreach ($accountIds as $idx => $accId) {
-            if (empty($accId)) continue;
+            if (empty($accId) || !in_array((int) $accId, $allowedAccountIds, true)) continue;
             $d = (float) ($debits[$idx] ?? 0);
             $c = (float) ($credits[$idx] ?? 0);
             $t = (float) ($taxes[$idx] ?? 0);
@@ -1209,14 +1579,18 @@ class OfficeErpController extends Controller
             ];
         }
 
-        DB::transaction(function () use ($request, $id, $rows, $totalDebit, $totalCredit, $totalTax) {
+        if (count($rows) === 0) {
+            return back()->withErrors(['يرجى إدخال سطر واحد صحيح على الأقل في القيد اليومي.']);
+        }
+
+        DB::transaction(function () use ($request, $id, $officeId, $rows, $totalDebit, $totalCredit, $totalTax) {
             $oldItems = DB::table('journal_entry_items')->where('journal_entry_id', $id)->get();
             foreach ($oldItems as $old) {
                 CompanyErpController::applyAccountMovement((int) $old->account_id, (float) $old->debit, (float) $old->credit, true);
             }
             DB::table('journal_entry_items')->where('journal_entry_id', $id)->delete();
 
-            DB::table('journal_entries')->where('id', $id)->update([
+            DB::table('journal_entries')->where('id', $id)->where('office_id', $officeId)->update([
                 'entry_date' => $request->entry_date ?: date('Y-m-d'),
                 'general_notes' => trim($request->general_notes),
                 'total_debit' => $totalDebit,
@@ -1250,13 +1624,13 @@ class OfficeErpController extends Controller
         $officeId = $this->getCurrentOfficeId();
         $entry = DB::table('journal_entries')->where('id', $id)->where('office_id', $officeId)->first();
         if ($entry) {
-            DB::transaction(function () use ($id) {
+            DB::transaction(function () use ($id, $officeId) {
                 $oldItems = DB::table('journal_entry_items')->where('journal_entry_id', $id)->get();
                 foreach ($oldItems as $old) {
                     CompanyErpController::applyAccountMovement((int) $old->account_id, (float) $old->debit, (float) $old->credit, true);
                 }
                 DB::table('journal_entry_items')->where('journal_entry_id', $id)->delete();
-                DB::table('journal_entries')->where('id', $id)->delete();
+                DB::table('journal_entries')->where('id', $id)->where('office_id', $officeId)->delete();
             });
         }
 
@@ -1782,9 +2156,13 @@ class OfficeErpController extends Controller
              . "الإجمالي شامل الضريبة: *" . number_format($inv->total_amount, 2) . " ر.س*\n"
              . "تاريخ الإصدار: {$inv->issue_date}";
 
-        $sent = CompanyErpController::dispatchWhatsappMessage($targetPhone, $msg, $officeId);
+        $pdfToken = CompanyErpController::generateInvoicePublicToken($inv->id, $inv->invoice_number);
+        $pdfDirectUrl = route('public.invoice_pdf', ['id' => $inv->id, 'token' => $pdfToken]);
+        $msg .= "\n📥 رابط ملف الفاتورة الضريبية الأصلية (PDF):\n" . $pdfDirectUrl;
+
+        $sent = CompanyErpController::sendWhatsAppDocument($targetPhone, $pdfDirectUrl, $inv->invoice_number . '.pdf', $msg, $officeId);
         if ($sent) {
-            return back()->with('success', "تم إرسال الفاتورة رقم ({$inv->invoice_number}) عبر الواتساب إلى ({$inv->buyer_name}) بنجاح.");
+            return back()->with('success', "تم إرسال الفاتورة الضريبية رقم ({$inv->invoice_number}) كملف PDF أصلي عبر الواتساب إلى ({$inv->buyer_name}) بنجاح.");
         }
 
         $cleanPhone = ltrim(CompanyErpController::formatSaudiPhone($targetPhone), '+');
@@ -1795,5 +2173,283 @@ class OfficeErpController extends Controller
     public function deleteOfficeInvoice($id)
     {
         return back()->withErrors(['تنبيه نظامي: الفواتير الضريبية لا يُسمح بحذفها أو تعديلها بعد إصدارها.']);
+    }
+
+    /**
+     * تسديد وتحديث جدول الدفعات تلقائياً (كلي أو جزئي) وربط السند بالدفعة
+     */
+    private function allocateReceiptToInstallments(int $officeId, ?int $tenantId, ?int $installmentId, float $paymentAmount, int $voucherId): void
+    {
+        CompanyErpController::ensureContractInstallmentsTable();
+        $remainingToAllocate = $paymentAmount;
+
+        if ($installmentId) {
+            $inst = DB::table('contract_installments')->where('id', $installmentId)->where('office_id', $officeId)->first();
+            if ($inst) {
+                $needed = max(0, $inst->amount - $inst->paid_amount);
+                $applied = min($remainingToAllocate, $needed > 0 ? $needed : $remainingToAllocate);
+                $newPaid = round($inst->paid_amount + $applied, 2);
+                $vIds = json_decode($inst->voucher_ids_json ?? '[]', true) ?: [];
+                $vIds[] = $voucherId;
+                $newStatus = $newPaid >= ($inst->amount - 0.01)
+                    ? 'paid'
+                    : ($inst->due_date < date('Y-m-d') ? 'partial_overdue' : 'partial');
+
+                DB::table('contract_installments')->where('id', $inst->id)->update([
+                    'paid_amount' => $newPaid,
+                    'status' => $newStatus,
+                    'last_voucher_id' => $voucherId,
+                    'voucher_ids_json' => json_encode(array_values(array_unique($vIds))),
+                    'updated_at' => now(),
+                ]);
+                $remainingToAllocate -= $applied;
+            }
+        }
+
+        if ($remainingToAllocate > 0.01 && $tenantId) {
+            $openInstallments = DB::table('contract_installments')
+                ->where('office_id', $officeId)
+                ->where('tenant_id', $tenantId)
+                ->where('status', '!=', 'paid')
+                ->orderBy('due_date', 'asc')
+                ->get();
+
+            foreach ($openInstallments as $inst) {
+                if ($remainingToAllocate <= 0.01) break;
+                $needed = max(0, $inst->amount - $inst->paid_amount);
+                if ($needed <= 0) continue;
+                $applied = min($remainingToAllocate, $needed);
+                $newPaid = round($inst->paid_amount + $applied, 2);
+                $vIds = json_decode($inst->voucher_ids_json ?? '[]', true) ?: [];
+                $vIds[] = $voucherId;
+                $newStatus = $newPaid >= ($inst->amount - 0.01)
+                    ? 'paid'
+                    : ($inst->due_date < date('Y-m-d') ? 'partial_overdue' : 'partial');
+
+                DB::table('contract_installments')->where('id', $inst->id)->update([
+                    'paid_amount' => $newPaid,
+                    'status' => $newStatus,
+                    'last_voucher_id' => $voucherId,
+                    'voucher_ids_json' => json_encode(array_values(array_unique($vIds))),
+                    'updated_at' => now(),
+                ]);
+                $remainingToAllocate -= $applied;
+            }
+        }
+    }
+
+    public function payInstallmentPart(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $inst = DB::table('contract_installments')->where('id', $request->installment_id)->where('office_id', $officeId)->first();
+        if (!$inst) return back()->withErrors(['الدفعة غير موجودة.']);
+
+        $tenant = DB::table('tenants')->where('id', $inst->tenant_id)->first();
+        $cashAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '1102')->first()
+                ?: DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->first();
+
+        $request->merge([
+            'voucher_type' => 'receipt',
+            'tenant_id' => $inst->tenant_id,
+            'owner_id' => $inst->owner_id,
+            'property_id' => $inst->property_id,
+            'property_unit_id' => $inst->property_unit_id,
+            'lease_contract_id' => $inst->lease_contract_id,
+            'installment_id' => $inst->id,
+            'debit_account_id' => $request->debit_account_id ?: ($cashAcc->id ?? 1),
+            'credit_account_id' => $tenant->account_id ?: ($cashAcc->id ?? 1),
+            'stay_in_installments' => 1,
+        ]);
+
+        return $this->storeOfficeVoucher($request);
+    }
+
+    public function approvePendingVoucher($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $v = DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->where('approval_status', 'pending')->first();
+        if ($v) {
+            DB::transaction(function () use ($v) {
+                DB::table('vouchers')->where('id', $v->id)->update(['approval_status' => 'approved', 'updated_at' => now()]);
+                CompanyErpController::applyAccountMovement((int) $v->debit_account_id, (float) $v->amount, 0);
+                CompanyErpController::applyAccountMovement((int) $v->credit_account_id, 0, (float) $v->amount);
+            });
+        }
+        return back()->with('success', 'تم اعتماد سند الصرف وترحيله لشجرة الحسابات بنجاح.');
+    }
+
+    /**
+     * إصدار سندات قبض مجمّعة (Batch Receipts) مع فصل طريقة الدفع وحساب الصندوق/البنك لكل مستأجر على حدة
+     * والربط التلقائي بحساب المستأجر وحساب أمانات المالك في الشجرة
+     */
+    public function storeBatchReceipts(Request $request)
+    {
+        app(CompanyErpController::class)->ensureDefaultAdminExists();
+        $officeId = $this->getCurrentOfficeId();
+        $tenantIds = $request->input('tenant_ids', []);
+        $amounts = $request->input('amounts', []);
+        $methods = $request->input('payment_methods', []);
+        $notesList = $request->input('batch_notes', []);
+        $vDate = $request->voucher_date ?: date('Y-m-d');
+
+        $officeAccounts = DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->get();
+        $defaultCashAcc = $officeAccounts->firstWhere('code', '1102') ?: ($officeAccounts->firstWhere('code', '1101') ?: $officeAccounts->first());
+        $defaultDebitId = $defaultCashAcc ? (int) $defaultCashAcc->id : 1;
+
+        $paymentMethodsRows = DB::table('custom_payment_methods')
+            ->where(function ($q) use ($officeId) {
+                $q->where('office_id', $officeId)->orWhereNull('office_id');
+            })->get();
+
+        $countCreated = 0;
+        DB::transaction(function () use ($officeId, $tenantIds, $amounts, $methods, $notesList, $defaultDebitId, $officeAccounts, $paymentMethodsRows, $vDate, &$countCreated) {
+            foreach ($tenantIds as $idx => $tnId) {
+                $amt = (float) ($amounts[$idx] ?? 0);
+                if (empty($tnId) || $amt <= 0) continue;
+
+                $tenant = DB::table('tenants')->where('id', $tnId)->where('office_id', $officeId)->first();
+                if (!$tenant) continue;
+
+                $chosenMethodName = trim((string) ($methods[$idx] ?? 'حوالة بنكية'));
+                $pmObj = $paymentMethodsRows->firstWhere('name', $chosenMethodName);
+
+                // التأكد أن حساب طريقة الدفع ينتمي لشجرة هذا المكتب وإلا نستخدم حساب البنك/الصندوق الافتراضي للمكتب
+                $debitAccId = $defaultDebitId;
+                if ($pmObj && !empty($pmObj->account_id) && $officeAccounts->contains('id', $pmObj->account_id)) {
+                    $debitAccId = (int) $pmObj->account_id;
+                }
+
+                $activeContract = DB::table('lease_contracts')
+                    ->where('office_id', $officeId)
+                    ->where('tenant_id', $tnId)
+                    ->orderBy('id', 'desc')
+                    ->first();
+
+                $vNo = CompanyErpController::generateNextVoucherNumber('receipt', $officeId);
+                $creditAccId = $tenant->account_id ?: $debitAccId;
+                $ownerId = $activeContract ? (int) $activeContract->owner_id : null;
+
+                $payload = [
+                    'voucher_number' => $vNo,
+                    'voucher_type' => 'receipt',
+                    'office_id' => $officeId,
+                    'debit_account_id' => $debitAccId,
+                    'credit_account_id' => $creditAccId,
+                    'owner_id' => $ownerId,
+                    'tenant_id' => (int) $tnId,
+                    'lease_contract_id' => $activeContract->id ?? null,
+                    'amount' => $amt,
+                    'payment_method' => CompanyErpController::normalizeVoucherPaymentMethod($chosenMethodName),
+                    'voucher_date' => $vDate,
+                    'notes' => trim($notesList[$idx] ?? '') ?: ('تحصيل دفعة إيجار مجمعة - ' . $tenant->name),
+                    'created_by' => Auth::id(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+
+                if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_id')) {
+                    $payload['property_id'] = $activeContract->property_id ?? null;
+                }
+                if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_unit_id')) {
+                    $payload['property_unit_id'] = $activeContract->property_unit_id ?? null;
+                }
+                if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'approval_status')) {
+                    $payload['approval_status'] = 'approved';
+                }
+
+                $vId = DB::table('vouchers')->insertGetId($payload);
+
+                // تحديث شجرة الحسابات: مدين (بنك/صندوق المكتب) ودائن (حساب المستأجر)
+                CompanyErpController::applyAccountMovement($debitAccId, $amt, 0);
+                CompanyErpController::applyAccountMovement((int) $creditAccId, 0, $amt);
+
+                // ترحيل الاستحقاق لأمانات المالك في الشجرة تلقائياً
+                if ($ownerId) {
+                    $ownerRow = DB::table('owners')->where('id', $ownerId)->first();
+                    if ($ownerRow && $ownerRow->account_id) {
+                        CompanyErpController::applyAccountMovement((int) $creditAccId, $amt, 0);
+                        CompanyErpController::applyAccountMovement((int) $ownerRow->account_id, 0, $amt);
+                    }
+                }
+
+                $this->allocateReceiptToInstallments($officeId, (int) $tnId, null, $amt, $vId);
+                $countCreated++;
+            }
+        });
+
+        if ($countCreated === 0) {
+            return back()->withErrors(['يرجى اختيار مستأجر واحد على الأقل وإدخال المبلغ المحصل أمامه.']);
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'vouchers'])
+            ->with('success', "تم إصدار ({$countCreated}) سند قبض مجمّع وإضافتها إلى جدول سندات القبض وترحيلها للشجرة بنجاح.");
+    }
+
+    /**
+     * حفظ إعدادات كاشف الشذوذ المحاسبي + اعتماد الواتساب + نصوص رسائل الواتساب المرفقة بملفات الـ PDF
+     */
+    public function saveSmartOfficeSettings(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('offices')->where('id', $officeId)->update([
+            'enable_wa_voucher_approval' => $request->has('enable_wa_voucher_approval') ? 1 : 0,
+            'wa_approval_threshold' => (float) ($request->wa_approval_threshold ?? 10000),
+            'wa_approval_keywords' => trim($request->wa_approval_keywords ?: 'اعتمد,تم,اوك,موافق,نعم'),
+            'enable_anomaly_detector' => $request->has('enable_anomaly_detector') ? 1 : 0,
+            'anomaly_max_amount' => (float) ($request->anomaly_max_amount ?? 20000),
+            'anomaly_night_start' => (int) ($request->anomaly_night_start ?? 23),
+            'anomaly_night_end' => (int) ($request->anomaly_night_end ?? 5),
+            'anomaly_alert_on_delete' => $request->has('anomaly_alert_on_delete') ? 1 : 0,
+            'wa_invoice_caption' => trim((string) $request->input('wa_invoice_caption', '')),
+            'wa_voucher_caption' => trim((string) $request->input('wa_voucher_caption', '')),
+            'wa_legal_caption' => trim((string) $request->input('wa_legal_caption', '')),
+            'updated_at' => now(),
+        ]);
+
+        return back()->with('success', 'تم حفظ إعدادات الواتساب ونصوص رسائل ملفات الـ PDF وشروط الشذوذ والاعتماد بنجاح.');
+    }
+
+    /**
+     * إقفال السنة المالية للمكتب العقاري وترحيل صافي الأرباح لحقوق الملكية
+     */
+    public function closeFiscalYear(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $accounts = DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->get();
+        $revAccounts = $accounts->filter(fn($a) => str_contains($a->type, 'إيراد') || str_starts_with($a->code, '4'));
+        $expAccounts = $accounts->filter(fn($a) => str_contains($a->type, 'مصروف') || str_starts_with($a->code, '5'));
+
+        $totalRev = $revAccounts->sum(fn($a) => abs($a->balance));
+        $totalExp = $expAccounts->sum(fn($a) => abs($a->balance));
+        $netProfit = $totalRev - $totalExp;
+
+        if ($totalRev == 0 && $totalExp == 0) {
+            return back()->withErrors(['لا توجد أرصدة إيرادات أو مصروفات مفتوحة لإقفالها في هذه السنة.']);
+        }
+
+        DB::transaction(function () use ($officeId, $revAccounts, $expAccounts, $netProfit) {
+            $eqAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '3101')->first();
+            if (!$eqAcc) {
+                $eqId = DB::table('accounts')->insertGetId([
+                    'office_id' => $officeId, 'parent_id' => null, 'code' => '3101',
+                    'name' => 'الأرباح المبقاة وحقوق ملكية المكتب (إقفال سنوي)', 'type' => 'حقوق الملكية',
+                    'is_group' => 0, 'balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+            } else {
+                $eqId = $eqAcc->id;
+            }
+
+            foreach ($revAccounts as $r) {
+                DB::table('accounts')->where('id', $r->id)->update(['balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0]);
+            }
+            foreach ($expAccounts as $e) {
+                DB::table('accounts')->where('id', $e->id)->update(['balance' => 0, 'debit_balance' => 0, 'credit_balance' => 0]);
+            }
+
+            CompanyErpController::applyAccountMovement((int) $eqId, $netProfit < 0 ? abs($netProfit) : 0, $netProfit >= 0 ? $netProfit : 0);
+        });
+
+        return back()->with('success', 'تم إقفال السنة المالية للمكتب بنجاح وترحيل صافي الربح (' . number_format($netProfit, 2) . ' ر.س) إلى حساب الأرباح المبقاة.');
     }
 }

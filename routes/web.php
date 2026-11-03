@@ -8,11 +8,19 @@ use App\Http\Controllers\OwnerErpController;
 // الواجهة الرئيسية التعريفية للمنصة وخدماتها (Landing Page)
 Route::get('/', [CompanyErpController::class, 'showLandingPage'])->name('landing');
 
-// مسارات تسجيل الدخول الموحد (واتساب OTP + اسم المستخدم وكلمة المرور)
+// مسار عرض وتحميل الفاتورة الضريبية العامة (لدعم زر إرسال الفاتورة عبر الواتساب)
+Route::get('/public/invoice-pdf/{id}/{token}', [CompanyErpController::class, 'showPublicInvoicePdf'])->name('public.invoice_pdf');
+
+// مسار Webhook استقبال رسائل الواتساب لاعتماد سندات الصرف بالكلمات المحددة (محمي بمحدد الطلبات)
+Route::post('/webhook/whatsapp', [CompanyErpController::class, 'handleWhatsappWebhook'])
+    ->middleware('throttle:30,1')
+    ->name('webhook.whatsapp');
+
+// مسارات تسجيل الدخول الموحد (واتساب OTP + اسم المستخدم وكلمة المرور - محمية ضد التخمين Brute-Force)
 Route::get('/login', [CompanyErpController::class, 'showLogin'])->name('login');
-Route::post('/auth/send-otp', [CompanyErpController::class, 'sendOtp'])->name('auth.send_otp');
-Route::post('/auth/verify-otp', [CompanyErpController::class, 'verifyOtp'])->name('auth.verify_otp');
-Route::post('/auth/login-password', [CompanyErpController::class, 'loginWithPassword'])->name('auth.login_password');
+Route::post('/auth/send-otp', [CompanyErpController::class, 'sendOtp'])->middleware('throttle:5,1')->name('auth.send_otp');
+Route::post('/auth/verify-otp', [CompanyErpController::class, 'verifyOtp'])->middleware('throttle:5,1')->name('auth.verify_otp');
+Route::post('/auth/login-password', [CompanyErpController::class, 'loginWithPassword'])->middleware('throttle:8,1')->name('auth.login_password');
 Route::post('/logout', [CompanyErpController::class, 'logout'])->name('logout');
 
 // مسارات النظام المحمية بتسجيل الدخول + التتبع الفوري للعمليات (Audit Log)
@@ -97,8 +105,9 @@ Route::middleware([
     Route::post('/invoices/{id}/delete', [CompanyErpController::class, 'deleteCompanyInvoice'])->name('erp.invoices.delete');
     Route::post('/offices/{id}/toggle-owner-invoicing', [CompanyErpController::class, 'toggleOfficeOwnerInvoicing'])->name('erp.offices.toggle_owner_invoicing');
 
-    // مسارات سجل الأخطاء، الفحص الأوتوماتيكي الشامل لكل البوابات، والنسخ الاحتياطي (للأدمن)
+    // مسارات سجل الأخطاء، الفحص الأوتوماتيكي الشامل، توليد البيانات التجريبية، والنسخ الاحتياطي (للأدمن)
     Route::post('/admin/system/run-diagnostics', [CompanyErpController::class, 'runSystemDiagnostics'])->name('erp.system.diagnostics');
+    Route::post('/admin/system/seed-demo-data', [CompanyErpController::class, 'seedFullSystemDemoData'])->name('erp.system.seed_demo');
     Route::post('/admin/system/clear-logs', [CompanyErpController::class, 'clearSystemLogs'])->name('erp.system.clear_logs');
     Route::get('/admin/system/backup', [CompanyErpController::class, 'downloadSystemBackup'])->name('erp.system.backup');
     Route::post('/admin/system/restore', [CompanyErpController::class, 'restoreSystemBackup'])->name('erp.system.restore');
@@ -172,7 +181,18 @@ Route::middleware([
         Route::post('/invoices/store', [OfficeErpController::class, 'storeOfficeInvoice'])->name('invoices.store');
         Route::post('/invoices/{id}/whatsapp', [OfficeErpController::class, 'sendOfficeInvoiceWhatsapp'])->name('invoices.whatsapp');
         Route::post('/invoices/{id}/delete', [OfficeErpController::class, 'deleteOfficeInvoice'])->name('invoices.delete');
+
+        // المسارات الذكية للمكتب: (إعدادات الشذوذ والاعتماد، سندات مجمعة، إقفال سنة، اعتماد سند، تسديد دفعة)
+        Route::post('/smart-settings/save', [OfficeErpController::class, 'saveSmartOfficeSettings'])->name('smart_settings.save');
+        Route::post('/vouchers/batch-store', [OfficeErpController::class, 'storeBatchReceipts'])->name('vouchers.batch_store');
+        Route::post('/vouchers/{id}/approve', [OfficeErpController::class, 'approvePendingVoucher'])->name('vouchers.approve');
+        Route::post('/accounting/close-year', [OfficeErpController::class, 'closeFiscalYear'])->name('accounting.close_year');
+        Route::post('/installments/pay', [OfficeErpController::class, 'payInstallmentPart'])->name('installments.pay');
     });
+
+    // مسار موحد لإرسال أي ملف PDF أصلي (فاتورة، سند، إنذار قانوني، كشف حساب) مباشرة كمرفق عبر الواتساب بدون روابط
+    Route::post('/whatsapp/send-raw-pdf', [CompanyErpController::class, 'sendRawPdfViaWhatsapp'])->name('erp.whatsapp.send_raw_pdf');
+    Route::post('/admin/accounting/close-year', [CompanyErpController::class, 'closeCompanyFiscalYear'])->name('erp.accounting.close_year');
 
     // =========================================================================
     // مسارات بوابة المالك وأفراد العائلة (Owner & Family Portal Routes)

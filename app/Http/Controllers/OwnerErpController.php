@@ -15,9 +15,15 @@ class OwnerErpController extends Controller
     private function getCurrentOwnerId(): ?int
     {
         $user = Auth::user();
+        if (!$user) {
+            return null;
+        }
         // المعاينة السرية مسموحة فقط لمالك المنصة (company_admin) وغير مسموحة لمكاتب العقار
         if ($user->user_type === 'company_admin' && session()->has('impersonate_owner_id')) {
             return (int) session('impersonate_owner_id');
+        }
+        if (!in_array($user->user_type, ['owner', 'owner_family'], true)) {
+            abort(403, 'غير مصرح لهذا الحساب بالدخول إلى بوابة الملاك.');
         }
         return $user->owner_id ? (int) $user->owner_id : null;
     }
@@ -28,11 +34,14 @@ class OwnerErpController extends Controller
     public static function hasOwnerPermission(string $permKey): bool
     {
         $user = Auth::user();
+        if (!$user) {
+            return false;
+        }
         if ($user->user_type !== 'owner_family') {
             return true;
         }
         $perms = json_decode($user->custom_permissions ?? '[]', true) ?: [];
-        return in_array($permKey,$perms);
+        return in_array($permKey, $perms, true);
     }
 
     /**
@@ -60,18 +69,29 @@ class OwnerErpController extends Controller
 
     public function dashboard(Request $request)
     {
-        $ownerId =$this->getCurrentOwnerId();
+        $ownerId = $this->getCurrentOwnerId();
         if (!$ownerId) {
             return redirect()->route('login')->with('error', 'غير مصرح بالدخول أو لم يتم العثور على سجل مالك مرتبط بهذا الحساب.');
         }
 
-        $owner = DB::table('owners')->where('id',$ownerId)->first();
+        $owner = DB::table('owners')->where('id', $ownerId)->first();
         if (!$owner) {
             return redirect()->route('login');
         }
 
-        $office = DB::table('offices')->where('id',$owner->office_id)->first();
-        $tab =$request->get('tab', 'overview');
+        $office = DB::table('offices')->where('id', $owner->office_id)->first();
+        $tab = $request->get('tab', 'overview');
+
+        // حماية التبويبات برمجياً حسب صلاحيات فرد العائلة
+        if (
+            ($tab === 'properties' && !self::hasOwnerPermission('view_properties')) ||
+            ($tab === 'contracts' && !self::hasOwnerPermission('view_contracts')) ||
+            ($tab === 'financials' && !self::hasOwnerPermission('view_financials')) ||
+            (in_array($tab, ['family', 'activity_logs'], true) && !self::hasOwnerPermission('manage_family'))
+        ) {
+            return redirect()->route('owner.dashboard', ['tab' => 'overview'])
+                ->withErrors(['عذراً، ليس لديك صلاحية للاطلاع على هذا القسم.']);
+        }
 
         // 1. جلب عقارات المالك وصكوكه
         $properties = DB::table('properties')
@@ -87,7 +107,7 @@ class OwnerErpController extends Controller
             ->get();
 
         // 2. جلب جميع الوحدات التابعة لعقارات هذا المالك
-        $propertyIds =$properties->pluck('id')->toArray();
+        $propertyIds = $properties->pluck('id')->toArray();
         $units = count($propertyIds) > 0
             ? DB::table('property_units')
                 ->join('properties', 'property_units.property_id', '=', 'properties.id')
@@ -135,7 +155,9 @@ class OwnerErpController extends Controller
             ->orderBy('id', 'desc')
             ->get();
 
-        $grossRent = $contracts->sum('total_rent_amount');$officeCommissionTotal = $contracts->sum('office_commission');$netExpectedIncome = $grossRent -$officeCommissionTotal;
+        $grossRent = $contracts->sum('total_rent_amount');
+        $officeCommissionTotal = $contracts->sum('office_commission');
+        $netExpectedIncome = $grossRent - $officeCommissionTotal;
 
         $stats = [
             'properties_count' => $properties->count(),
@@ -160,8 +182,12 @@ class OwnerErpController extends Controller
 
     public function storeFamilyMember(Request $request)
     {
-        $ownerId =$this->getCurrentOwnerId();
-        $owner = DB::table('owners')->where('id',$ownerId)->first();
+        if (!self::hasOwnerPermission('manage_family')) {
+            abort(403, 'ليس لديك صلاحية لإدارة أو إضافة أفراد العائلة.');
+        }
+
+        $ownerId = $this->getCurrentOwnerId();
+        $owner = DB::table('owners')->where('id', $ownerId)->first();
 
         $request->validate([
             'name' => 'required',
@@ -173,7 +199,12 @@ class OwnerErpController extends Controller
         ]);
 
         $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
-        $perms =$request->input('permissions', ['view_properties']);
+        if (DB::table('users')->whereIn('phone', [$formattedPhone, $request->phone])->exists()) {
+            return back()->withErrors(['رقم الجوال هذا مسجل مسبقاً لمستخدم آخر في النظام.']);
+        }
+
+        $allowedPermKeys = ['view_properties', 'view_contracts', 'view_financials', 'manage_family'];
+        $perms = array_values(array_intersect($request->input('permissions', ['view_properties']), $allowedPermKeys));
 
         DB::table('users')->insert([
             'name' => trim($request->name) . ' (' . ($request->relation ?: 'فرد عائلة') . ')',
@@ -196,8 +227,23 @@ class OwnerErpController extends Controller
 
     public function updateFamilyMember(Request $request, $id)
     {
+        if (!self::hasOwnerPermission('manage_family')) {
+            abort(403, 'ليس لديك صلاحية لتعديل حسابات أفراد العائلة.');
+        }
+
         $ownerId = $this->getCurrentOwnerId();
-        $perms = $request->input('permissions', []);
+        $member = DB::table('users')
+            ->where('id', $id)
+            ->where('owner_id', $ownerId)
+            ->where('user_type', 'owner_family')
+            ->first();
+
+        if (!$member) {
+            abort(404);
+        }
+
+        $allowedPermKeys = ['view_properties', 'view_contracts', 'view_financials', 'manage_family'];
+        $perms = array_values(array_intersect($request->input('permissions', []), $allowedPermKeys));
 
         $updateData = [
             'name' => trim($request->name),
@@ -207,9 +253,24 @@ class OwnerErpController extends Controller
         ];
 
         if ($request->filled('phone')) {
-            $updateData['phone'] = CompanyErpController::formatSaudiPhone($request->phone);
+            $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+            $phoneTaken = DB::table('users')
+                ->where('id', '!=', $member->id)
+                ->whereIn('phone', [$formattedPhone, $request->phone])
+                ->exists();
+            if ($phoneTaken) {
+                return back()->withErrors(['رقم الجوال مسجل مسبقاً لحساب آخر.']);
+            }
+            $updateData['phone'] = $formattedPhone;
         }
         if ($request->filled('username')) {
+            $usernameTaken = DB::table('users')
+                ->where('id', '!=', $member->id)
+                ->where('username', trim($request->username))
+                ->exists();
+            if ($usernameTaken) {
+                return back()->withErrors(['اسم المستخدم مسجل مسبقاً لحساب آخر.']);
+            }
             $updateData['username'] = trim($request->username);
         }
         if ($request->filled('password')) {
@@ -217,7 +278,7 @@ class OwnerErpController extends Controller
         }
 
         DB::table('users')
-            ->where('id', $id)
+            ->where('id', $member->id)
             ->where('owner_id', $ownerId)
             ->where('user_type', 'owner_family')
             ->update($updateData);
@@ -228,7 +289,11 @@ class OwnerErpController extends Controller
 
     public function deleteFamilyMember($id)
     {
-        $ownerId =$this->getCurrentOwnerId();
+        if (!self::hasOwnerPermission('manage_family')) {
+            abort(403, 'ليس لديك صلاحية لحذف حسابات أفراد العائلة.');
+        }
+
+        $ownerId = $this->getCurrentOwnerId();
         DB::table('users')
             ->where('id', $id)
             ->where('owner_id', $ownerId)
@@ -241,12 +306,24 @@ class OwnerErpController extends Controller
 
     public function updateProfile(Request $request)
     {
+        $userId = Auth::id();
         $request->validate([
             'phone' => ['required', 'regex:/^05[0-9]{8}$/'],
-            'username' => 'required',
+            'username' => 'required|unique:users,username,' . $userId,
+        ], [
+            'phone.regex' => 'رقم الجوال يجب أن يتكون من 10 أرقام ويبدأ بـ 05.',
+            'username.unique' => 'اسم المستخدم مستخدم مسبقاً لحساب آخر.'
         ]);
 
         $formattedPhone = CompanyErpController::formatSaudiPhone($request->phone);
+        $phoneTaken = DB::table('users')
+            ->where('id', '!=', $userId)
+            ->whereIn('phone', [$formattedPhone, $request->phone])
+            ->exists();
+
+        if ($phoneTaken) {
+            return back()->withErrors(['رقم الجوال مسجل مسبقاً لمستخدم آخر في النظام.']);
+        }
 
         $updateData = [
             'name' => trim($request->name),
@@ -259,7 +336,7 @@ class OwnerErpController extends Controller
             $updateData['password'] = Hash::make($request->password);
         }
 
-        DB::table('users')->where('id', Auth::id())->update($updateData);
+        DB::table('users')->where('id', $userId)->update($updateData);
 
         return back()->with('success', 'تم تحديث بيانات الدخول الخاصة بك بنجاح.');
     }

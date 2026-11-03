@@ -22,12 +22,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // إجبار جميع النماذج والروابط على العمل بـ HTTPS في السيرفر السحابي (Render) لمنع رسالة "النموذج غير آمن"
-        if (
-            request()->header('x-forwarded-proto') === 'https' ||
-            str_contains(request()->getHost(), 'onrender.com') ||
-            config('app.env') === 'production'
-        ) {
+        // تفعيل HTTPS فقط على السيرفر السحابي (Render) واستثناء الجهاز المحلي (127.0.0.1 / localhost) حتى لا تعلق الروابط
+        $host = request()->getHost();
+        $isLocal = in_array($host, ['127.0.0.1', 'localhost', '::1']);
+
+        if (!$isLocal && (request()->header('x-forwarded-proto') === 'https' || str_contains($host, 'onrender.com'))) {
             URL::forceScheme('https');
             request()->server->set('HTTPS', 'on');
         }
