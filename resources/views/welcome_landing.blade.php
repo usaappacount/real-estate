@@ -55,6 +55,8 @@
                 ],
             ],
         ];
+        $allTabsMap = $availableOfficeTabs ?? \App\Http\Controllers\CompanyErpController::getAvailableOfficeTabs();
+        $activeOfficePlans = $officePlans ?? collect();
     @endphp
     <script type="application/ld+json">{!! json_encode($schemaOrgData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) !!}</script>
 
@@ -248,8 +250,8 @@
                     </section>
                 @endif
 
-                {{-- 4. قسم الباقات والاشتراكات --}}
-                @if($sec['key'] === 'plans' && count($landing['plans'] ?? []) > 0)
+                {{-- 4. قسم الباقات وصلاحيات المكاتب بالشكل الجديد --}}
+                @if($sec['key'] === 'plans' && $activeOfficePlans->count() > 0)
                     <section id="plans" class="py-20 bg-slate-950 border-b border-slate-900">
                         <div class="max-w-7xl mx-auto px-6">
                             <div class="text-center max-w-2xl mx-auto mb-14">
@@ -263,25 +265,78 @@
                             </div>
 
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                @foreach($landing['plans'] as $pl)
-                                    @php $isHighlight = !empty($pl['highlight']); @endphp
-                                    <div class="p-7 rounded-2xl bg-slate-900 {{ $isHighlight ? 'border-2 border-emerald-500/80 shadow-xl shadow-emerald-600/10' : 'border border-slate-800' }} flex flex-col justify-between relative">
-                                        <div class="space-y-3">
-                                            @if(!empty($pl['badge']))
-                                                <span class="inline-block px-3 py-1 rounded-lg {{ $isHighlight ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-300' }} text-xs font-bold">
-                                                    {{ $pl['badge'] }}
+                                @foreach($activeOfficePlans as $plan)
+                                    @php
+                                        $isHighlight = !empty($plan->is_highlighted);
+                                        $planTabs = json_decode($plan->allowed_tabs ?? '[]', true) ?: [];
+                                    @endphp
+                                    <div class="p-7 rounded-3xl bg-slate-900/95 {{ $isHighlight ? 'border-2 border-emerald-500 shadow-2xl shadow-emerald-600/15' : 'border border-slate-800' }} flex flex-col justify-between relative space-y-6">
+                                        <div class="space-y-4">
+                                            <div class="flex items-center justify-between gap-2">
+                                                <span class="px-3.5 py-1 rounded-xl {{ $isHighlight ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-200' }} text-xs font-extrabold">
+                                                    {{ $plan->badge ?: 'باقة مكاتب' }}
                                                 </span>
-                                            @endif
-                                            <h3 class="font-bold text-lg text-white">{{ $pl['title'] ?? '' }}</h3>
-                                            @if(!empty($pl['price']))
-                                                <div class="text-sm font-extrabold text-emerald-400">{{ $pl['price'] }}</div>
-                                            @endif
-                                            <p class="text-xs text-slate-400 leading-relaxed">{{ $pl['desc'] ?? '' }}</p>
+                                                @if(!empty($plan->offer_label))
+                                                    <span class="px-3 py-1 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-bold">
+                                                        🔥 {{ $plan->offer_label }}
+                                                    </span>
+                                                @endif
+                                            </div>
+
+                                            <div>
+                                                <h3 class="font-extrabold text-lg text-white">{{ $plan->name }}</h3>
+                                                @if(!empty($plan->description))
+                                                    <p class="text-xs text-slate-400 leading-relaxed mt-1.5">{{ $plan->description }}</p>
+                                                @endif
+                                            </div>
+
+                                            <!-- صندوق السعر ونوع الاتفاقية -->
+                                            <div class="p-4 rounded-2xl bg-slate-950/90 border border-slate-800/90 space-y-1">
+                                                <div class="flex items-baseline gap-2.5 flex-wrap">
+                                                    @if($plan->billing_type === 'annual_subscription')
+                                                        <span class="text-2xl font-extrabold text-emerald-400 font-mono">{{ number_format($plan->price, 0) }} ر.س</span>
+                                                        <span class="text-xs text-slate-400">/ سنوياً</span>
+                                                    @elseif($plan->billing_type === 'per_property_percentage')
+                                                        <span class="text-2xl font-extrabold text-amber-400 font-mono">{{ $plan->commission_rate }}%</span>
+                                                        <span class="text-xs text-slate-400">نسبة لكل عقد</span>
+                                                    @else
+                                                        <span class="text-2xl font-extrabold text-emerald-400 font-mono">{{ number_format($plan->price, 0) }} ر.س</span>
+                                                        <span class="text-xs font-bold text-amber-400">+ {{ $plan->commission_rate }}% لكل عقد</span>
+                                                    @endif
+
+                                                    @if(!empty($plan->old_price) && $plan->old_price > $plan->price)
+                                                        <span class="text-xs text-rose-400 line-through font-mono">{{ number_format($plan->old_price, 0) }} ر.س</span>
+                                                    @endif
+                                                </div>
+                                            </div>
+
+                                            <!-- قائمة الصلاحيات والصفحات المشمولة في الباقة -->
+                                            <div class="space-y-2 pt-1">
+                                                <div class="text-xs font-bold text-slate-300">المميزات والأنظمة المشمولة في الباقة ({{ count($planTabs) }} من {{ count($allTabsMap) }}):</div>
+                                                <div class="grid grid-cols-1 gap-1.5 max-h-56 overflow-y-auto pr-1">
+                                                    @foreach($allTabsMap as $tKey => $tLabel)
+                                                        @if(in_array($tKey, $planTabs))
+                                                            <div class="flex items-center gap-2 text-xs text-emerald-300 font-medium">
+                                                                <span class="text-emerald-400 font-bold">✔</span>
+                                                                <span>{{ $tLabel }}</span>
+                                                            </div>
+                                                        @else
+                                                            <div class="flex items-center gap-2 text-[11px] text-slate-600 line-through">
+                                                                <span>✖</span>
+                                                                <span>{{ $tLabel }}</span>
+                                                            </div>
+                                                        @endif
+                                                    @endforeach
+                                                </div>
+                                            </div>
                                         </div>
-                                        <a href="{{ route('login') }}"
-                                           class="mt-6 block text-center py-3 rounded-xl {{ $isHighlight ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white' }} text-xs font-bold transition">
-                                            {{ $pl['btn_text'] ?? 'ابدأ الآن' }}
-                                        </a>
+
+                                        <div class="pt-4 border-t border-slate-800">
+                                            <a href="{{ !empty($landing['contact_whatsapp']) ? 'https://wa.me/' . $landing['contact_whatsapp'] . '?text=' . urlencode('السلام عليكم، أرغب بالاشتراك في: ' . $plan->name) : route('login') }}"
+                                               class="block w-full text-center py-3.5 rounded-xl {{ $isHighlight ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/25' : 'bg-slate-800 hover:bg-slate-700 text-white' }} text-xs font-bold transition">
+                                                اشترك في الباقة الآن ←
+                                            </a>
+                                        </div>
                                     </div>
                                 @endforeach
                             </div>
