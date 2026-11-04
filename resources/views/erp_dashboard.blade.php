@@ -2076,6 +2076,282 @@
                         </form>
                     </div>
                 </div>
+
+                <!-- قسم إدارة محركات البحث (SEO) ومحتوى الواجهة الرئيسية المدمج في صفحة الباقات -->
+                @php
+                    $ls = $landingSettings ?? \App\Http\Controllers\CompanyErpController::getLandingSettings();
+                @endphp
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 mt-6">
+                    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-6">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900">🚀 إعدادات محركات البحث (SEO) ومحتوى الواجهة الرئيسية</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">تحكم كامل بظهور الموقع في جوجل (SEO)، نصوص الواجهة الرئيسية، ترتيب الأقسام، والمميزات المرتبطة بالباقات أعلاه</p>
+                        </div>
+                        <a href="{{ route('landing') }}" target="_blank" class="px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                            🌐 معاينة الواجهة الرئيسية والباقات الحية
+                        </a>
+                    </div>
+
+                    <form action="{{ route('erp.landing.save') }}" method="POST" class="space-y-8">
+                        @csrf
+
+                        <!-- 1. إعدادات محركات البحث المتقدمة (SEO Power Pack) -->
+                        <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                            <div class="flex items-center justify-between border-b border-slate-200 pb-2.5">
+                                <div>
+                                    <h4 class="font-bold text-sm text-slate-900">🔍 أولاً: إعدادات الظهور في محركات البحث (Google SEO & OpenGraph)</h4>
+                                    <p class="text-[11px] text-slate-500">تتحكم هذه الحقول في أرشفة موقعك في جوجل وكيفية ظهور الرابط عند مشاركته في واتساب وتويتر</p>
+                                </div>
+                                <span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-bold">Schema JSON-LD مفعل تلقائياً ✔</span>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                                <div class="md:col-span-2">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">عنوان الصفحة في محرك البحث جوجل (SEO Meta Title) *</label>
+                                    <input type="text" name="seo_title" value="{{ $ls['seo_title'] ?? '' }}" required class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف التعريفي لمحركات البحث (SEO Meta Description) *</label>
+                                    <textarea name="seo_description" rows="2" required class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white">{{ $ls['seo_description'] ?? '' }}</textarea>
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الكلمات المفتاحية (SEO Keywords - مفصولة بفاصلة)</label>
+                                    <input type="text" name="seo_keywords" value="{{ $ls['seo_keywords'] ?? '' }}" class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">اسم المؤلف / الجهة المالكة (Author)</label>
+                                    <input type="text" name="seo_author" value="{{ $ls['seo_author'] ?? '' }}" class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الرابط الأساسي المعتمد (Canonical URL)</label>
+                                    <input type="url" name="seo_canonical_url" value="{{ $ls['seo_canonical_url'] ?? url('/') }}" dir="ltr" class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white font-mono">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رابط صورة المشاركة (OpenGraph Image URL)</label>
+                                    <input type="text" name="seo_og_image" value="{{ $ls['seo_og_image'] ?? '' }}" dir="ltr" placeholder="https://..." class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white font-mono">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">تعليمات عناكب البحث (Robots Meta)</label>
+                                    <select name="seo_robots" class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white font-mono font-bold">
+                                        <option value="index, follow" {{ ($ls['seo_robots'] ?? '') == 'index, follow' ? 'selected' : '' }}>index, follow (أرشفة كاملة - موصى به)</option>
+                                        <option value="noindex, follow" {{ ($ls['seo_robots'] ?? '') == 'noindex, follow' ? 'selected' : '' }}>noindex, follow</option>
+                                        <option value="noindex, nofollow" {{ ($ls['seo_robots'] ?? '') == 'noindex, nofollow' ? 'selected' : '' }}>noindex, nofollow</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 2. الهوية والنصوص الرئيسية وأرقام التواصل -->
+                        <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                            <h4 class="font-bold text-sm text-slate-900 border-b border-slate-200 pb-2.5">🏢 ثانياً: الهوية والنصوص الرئيسية وأرقام التواصل في الواجهة</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">اسم المنصة في الهيدر *</label>
+                                    <input type="text" name="site_name" value="{{ $ls['site_name'] ?? '' }}" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف المختصر تحت الاسم</label>
+                                    <input type="text" name="site_sub" value="{{ $ls['site_sub'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">شارة الترحيب العلوية (Badge)</label>
+                                    <input type="text" name="badge_text" value="{{ $ls['badge_text'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div class="md:col-span-3">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">العنوان الترويجي الرئيسي (Hero Title) *</label>
+                                    <input type="text" name="hero_title" value="{{ $ls['hero_title'] ?? '' }}" required class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div class="md:col-span-3">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف التفصيلي تحت العنوان (Hero Subtitle)</label>
+                                    <textarea name="hero_subtitle" rows="2" class="w-full rounded-xl border px-3.5 py-2 text-xs bg-white">{{ $ls['hero_subtitle'] ?? '' }}</textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">نص زر الدخول الأساسي</label>
+                                    <input type="text" name="cta_primary_text" value="{{ $ls['cta_primary_text'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">نص زر التواصل الثانوي</label>
+                                    <input type="text" name="cta_secondary_text" value="{{ $ls['cta_secondary_text'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رقم الواتساب للتواصل (مع 966)</label>
+                                    <input type="text" name="contact_whatsapp" value="{{ $ls['contact_whatsapp'] ?? '' }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رقم الهاتف المعروض بالفوتر</label>
+                                    <input type="text" name="contact_phone" value="{{ $ls['contact_phone'] ?? '' }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">البريد الإلكتروني الرسمي</label>
+                                    <input type="email" name="contact_email" value="{{ $ls['contact_email'] ?? '' }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">نص الحقوق في الفوتر</label>
+                                    <input type="text" name="footer_text" value="{{ $ls['footer_text'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 3. ترتيب الأقسام وعناوين قسم الباقات والمميزات في الواجهة الرئيسية -->
+                        <div class="p-5 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-4">
+                            <h4 class="font-bold text-sm text-slate-900 border-b border-emerald-200 pb-2.5">📐 ثالثاً: التحكم في إظهار وترتيب الأقسام وعناوين قسم الباقات بالواجهة</h4>
+                            <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+                                <div class="p-3 rounded-xl bg-white border space-y-2">
+                                    <label class="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="show_stats" value="1" {{ !empty($ls['show_stats']) ? 'checked' : '' }}>
+                                        <span>إظهار الإحصائيات</span>
+                                    </label>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500">ترتيب القسم</label>
+                                        <input type="number" name="order_stats" value="{{ $ls['order_stats'] ?? 1 }}" class="w-full rounded-lg border px-2 py-1 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-xl bg-white border space-y-2">
+                                    <label class="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="show_features" value="1" {{ !empty($ls['show_features']) ? 'checked' : '' }}>
+                                        <span>إظهار المميزات</span>
+                                    </label>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500">ترتيب القسم</label>
+                                        <input type="number" name="order_features" value="{{ $ls['order_features'] ?? 2 }}" class="w-full rounded-lg border px-2 py-1 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-xl bg-white border space-y-2">
+                                    <label class="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="show_portals" value="1" {{ !empty($ls['show_portals']) ? 'checked' : '' }}>
+                                        <span>إظهار البوابات الـ 4</span>
+                                    </label>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500">ترتيب القسم</label>
+                                        <input type="number" name="order_portals" value="{{ $ls['order_portals'] ?? 3 }}" class="w-full rounded-lg border px-2 py-1 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-xl bg-white border-2 border-emerald-500 space-y-2">
+                                    <label class="flex items-center gap-2 text-xs font-bold text-emerald-800 cursor-pointer">
+                                        <input type="checkbox" name="show_plans" value="1" {{ !empty($ls['show_plans']) ? 'checked' : '' }}>
+                                        <span>إظهار الباقات الجديدة</span>
+                                    </label>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500">ترتيب القسم</label>
+                                        <input type="number" name="order_plans" value="{{ $ls['order_plans'] ?? 4 }}" class="w-full rounded-lg border px-2 py-1 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="p-3 rounded-xl bg-white border space-y-2">
+                                    <label class="flex items-center gap-2 text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="show_custom" value="1" {{ !empty($ls['show_custom']) ? 'checked' : '' }}>
+                                        <span>الأقسام الإضافية</span>
+                                    </label>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-500">ترتيب القسم</label>
+                                        <input type="number" name="order_custom" value="{{ $ls['order_custom'] ?? 5 }}" class="w-full rounded-lg border px-2 py-1 text-xs font-mono">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">شارة قسم الباقات (Badge)</label>
+                                    <input type="text" name="plans_badge" value="{{ $ls['plans_badge'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">عنوان قسم الباقات في الواجهة</label>
+                                    <input type="text" name="plans_heading" value="{{ $ls['plans_heading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف الفرعي لقسم الباقات</label>
+                                    <input type="text" name="plans_subheading" value="{{ $ls['plans_subheading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-emerald-200/60">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">شارة قسم المميزات</label>
+                                    <input type="text" name="features_badge" value="{{ $ls['features_badge'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">عنوان قسم المميزات</label>
+                                    <input type="text" name="features_heading" value="{{ $ls['features_heading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف الفرعي للمميزات</label>
+                                    <input type="text" name="features_subheading" value="{{ $ls['features_subheading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-emerald-200/60">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">شارة قسم البوابات</label>
+                                    <input type="text" name="portals_badge" value="{{ $ls['portals_badge'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">عنوان قسم البوابات</label>
+                                    <input type="text" name="portals_heading" value="{{ $ls['portals_heading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">الوصف الفرعي للبوابات</label>
+                                    <input type="text" name="portals_subheading" value="{{ $ls['portals_subheading'] ?? '' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 4. بطاقات الإحصائيات والمميزات والبوابات -->
+                        <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                            <h4 class="font-bold text-sm text-slate-900 border-b border-slate-200 pb-2.5">📊 رابعاً: بطاقات الإحصائيات والمميزات والبوابات في الصفحة الرئيسية</h4>
+
+                            <div class="space-y-2">
+                                <label class="block text-xs font-bold text-slate-700">شريط الإحصائيات (4 بطاقات):</label>
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+                                    @foreach(($ls['stats'] ?? []) as $st)
+                                        <div class="p-2.5 rounded-xl bg-white border space-y-1.5">
+                                            <input type="text" name="stat_numbers[]" value="{{ $st['number'] ?? '' }}" placeholder="الرقم (+15)" class="w-full rounded-lg border px-2.5 py-1.5 text-xs font-mono font-bold">
+                                            <input type="text" name="stat_labels[]" value="{{ $st['label'] ?? '' }}" placeholder="الوصف" class="w-full rounded-lg border px-2.5 py-1.5 text-xs">
+                                            <input type="hidden" name="stat_colors[]" value="{{ $st['color'] ?? 'emerald' }}">
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+
+                            <div class="space-y-2 pt-3 border-t">
+                                <label class="block text-xs font-bold text-slate-700">بطاقات مميزات النظام:</label>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    @foreach(($ls['features'] ?? []) as $ft)
+                                        <div class="p-3 rounded-xl bg-white border grid grid-cols-12 gap-2">
+                                            <div class="col-span-2">
+                                                <input type="text" name="feature_icons[]" value="{{ $ft['icon'] ?? '✨' }}" class="w-full rounded-lg border px-2 py-1.5 text-center text-sm">
+                                            </div>
+                                            <div class="col-span-10 space-y-1.5">
+                                                <input type="text" name="feature_titles[]" value="{{ $ft['title'] ?? '' }}" placeholder="عنوان الميزة" class="w-full rounded-lg border px-2.5 py-1.5 text-xs font-bold">
+                                                <input type="text" name="feature_descs[]" value="{{ $ft['desc'] ?? '' }}" placeholder="وصف الميزة" class="w-full rounded-lg border px-2.5 py-1.5 text-xs">
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+
+                            <div class="space-y-2 pt-3 border-t">
+                                <label class="block text-xs font-bold text-slate-700">بطاقات بوابات المنصة:</label>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    @foreach(($ls['portals'] ?? []) as $prt)
+                                        <div class="p-3 rounded-xl bg-white border space-y-1.5">
+                                            <div class="grid grid-cols-3 gap-2">
+                                                <input type="text" name="portal_badges[]" value="{{ $prt['badge'] ?? '' }}" placeholder="الشارة" class="rounded-lg border px-2.5 py-1.5 text-xs font-bold">
+                                                <input type="text" name="portal_titles[]" value="{{ $prt['title'] ?? '' }}" placeholder="اسم البوابة" class="col-span-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold">
+                                            </div>
+                                            <input type="text" name="portal_descs[]" value="{{ $prt['desc'] ?? '' }}" placeholder="وصف البوابة" class="w-full rounded-lg border px-2.5 py-1.5 text-xs">
+                                            <input type="hidden" name="portal_colors[]" value="{{ $prt['color'] ?? 'emerald' }}">
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-end">
+                            <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-lg">
+                                💾 حفظ إعدادات الـ SEO والواجهة الرئيسية
+                            </button>
+                        </div>
+                    </form>
+                </div>
             @endif
 
             <!-- 3. أنواع العقارات والمتطلبات الديناميكية -->
