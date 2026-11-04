@@ -1758,23 +1758,74 @@ class OfficeErpController extends Controller
     {
         $officeId = $this->getCurrentOfficeId();
         $office = DB::table('offices')->where('id', $officeId)->first();
+        if (!\Illuminate\Support\Facades\Schema::hasColumn('offices', 'reminder_settings_json')) {
+            \Illuminate\Support\Facades\Schema::table('offices', function (\Illuminate\Database\Schema\Blueprint $table) {
+                $table->text('reminder_settings_json')->nullable();
+            });
+        }
+
         $useCustom = $request->input('use_custom_whatsapp') == '1' || $request->input('whatsapp_mode') === 'custom';
         $senderPhone = $request->filled('whatsapp_sender_phone')
             ? CompanyErpController::formatSaudiPhone($request->whatsapp_sender_phone)
             : null;
 
+        // تنظيف وحفظ الأرقام الإضافية المخصصة التي أدخلها صاحب المكتب
+        $rawCustomPhones = $request->input('custom_recipient_phones', []);
+        $rawCustomNames  = $request->input('custom_recipient_names', []);
+        $customRecipients = [];
+        if (is_array($rawCustomPhones)) {
+            foreach ($rawCustomPhones as $idx => $ph) {
+                $cleanPh = preg_replace('/\D/', '', (string) $ph);
+                if (strlen($cleanPh) >= 9) {
+                    $customRecipients[] = [
+                        'name'  => trim((string) ($rawCustomNames[$idx] ?? 'مستلم إضافي')) ?: 'مستلم إضافي',
+                        'phone' => CompanyErpController::toLocalPhone($cleanPh),
+                    ];
+                }
+            }
+        }
+
+        // حفظ كافة خيارات التنبيهات المتقدمة والمستلمين المحددين
+        $advancedReminderSettings = [
+            // 1. المستلمون المحددون من قِبل صاحب المكتب
+            'send_to_tenant'       => $request->has('send_to_tenant') ? 1 : 0,
+            'send_to_owner'        => $request->has('send_to_owner') ? 1 : 0,
+            'send_to_office_admin' => $request->has('send_to_office_admin') ? 1 : 0,
+            'selected_staff_ids'   => array_values(array_filter(array_map('intval', (array) $request->input('selected_staff_ids', [])))),
+            'custom_recipients'    => $customRecipients,
+
+            // 2. أنواع ومراحل التنبيهات المفعلة
+            'notify_installments_before' => $request->has('notify_installments_before') ? 1 : 0,
+            'installment_days_before'    => (int) ($request->reminder_days_before ?? 15),
+            'notify_second_chance'       => $request->has('notify_second_chance') ? 1 : 0,
+            'second_days_before'         => (int) ($request->second_days_before ?? 3),
+            'notify_on_due_day'          => $request->has('notify_on_due_day') ? 1 : 0,
+            'notify_overdue_after'       => $request->has('notify_overdue_after') ? 1 : 0,
+            'overdue_days_after'         => (int) ($request->overdue_days_after ?? 7),
+            'notify_contract_expiry'     => $request->has('notify_contract_expiry') ? 1 : 0,
+            'contract_expiry_days'       => (int) ($request->contract_expiry_days ?? 30),
+
+            // 3. تفضيلات الإرسال والوقت والقوالب
+            'preferred_send_time'  => $request->input('preferred_send_time', '09:00'),
+            'skip_fully_paid'      => $request->has('skip_fully_paid') ? 1 : 0,
+            'send_owner_summary'   => $request->has('send_owner_summary') ? 1 : 0,
+            'overdue_template'     => trim((string) $request->input('overdue_template', '')),
+            'owner_template'       => trim((string) $request->input('owner_template', '')),
+        ];
+
         $updatePayload = [
-            'use_custom_whatsapp' => $useCustom ? 1 : 0,
-            'whatsapp_mode' => $useCustom ? 'custom' : 'company',
-            'whatsapp_api_url' => trim($request->whatsapp_api_url ?? ''),
-            'whatsapp_api_token' => trim($request->whatsapp_api_token ?? ''),
-            'whatsapp_instance_id' => trim($request->whatsapp_instance_id ?? ''),
+            'use_custom_whatsapp'   => $useCustom ? 1 : 0,
+            'whatsapp_mode'         => $useCustom ? 'custom' : 'company',
+            'whatsapp_api_url'      => trim($request->whatsapp_api_url ?? ''),
+            'whatsapp_api_token'    => trim($request->whatsapp_api_token ?? ''),
+            'whatsapp_instance_id'  => trim($request->whatsapp_instance_id ?? ''),
             'whatsapp_sender_phone' => $senderPhone,
-            'reminder_days_before' => (int) ($request->reminder_days_before ?? 15),
-            'reminder_target' => $request->reminder_target ?: 'both',
-            'reminder_template' => trim($request->reminder_template ?? ''),
+            'reminder_days_before'  => (int) ($request->reminder_days_before ?? 15),
+            'reminder_target'       => 'custom_advanced',
+            'reminder_template'     => trim($request->reminder_template ?? ''),
             'enable_auto_reminders' => $request->has('enable_auto_reminders') ? 1 : 0,
-            'updated_at' => now(),
+            'reminder_settings_json'=> json_encode($advancedReminderSettings, JSON_UNESCAPED_UNICODE),
+            'updated_at'            => now(),
         ];
 
         if ($request->has('tax_number')) {
@@ -1790,7 +1841,7 @@ class OfficeErpController extends Controller
         DB::table('offices')->where('id', $officeId)->update($updatePayload);
 
         return redirect()->route('office.dashboard', ['tab' => 'whatsapp'])
-            ->with('success', 'تم حفظ إعدادات المكتب والرقم الضريبي والربط مع واتساب بنجاح.');
+            ->with('success', 'تم حفظ إعدادات التنبيهات الآلية والمستلمين المحددين والربط مع واتساب بنجاح.');
     }
 
     public function updateOfficeWhatsapp(Request $request)
@@ -1799,7 +1850,7 @@ class OfficeErpController extends Controller
     }
 
     /**
-     * فحص وإرسال تذكيرات واتساب للعقود التي قاربت على الانتهاء أو حلت دفعتها
+     * فحص وإرسال تذكيرات واتساب الذكية (للدفعات، المتأخرات، وانتهاء العقود) إلى جميع المستلمين الذين حددهم صاحب المكتب
      */
     public function triggerLeaseReminders(Request $request)
     {
@@ -1807,20 +1858,62 @@ class OfficeErpController extends Controller
         $office = DB::table('offices')->where('id', $officeId)->first();
         if (!$office) return back();
 
-        $daysLimit = (int) ($office->reminder_days_before ?? 15);
-        $targetMode = $office->reminder_target ?: 'both';
-        $defaultTpl = "عزيزي {اسم_المستأجر}، نود تذكيركم بقرب استحقاق دفعة الإيجار / انتهاء العقد رقم {رقم_العقد} للعقار ({اسم_العقار} - {رقم_الوحدة}) بمبلغ {المبلغ} ر.س بتاريخ {تاريخ_الاستحقاق} (متبقي {الأيام_المتبقية} يوم). مع تحيات {اسم_المكتب}.";
-        $template = !empty($office->reminder_template) ? $office->reminder_template : $defaultTpl;
+        if (empty($office->enable_auto_reminders)) {
+            return redirect()->route('office.dashboard', ['tab' => 'whatsapp'])
+                ->withErrors(['خيار الإرسال الآلي للتنبيهات متوقف حالياً، يرجى تفعيله أولاً ثم حفظ الإعدادات.']);
+        }
 
-        $contracts = DB::table('lease_contracts')
-            ->join('properties', 'lease_contracts.property_id', '=', 'properties.id')
-            ->join('tenants', 'lease_contracts.tenant_id', '=', 'tenants.id')
-            ->leftJoin('property_units', 'lease_contracts.property_unit_id', '=', 'property_units.id')
-            ->where('lease_contracts.office_id', $officeId)
-            ->where('lease_contracts.status', 'active')
+        $cfg = json_decode($office->reminder_settings_json ?? '{}', true) ?: [];
+
+        $sendToTenant      = $cfg['send_to_tenant'] ?? 1;
+        $sendToOwner       = $cfg['send_to_owner'] ?? 0;
+        $sendToOfficeAdmin = $cfg['send_to_office_admin'] ?? 1;
+        $selectedStaffIds  = $cfg['selected_staff_ids'] ?? [];
+        $customRecipients  = $cfg['custom_recipients'] ?? [];
+
+        $daysLimit          = (int) ($cfg['installment_days_before'] ?? ($office->reminder_days_before ?? 15));
+        $overdueDaysAfter   = (int) ($cfg['overdue_days_after'] ?? 7);
+        $contractExpiryDays = (int) ($cfg['contract_expiry_days'] ?? 30);
+        $notifyOverdue      = !empty($cfg['notify_overdue_after']);
+        $notifyExpiry       = !empty($cfg['notify_contract_expiry']);
+
+        $defaultTpl = "عزيزي {اسم_المستأجر}، نود تذكيركم بقرب استحقاق دفعة الإيجار للعقد رقم {رقم_العقد} للعقار ({اسم_العقار} - {رقم_الوحدة}) بمبلغ {المبلغ_المتبقي} ر.س بتاريخ {تاريخ_الاستحقاق} (متبقي {الأيام_المتبقية} يوم). مع تحيات {اسم_المكتب}.";
+        $template = !empty($office->reminder_template) ? $office->reminder_template : $defaultTpl;
+        $overdueTpl = !empty($cfg['overdue_template'])
+            ? $cfg['overdue_template']
+            : "⚠️ إشعار مطالبة سداد: المكرم {اسم_المستأجر}، نفيدكم بتأخر سداد الدفعة المستحقة للعقد {رقم_العقد} ({اسم_العقار} - {رقم_الوحدة}) بمبلغ متبقي {المبلغ_المتبقي} ر.س منذ تاريخ {تاريخ_الاستحقاق}. نأمل سرعة السداد. {اسم_المكتب}";
+        $ownerTpl = !empty($cfg['owner_template'])
+            ? $cfg['owner_template']
+            : "👑 إشعار للمالك {اسم_المالك}: نحيطكم علماً بأن دفعة المستأجر ({اسم_المستأجر}) للعقار ({اسم_العقار} - {رقم_الوحدة}) بمبلغ {المبلغ_المتبقي} ر.س تاريخ استحقاقها {تاريخ_الاستحقاق}. إدارة {اسم_المكتب}.";
+
+        // جلب أرقام الموظفين المحددين من صاحب المكتب
+        $staffPhones = [];
+        if (!empty($selectedStaffIds)) {
+            $staffPhones = DB::table('users')
+                ->where('office_id', $officeId)
+                ->whereIn('id', $selectedStaffIds)
+                ->whereNotNull('phone')
+                ->pluck('phone')
+                ->toArray();
+        }
+
+        // جلب الدفعات غير المسددة مع بيانات المالك والمستأجر والعقار
+        CompanyErpController::ensureContractInstallmentsTable();
+        $installments = DB::table('contract_installments')
+            ->join('lease_contracts', 'contract_installments.lease_contract_id', '=', 'lease_contracts.id')
+            ->join('properties', 'contract_installments.property_id', '=', 'properties.id')
+            ->join('owners', 'contract_installments.owner_id', '=', 'owners.id')
+            ->join('tenants', 'contract_installments.tenant_id', '=', 'tenants.id')
+            ->leftJoin('property_units', 'contract_installments.property_unit_id', '=', 'property_units.id')
+            ->where('contract_installments.office_id', $officeId)
+            ->where('contract_installments.status', '!=', 'paid')
             ->select(
-                'lease_contracts.*',
+                'contract_installments.*',
+                'lease_contracts.contract_number',
+                'lease_contracts.end_date as contract_end_date',
                 'properties.title as property_title',
+                'owners.name as owner_name',
+                'owners.phone as owner_phone',
                 'tenants.name as tenant_name',
                 'tenants.phone as tenant_phone',
                 'property_units.unit_number'
@@ -1831,33 +1924,75 @@ class OfficeErpController extends Controller
         $matchedCount = 0;
         $today = now()->startOfDay();
 
-        foreach ($contracts as $c) {
-            $endDate = \Carbon\Carbon::parse($c->end_date)->startOfDay();
-            $diffDays = $today->diffInDays($endDate, false);
+        foreach ($installments as $inst) {
+            $remAmount = max(0, round($inst->amount - $inst->paid_amount, 2));
+            if ($remAmount <= 0.01) continue;
 
-            if ($diffDays <= $daysLimit && $diffDays >= -30) {
-                $matchedCount++;
-                $replacements = [
-                    '{اسم_المستأجر}' => $c->tenant_name,
-                    '{اسم_العقار}' => $c->property_title,
-                    '{رقم_الوحدة}' => $c->unit_number ?: 'كامل العقار',
-                    '{رقم_العقد}' => $c->contract_number,
-                    '{المبلغ}' => number_format($c->total_rent_amount, 2),
-                    '{تاريخ_الاستحقاق}' => $c->end_date,
-                    '{تاريخ_انتهاء_العقد}' => $c->end_date,
-                    '{الأيام_المتبقية}' => max(0, $diffDays),
-                    '{اسم_المكتب}' => $office->name,
-                ];
-                $finalMessage = str_replace(array_keys($replacements), array_values($replacements), $template);
+            $dueDate = \Carbon\Carbon::parse($inst->due_date)->startOfDay();
+            $diffDays = (int) $today->diffInDays($dueDate, false);
 
-                if (in_array($targetMode, ['tenant', 'both']) && !empty($c->tenant_phone)) {
-                    if (CompanyErpController::dispatchWhatsappMessage($c->tenant_phone, $finalMessage, $officeId)) {
-                        $sentCount++;
-                    }
+            $isUpcomingMatch = ($diffDays >= 0 && $diffDays <= $daysLimit);
+            $isOverdueMatch  = ($notifyOverdue && $diffDays < 0 && abs($diffDays) >= 1 && abs($diffDays) <= max(90, $overdueDaysAfter));
+
+            if (!$isUpcomingMatch && !$isOverdueMatch) {
+                continue;
+            }
+
+            $matchedCount++;
+            $replacements = [
+                '{اسم_المستأجر}'     => $inst->tenant_name,
+                '{اسم_المالك}'       => $inst->owner_name,
+                '{اسم_العقار}'       => $inst->property_title,
+                '{رقم_الوحدة}'       => $inst->unit_number ?: 'كامل العقار',
+                '{رقم_العقد}'        => $inst->contract_number,
+                '{رقم_الدفعة}'       => (string) $inst->installment_number,
+                '{المبلغ}'           => number_format($inst->amount, 2),
+                '{المبلغ_المتبقي}'   => number_format($remAmount, 2),
+                '{تاريخ_الاستحقاق}'  => $inst->due_date,
+                '{تاريخ_انتهاء_العقد}'=> $inst->contract_end_date,
+                '{الأيام_المتبقية}'  => (string) max(0, $diffDays),
+                '{أيام_التأخير}'     => (string) ($diffDays < 0 ? abs($diffDays) : 0),
+                '{اسم_المكتب}'       => $office->name,
+            ];
+
+            $chosenTemplate = $isOverdueMatch ? $overdueTpl : $template;
+            $finalMessage = str_replace(array_keys($replacements), array_values($replacements), $chosenTemplate);
+            $ownerMessage = str_replace(array_keys($replacements), array_values($replacements), $ownerTpl);
+
+            // 1. الإرسال للمستأجر
+            if ($sendToTenant && !empty($inst->tenant_phone)) {
+                if (CompanyErpController::dispatchWhatsappMessage($inst->tenant_phone, $finalMessage, $officeId)) {
+                    $sentCount++;
                 }
-                if (in_array($targetMode, ['office', 'both']) && !empty($office->phone)) {
-                    $officeNotice = "🔔 *تذكير إداري للمكتب ({$office->name})*\n" . $finalMessage;
-                    if (CompanyErpController::dispatchWhatsappMessage($office->phone, $officeNotice, $officeId)) {
+            }
+
+            // 2. الإرسال لمالك العقار
+            if ($sendToOwner && !empty($inst->owner_phone)) {
+                if (CompanyErpController::dispatchWhatsappMessage($inst->owner_phone, $ownerMessage, $officeId)) {
+                    $sentCount++;
+                }
+            }
+
+            // 3. الإرسال لمدير المكتب العقاري
+            $adminNotice = "🔔 *تذكير آلي ({$office->name})*\n" . $finalMessage;
+            if ($sendToOfficeAdmin && !empty($office->phone)) {
+                if (CompanyErpController::dispatchWhatsappMessage($office->phone, $adminNotice, $officeId)) {
+                    $sentCount++;
+                }
+            }
+
+            // 4. الإرسال للموظفين المحددين من صاحب المكتب
+            foreach ($staffPhones as $stPhone) {
+                if (CompanyErpController::dispatchWhatsappMessage($stPhone, $adminNotice, $officeId)) {
+                    $sentCount++;
+                }
+            }
+
+            // 5. الإرسال للأرقام المخصصة الإضافية التي كتبها صاحب المكتب
+            foreach ($customRecipients as $cr) {
+                if (!empty($cr['phone'])) {
+                    $customNotice = "🔔 *إشعار إلى ({$cr['name']}) - {$office->name}*\n" . $finalMessage;
+                    if (CompanyErpController::dispatchWhatsappMessage($cr['phone'], $customNotice, $officeId)) {
                         $sentCount++;
                     }
                 }
@@ -1865,7 +2000,7 @@ class OfficeErpController extends Controller
         }
 
         return redirect()->route('office.dashboard', ['tab' => 'whatsapp'])
-            ->with('success', "تم فحص العقود النشطة (ضمن مهلة {$daysLimit} يوم): تم العثور على ({$matchedCount}) عقد مستحق للتنبيه، وإرسال ({$sentCount}) رسالة واتساب.");
+            ->with('success', "تم فحص الدفعات والعقود النشطة: تم العثور على ({$matchedCount}) دفعة/عقد مستحق للتنبيه، وإرسال ({$sentCount}) رسالة واتساب إلى المستلمين المحددين.");
     }
 
     // =========================================================================
