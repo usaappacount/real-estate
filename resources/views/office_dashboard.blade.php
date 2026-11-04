@@ -3492,6 +3492,485 @@
                 </div>
             <?php } ?>
 
+            <!-- ========================================================================= -->
+            <!-- 4. تبويب إعدادات الربط مع واتساب + التنبيهات الآلية المطورة + الشذوذ والاعتماد -->
+            <!-- ========================================================================= -->
+            <?php if (($tab ?? '') === 'whatsapp') {
+                $remCfg = json_decode($office->reminder_settings_json ?? '{}', true) ?: [];
+                $sendToTenant       = $remCfg['send_to_tenant'] ?? 1;
+                $sendToOwner        = $remCfg['send_to_owner'] ?? 0;
+                $sendToOfficeAdmin  = $remCfg['send_to_office_admin'] ?? 1;
+                $selectedStaffIds   = $remCfg['selected_staff_ids'] ?? [];
+                $customRecipients   = $remCfg['custom_recipients'] ?? [];
+
+                $notifyInstBefore   = $remCfg['notify_installments_before'] ?? 1;
+                $notifySecondChance = $remCfg['notify_second_chance'] ?? 1;
+                $secondDaysBefore   = $remCfg['second_days_before'] ?? 3;
+                $notifyOnDueDay     = $remCfg['notify_on_due_day'] ?? 1;
+                $notifyOverdue      = $remCfg['notify_overdue_after'] ?? 1;
+                $overdueDaysAfter   = $remCfg['overdue_days_after'] ?? 7;
+                $notifyExpiry       = $remCfg['notify_contract_expiry'] ?? 1;
+                $contractExpiryDays = $remCfg['contract_expiry_days'] ?? 30;
+                $preferredSendTime  = $remCfg['preferred_send_time'] ?? '09:00';
+                $skipFullyPaid      = $remCfg['skip_fully_paid'] ?? 1;
+
+                $overdueTemplate = $remCfg['overdue_template'] ?? '⚠️ إشعار مطالبة سداد: المكرم {اسم_المستأجر}، نفيدكم بتأخر سداد الدفعة المستحقة للعقد {رقم_العقد} ({اسم_العقار} - {رقم_الوحدة}) بمبلغ متبقي {المبلغ_المتبقي} ر.س منذ تاريخ {تاريخ_الاستحقاق}. نأمل سرعة السداد. {اسم_المكتب}';
+                $ownerTemplate   = $remCfg['owner_template'] ?? '👑 إشعار للمالك {اسم_المالك}: نحيطكم علماً بأن دفعة المستأجر ({اسم_المستأجر}) للعقار ({اسم_العقار} - {رقم_الوحدة}) بمبلغ {المبلغ_المتبقي} ر.س تاريخ استحقاقها {تاريخ_الاستحقاق}. إدارة {اسم_المكتب}.';
+                $isCustomWa = (!empty($office->use_custom_whatsapp) || ($office->whatsapp_mode ?? '') === 'custom');
+                $localWaSender = \App\Http\Controllers\CompanyErpController::toLocalPhone($office->whatsapp_sender_phone ?? '');
+            ?>
+                <div id="masterTabSectionActive" class="space-y-6">
+
+                    <!-- شريط علوي لفحص وتشغيل التنبيهات الآلية فوراً -->
+                    <div class="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900">💬 مركز إعدادات واتساب والتنبيهات الآلية الذكية</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">إدارة الربط البرمجي (API)، تخصيص مستلمي التنبيهات الآلية، وشروط اعتماد السندات وكاشف الشذوذ المحاسبي</p>
+                        </div>
+                        <form action="{{ route('office.whatsapp.run_reminders') }}" method="POST">
+                            @csrf
+                            <button type="submit" class="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg flex items-center gap-2 transition">
+                                <span>🚀 فحص الدفعات والعقود وإرسال التنبيهات المستحقة الآن</span>
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- النموذج الأول: إعدادات الربط مع واتساب + إعدادات التنبيهات الآلية التلقائية المطورة -->
+                    <form action="{{ route('office.whatsapp_settings.update') }}" method="POST" class="space-y-6">
+                        @csrf
+
+                        <!-- 1. إعدادات بوابة الربط مع واتساب (افتراضي الشركة أو خاص بالمكتب) -->
+                        <div class="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-4">
+                            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                                <div>
+                                    <h4 class="font-bold text-base text-slate-900">🔗 أولاً: إعدادات الربط التقني مع بوابة واتساب (WhatsApp API)</h4>
+                                    <p class="text-xs text-slate-500">يمكنك استخدام ربط المنصة المركزي مجاناً أو ربط رقم مكتبك الخاص عبر GreatWhats API</p>
+                                </div>
+                                <select name="whatsapp_mode" onchange="document.getElementById('customOfficeWaBox').classList.toggle('hidden', this.value !== 'custom');"
+                                        class="rounded-xl border border-slate-300 px-3.5 py-2 text-xs bg-slate-50 font-bold text-slate-900">
+                                    <option value="company" {{ !$isCustomWa ? 'selected' : '' }}>استخدام بوابة المنصة الافتراضية ({{ $companyAdminPhone ?? '' }})</option>
+                                    <option value="custom" {{ $isCustomWa ? 'selected' : '' }}>تفعيل رقم واتساب خاص بالمكتب (Custom API)</option>
+                                </select>
+                            </div>
+
+                            <div id="customOfficeWaBox" class="{{ $isCustomWa ? '' : 'hidden' }} grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رقم جوال الواتساب المرسل للمكتب (10 أرقام)</label>
+                                    <input type="tel" name="whatsapp_sender_phone" value="{{ $localWaSender }}" maxlength="10" dir="ltr"
+                                           oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);"
+                                           placeholder="05XXXXXXXX" class="w-full text-left font-mono rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">معرف الجلسة (Instance ID)</label>
+                                    <input type="text" name="whatsapp_instance_id" value="{{ $office->whatsapp_instance_id ?? '' }}" dir="ltr"
+                                           placeholder="instance_xxx" class="w-full text-left font-mono rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رابط الـ API (Endpoint URL)</label>
+                                    <input type="url" name="whatsapp_api_url" value="{{ $office->whatsapp_api_url ?: 'https://api.greatwhats.com/v1/messages' }}" dir="ltr"
+                                           class="w-full text-left font-mono rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">مفتاح الربط السري (API Token)</label>
+                                    <input type="text" name="whatsapp_api_token" value="{{ $office->whatsapp_api_token ?? '' }}" dir="ltr"
+                                           placeholder="أدخل التوكن السري..." class="w-full text-left font-mono rounded-xl border px-3 py-2 text-xs bg-white">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 2. بطاقة إعدادات التنبيهات الآلية التلقائية المطورة -->
+                        <div class="p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-6">
+                            <!-- الترويسة وزر التفعيل الرئيسي -->
+                            <div class="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-slate-900 text-white">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-11 h-11 rounded-xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-xl">
+                                        🔔
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-base text-white">إعدادات التنبيهات الآلية التلقائية الذكية</h4>
+                                        <p class="text-xs text-slate-300 mt-0.5">عند تفعيل هذا الخيار يرسل النظام التنبيهات آلياً في موعدها لمن تحددهم أدناه، وعند إيقافه يتوقف الإرسال</p>
+                                    </div>
+                                </div>
+
+                                <label class="inline-flex items-center gap-3 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 cursor-pointer transition">
+                                    <input type="checkbox" name="enable_auto_reminders" value="1"
+                                           {{ ($office->enable_auto_reminders ?? 1) ? 'checked' : '' }}
+                                           onchange="document.getElementById('autoRemindersMasterBody').classList.toggle('opacity-50', !this.checked);"
+                                           class="w-5 h-5 rounded text-emerald-500 focus:ring-0">
+                                    <span class="text-xs font-extrabold text-emerald-300">تفعيل الإرسال الآلي للتنبيهات</span>
+                                </label>
+                            </div>
+
+                            <div id="autoRemindersMasterBody" class="space-y-6 {{ ($office->enable_auto_reminders ?? 1) ? '' : 'opacity-50' }}">
+
+                                <!-- القسم الأول: تحديد المستلمين بحرية كاملة (لمن تُرسل التنبيهات؟) -->
+                                <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                                    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+                                        <div>
+                                            <h5 class="font-bold text-sm text-slate-900">👥 أولاً: حدد لمن تُرسل التنبيهات (تحكم كامل بالمستلمين)</h5>
+                                            <p class="text-[11px] text-slate-500">يمكنك تفعيل طرف واحد أو عدة أطراف معاً، واختيار موظفين محددين بالاسم أو إضافة أرقام جوال خارجية يدوياً</p>
+                                        </div>
+                                        <span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-bold">توزيع متعدد ذكي ✔</span>
+                                    </div>
+
+                                    <!-- الأطراف الأساسية بالنظام -->
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                        <label class="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-slate-200 cursor-pointer hover:border-slate-900 transition">
+                                            <input type="checkbox" name="send_to_tenant" value="1" {{ $sendToTenant ? 'checked' : '' }} class="mt-1 w-4 h-4 rounded text-slate-900">
+                                            <div>
+                                                <div class="font-bold text-xs text-slate-900">👤 المستأجر (صاحب العقد/الدفعة)</div>
+                                                <div class="text-[11px] text-slate-500 mt-0.5">يُرسل تلقائياً لرقم جوال المستأجر المرتبط بالعقد</div>
+                                            </div>
+                                        </label>
+
+                                        <label class="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-slate-200 cursor-pointer hover:border-slate-900 transition">
+                                            <input type="checkbox" name="send_to_owner" value="1" {{ $sendToOwner ? 'checked' : '' }} class="mt-1 w-4 h-4 rounded text-slate-900">
+                                            <div>
+                                                <div class="font-bold text-xs text-slate-900">👑 مالك العقار (المؤجر)</div>
+                                                <div class="text-[11px] text-slate-500 mt-0.5">إشعار المالك بحلول دفعة إيجار أو قرب انتهاء عقد في عقاره</div>
+                                            </div>
+                                        </label>
+
+                                        <label class="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-slate-200 cursor-pointer hover:border-slate-900 transition">
+                                            <input type="checkbox" name="send_to_office_admin" value="1" {{ $sendToOfficeAdmin ? 'checked' : '' }} class="mt-1 w-4 h-4 rounded text-slate-900">
+                                            <div>
+                                                <div class="font-bold text-xs text-slate-900">🏢 جوال إدارة المكتب الرسمي</div>
+                                                <div class="text-[11px] text-slate-500 mt-0.5">نسخة إدارية لجوال المكتب (<span class="font-mono" dir="ltr">{{ $office->phone }}</span>)</div>
+                                            </div>
+                                        </label>
+                                    </div>
+
+                                    <!-- اختيار موظفين محددين من طاقم المكتب -->
+                                    <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2.5">
+                                        <div class="flex items-center justify-between">
+                                            <label class="text-xs font-bold text-slate-800">👨‍💼 تحديد موظفين معينين من المكتب لاستلام نسخة من التنبيهات:</label>
+                                            <span class="text-[11px] text-slate-400">اختر من يتابع التحصيل من موظفيك</span>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                            @forelse(($staff ?? collect()) as $stMember)
+                                                <label class="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs cursor-pointer hover:bg-slate-100">
+                                                    <input type="checkbox" name="selected_staff_ids[]" value="{{ $stMember->id }}"
+                                                           {{ in_array($stMember->id, $selectedStaffIds) ? 'checked' : '' }}
+                                                           class="rounded text-slate-900">
+                                                    <div class="truncate">
+                                                        <span class="font-bold text-slate-900">{{ $stMember->name }}</span>
+                                                        <span class="block font-mono text-[10px] text-emerald-700" dir="ltr">{{ $stMember->phone }}</span>
+                                                    </div>
+                                                </label>
+                                            @empty
+                                                <div class="col-span-3 text-xs text-slate-400">لا يوجد موظفون مضافون حالياً.</div>
+                                            @endforelse
+                                        </div>
+                                    </div>
+
+                                    <!-- إضافة أرقام جوال مخصصة يدوياً -->
+                                    <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-3">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <div>
+                                                <label class="text-xs font-bold text-slate-900">📲 أرقام جوال إضافية يحددها صاحب المكتب يدوياً:</label>
+                                                <p class="text-[11px] text-slate-500">أضف أي رقم جوال تريد أن تصله التنبيهات (مثل: رقم شريك، محاسب، أو مسؤول تحصيل)</p>
+                                            </div>
+                                            <button type="button" onclick="addCustomReminderRecipientRow()"
+                                                    class="px-3.5 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                                                + إضافة رقم مستلم جديد
+                                            </button>
+                                        </div>
+
+                                        <div id="customReminderRecipientsContainer" class="space-y-2">
+                                            @forelse($customRecipients as $cr)
+                                                <div class="grid grid-cols-12 gap-2 items-center custom-recipient-row">
+                                                    <div class="col-span-5">
+                                                        <input type="text" name="custom_recipient_names[]" value="{{ $cr['name'] ?? '' }}"
+                                                               placeholder="اسم المستلم أو صفته (مثال: مسؤول التحصيل)"
+                                                               class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-semibold">
+                                                    </div>
+                                                    <div class="col-span-6">
+                                                        <input type="tel" name="custom_recipient_phones[]" value="{{ $cr['phone'] ?? '' }}" maxlength="10" dir="ltr"
+                                                               oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);"
+                                                               placeholder="05XXXXXXXX"
+                                                               class="w-full text-left font-mono rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-bold">
+                                                    </div>
+                                                    <div class="col-span-1 text-center">
+                                                        <button type="button" onclick="this.closest('.custom-recipient-row').remove()"
+                                                                class="px-2.5 py-2 rounded-xl bg-rose-50 text-rose-600 text-xs font-bold">🗑️</button>
+                                                    </div>
+                                                </div>
+                                            @empty
+                                                <div class="grid grid-cols-12 gap-2 items-center custom-recipient-row">
+                                                    <div class="col-span-5">
+                                                        <input type="text" name="custom_recipient_names[]"
+                                                               placeholder="اسم المستلم أو صفته (اختياري - مثال: المحاسب)"
+                                                               class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-semibold">
+                                                    </div>
+                                                    <div class="col-span-6">
+                                                        <input type="tel" name="custom_recipient_phones[]" maxlength="10" dir="ltr"
+                                                               oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);"
+                                                               placeholder="05XXXXXXXX (اتركه فارغاً إن لم ترغب)"
+                                                               class="w-full text-left font-mono rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-bold">
+                                                    </div>
+                                                    <div class="col-span-1 text-center">
+                                                        <button type="button" onclick="if(document.querySelectorAll('.custom-recipient-row').length > 1) this.closest('.custom-recipient-row').remove();"
+                                                                class="px-2.5 py-2 rounded-xl bg-rose-50 text-rose-600 text-xs font-bold">🗑️</button>
+                                                    </div>
+                                                </div>
+                                            @endforelse
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- القسم الثاني: جدولة مراحل ومواعيد التنبيهات المتعددة -->
+                                <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                                    <h5 class="font-bold text-sm text-slate-900 border-b border-slate-200 pb-2.5">⏱️ ثانياً: مراحل ومواعيد إرسال التنبيهات التلقائية</h5>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                                        <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                                <input type="checkbox" name="notify_installments_before" value="1" {{ $notifyInstBefore ? 'checked' : '' }} class="rounded text-slate-900">
+                                                <span>1. تنبيه مبكر قبل حلول الدفعة</span>
+                                            </label>
+                                            <div class="flex items-center gap-2 pt-1">
+                                                <span class="text-[11px] text-slate-500">قبل الاستحقاق بـ:</span>
+                                                <input type="number" name="reminder_days_before" value="{{ $office->reminder_days_before ?? 15 }}" min="1" max="120"
+                                                       class="w-20 rounded-lg border px-2.5 py-1 text-xs font-mono font-bold text-center">
+                                                <span class="text-[11px] text-slate-600 font-bold">يوماً</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                                <input type="checkbox" name="notify_second_chance" value="1" {{ $notifySecondChance ? 'checked' : '' }} class="rounded text-slate-900">
+                                                <span>2. تذكير تأكيدي ثانٍ قبل الموعد</span>
+                                            </label>
+                                            <div class="flex items-center gap-2 pt-1">
+                                                <span class="text-[11px] text-slate-500">قبل الاستحقاق بـ:</span>
+                                                <input type="number" name="second_days_before" value="{{ $secondDaysBefore }}" min="1" max="30"
+                                                       class="w-20 rounded-lg border px-2.5 py-1 text-xs font-mono font-bold text-center">
+                                                <span class="text-[11px] text-slate-600 font-bold">أيام</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                                <input type="checkbox" name="notify_on_due_day" value="1" {{ $notifyOnDueDay ? 'checked' : '' }} class="rounded text-slate-900">
+                                                <span>3. إشعار في نفس يوم الاستحقاق</span>
+                                            </label>
+                                            <p class="text-[11px] text-slate-500 pt-1">يرسل تذكيراً مباشراً صباح يوم حلول القسط الإيجاري</p>
+                                        </div>
+
+                                        <div class="p-4 rounded-xl bg-white border border-rose-200 space-y-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-rose-800 cursor-pointer">
+                                                <input type="checkbox" name="notify_overdue_after" value="1" {{ $notifyOverdue ? 'checked' : '' }} class="rounded text-rose-600">
+                                                <span>4. تنبيه المتأخرات (بعد فوات الموعد) 🚨</span>
+                                            </label>
+                                            <div class="flex items-center gap-2 pt-1">
+                                                <span class="text-[11px] text-slate-500">متابعة المتأخرات حتى:</span>
+                                                <input type="number" name="overdue_days_after" value="{{ $overdueDaysAfter }}" min="1" max="365"
+                                                       class="w-20 rounded-lg border px-2.5 py-1 text-xs font-mono font-bold text-center text-rose-700">
+                                                <span class="text-[11px] text-slate-600 font-bold">يوماً</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                                <input type="checkbox" name="notify_contract_expiry" value="1" {{ $notifyExpiry ? 'checked' : '' }} class="rounded text-slate-900">
+                                                <span>5. تنبيه تجديد عقد الإيجار (إيجار)</span>
+                                            </label>
+                                            <div class="flex items-center gap-2 pt-1">
+                                                <span class="text-[11px] text-slate-500">قبل انتهاء العقد بـ:</span>
+                                                <input type="number" name="contract_expiry_days" value="{{ $contractExpiryDays }}" min="5" max="180"
+                                                       class="w-20 rounded-lg border px-2.5 py-1 text-xs font-mono font-bold text-center">
+                                                <span class="text-[11px] text-slate-600 font-bold">يوماً</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
+                                            <label class="block text-xs font-bold text-slate-900">6. وقت الإرسال اليومي المفضل 🕘</label>
+                                            <div class="flex items-center gap-2 pt-1">
+                                                <input type="time" name="preferred_send_time" value="{{ $preferredSendTime }}"
+                                                       class="w-full rounded-lg border px-3 py-1 text-xs font-mono font-bold">
+                                            </div>
+                                            <label class="flex items-center gap-1.5 text-[11px] text-emerald-700 font-semibold cursor-pointer">
+                                                <input type="checkbox" name="skip_fully_paid" value="1" {{ $skipFullyPaid ? 'checked' : '' }}>
+                                                <span>استثناء الدفعات المسددة تلقائياً</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- القسم الثالث: قوالب الرسائل المخصصة + أزرار إدراج المتغيرات -->
+                                <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                                    <div class="flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                            <h5 class="font-bold text-sm text-slate-900">📝 ثالثاً: تخصيص صيغة رسائل التنبيهات الآلية</h5>
+                                            <p class="text-[11px] text-slate-500">اضغط على أي متغير بالأسفل لإدراجه تلقائياً داخل نص الرسالة</p>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1.5">
+                                            @foreach(['{اسم_المستأجر}', '{اسم_المالك}', '{اسم_العقار}', '{رقم_الوحدة}', '{رقم_العقد}', '{المبلغ_المتبقي}', '{تاريخ_الاستحقاق}', '{الأيام_المتبقية}', '{أيام_التأخير}', '{اسم_المكتب}'] as $tagVar)
+                                                <button type="button" onclick="insertTagIntoReminderTpl('{{ $tagVar }}')"
+                                                        class="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-900 text-slate-700 hover:text-white border border-slate-300 text-[11px] font-mono font-bold transition">
+                                                    + {{ $tagVar }}
+                                                </button>
+                                            @endforeach
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-800 mb-1">1. قالب تذكير استحقاق الدفعة / العقد (للمستأجر والمكتب)</label>
+                                            <textarea name="reminder_template" id="main_reminder_template_box" rows="4"
+                                                      onfocus="window.activeReminderTextarea = this"
+                                                      class="w-full rounded-xl border border-slate-300 p-3 text-xs bg-white leading-relaxed">{{ $office->reminder_template ?: 'عزيزي {اسم_المستأجر}، نود تذكيركم بقرب استحقاق دفعة الإيجار للعقد رقم {رقم_العقد} للعقار ({اسم_العقار} - {رقم_الوحدة}) بمبلغ {المبلغ_المتبقي} ر.س بتاريخ {تاريخ_الاستحقاق} (متبقي {الأيام_المتبقية} يوم). مع تحيات {اسم_المكتب}.' }}</textarea>
+                                        </div>
+
+                                        <div>
+                                            <label class="block text-xs font-bold text-rose-800 mb-1">2. قالب مطالبة المتأخرات (عند تجاوز تاريخ الاستحقاق)</label>
+                                            <textarea name="overdue_template" rows="4"
+                                                      onfocus="window.activeReminderTextarea = this"
+                                                      class="w-full rounded-xl border border-rose-200 p-3 text-xs bg-white leading-relaxed">{{ $overdueTemplate }}</textarea>
+                                        </div>
+
+                                        <div>
+                                            <label class="block text-xs font-bold text-amber-900 mb-1">3. قالب إشعار المالك (عند تفعيل خيار إرسال للمالك)</label>
+                                            <textarea name="owner_template" rows="4"
+                                                      onfocus="window.activeReminderTextarea = this"
+                                                      class="w-full rounded-xl border border-amber-200 p-3 text-xs bg-white leading-relaxed">{{ $ownerTemplate }}</textarea>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            <div class="flex justify-end pt-2 border-t border-slate-100">
+                                <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-lg">
+                                    💾 حفظ إعدادات الواتساب والتنبيهات الآلية والمستلمين
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+
+                    <!-- النموذج الثاني: إعدادات اعتماد سندات الصرف عبر الواتساب + كاشف الشذوذ المحاسبي + نصوص رسائل الـ PDF -->
+                    <form action="{{ route('office.smart_settings.save') }}" method="POST" class="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-6">
+                        @csrf
+                        <div class="border-b border-slate-100 pb-3">
+                            <h4 class="font-bold text-base text-slate-900">🛡️ رابعاً: إعدادات اعتماد سندات الصرف عبر الواتساب وكاشف الشذوذ المحاسبي</h4>
+                            <p class="text-xs text-slate-500">تحكم بسقف اعتماد السندات بالكلمات المفتاحية عبر الواتساب، وتنبيهات العمليات الليلية أو المبالغ الكبيرة</p>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                                <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                    <input type="checkbox" name="enable_wa_voucher_approval" value="1" {{ !empty($office->enable_wa_voucher_approval) ? 'checked' : '' }} class="rounded text-slate-900">
+                                    <span>تفعيل اشتراط اعتماد مدير المكتب لسندات الصرف عبر الواتساب</span>
+                                </label>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-700 mb-1">المبلغ الذي يتطلب اعتماد واتساب (ر.س)</label>
+                                    <input type="number" step="0.01" name="wa_approval_threshold" value="{{ $office->wa_approval_threshold ?? 10000 }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-700 mb-1">كلمات الاعتماد عبر الواتساب (مفصولة بفاصلة)</label>
+                                    <input type="text" name="wa_approval_keywords" value="{{ $office->wa_approval_keywords ?: 'اعتمد,تم,اوك,موافق,نعم' }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                </div>
+                            </div>
+
+                            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                                <label class="flex items-center gap-2 text-xs font-bold text-slate-900 cursor-pointer">
+                                    <input type="checkbox" name="enable_anomaly_detector" value="1" {{ ($office->enable_anomaly_detector ?? 1) ? 'checked' : '' }} class="rounded text-slate-900">
+                                    <span>تفعيل رادار كاشف الشذوذ المحاسبي والعمليات الحساسة</span>
+                                </label>
+                                <div class="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-700 mb-1">سقف المبلغ (ر.س)</label>
+                                        <input type="number" step="0.01" name="anomaly_max_amount" value="{{ $office->anomaly_max_amount ?? 20000 }}" class="w-full rounded-xl border px-2.5 py-1.5 text-xs bg-white font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-700 mb-1">بداية الليل (ساعة)</label>
+                                        <input type="number" min="0" max="23" name="anomaly_night_start" value="{{ $office->anomaly_night_start ?? 23 }}" class="w-full rounded-xl border px-2.5 py-1.5 text-xs bg-white font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-700 mb-1">نهاية الليل (ساعة)</label>
+                                        <input type="number" min="0" max="23" name="anomaly_night_end" value="{{ $office->anomaly_night_end ?? 5 }}" class="w-full rounded-xl border px-2.5 py-1.5 text-xs bg-white font-mono">
+                                    </div>
+                                </div>
+                                <label class="flex items-center gap-2 text-xs font-semibold text-rose-700 cursor-pointer pt-1">
+                                    <input type="checkbox" name="anomaly_alert_on_delete" value="1" {{ ($office->anomaly_alert_on_delete ?? 1) ? 'checked' : '' }} class="rounded text-rose-600">
+                                    <span>التنبيه عند قيام أي موظف بحذف سند أو عقد أو سجل</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">نص مرافق لملف PDF السندات (اتركه فارغاً لإرسال الملف فقط)</label>
+                                <input type="text" name="wa_voucher_caption" value="{{ $office->wa_voucher_caption ?? '' }}" placeholder="اختياري..." class="w-full rounded-xl border px-3 py-2 text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">نص مرافق لملف PDF الفواتير الضريبية</label>
+                                <input type="text" name="wa_invoice_caption" value="{{ $office->wa_invoice_caption ?? '' }}" placeholder="اختياري..." class="w-full rounded-xl border px-3 py-2 text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">نص مرافق لملف PDF الإنذارات والمطالبات</label>
+                                <input type="text" name="wa_legal_caption" value="{{ $office->wa_legal_caption ?? '' }}" placeholder="اختياري..." class="w-full rounded-xl border px-3 py-2 text-xs">
+                            </div>
+                        </div>
+
+                        <div class="flex justify-end pt-2 border-t border-slate-100">
+                            <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-lg">
+                                💾 حفظ إعدادات الاعتماد وكاشف الشذوذ
+                            </button>
+                        </div>
+                    </form>
+
+                    <script>
+                        window.activeReminderTextarea = document.getElementById('main_reminder_template_box');
+
+                        window.insertTagIntoReminderTpl = function(tag) {
+                            const box = window.activeReminderTextarea || document.getElementById('main_reminder_template_box');
+                            if (!box) return;
+                            const start = box.selectionStart || box.value.length;
+                            const end = box.selectionEnd || box.value.length;
+                            box.value = box.value.substring(0, start) + tag + box.value.substring(end);
+                            box.focus();
+                        };
+
+                        window.addCustomReminderRecipientRow = function() {
+                            const container = document.getElementById('customReminderRecipientsContainer');
+                            if (!container) return;
+                            const row = document.createElement('div');
+                            row.className = 'grid grid-cols-12 gap-2 items-center custom-recipient-row';
+                            row.innerHTML = `
+                                <div class="col-span-5">
+                                    <input type="text" name="custom_recipient_names[]" placeholder="اسم المستلم أو صفته (مثال: شريك / مشرف تحصيل)"
+                                           class="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-semibold">
+                                </div>
+                                <div class="col-span-6">
+                                    <input type="tel" name="custom_recipient_phones[]" maxlength="10" dir="ltr"
+                                           oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);"
+                                           placeholder="05XXXXXXXX"
+                                           class="w-full text-left font-mono rounded-xl border border-slate-300 px-3 py-2 text-xs bg-slate-50 font-bold">
+                                </div>
+                                <div class="col-span-1 text-center">
+                                    <button type="button" onclick="this.closest('.custom-recipient-row').remove()"
+                                            class="px-2.5 py-2 rounded-xl bg-rose-50 text-rose-600 text-xs font-bold">🗑️</button>
+                                </div>
+                            `;
+                            container.appendChild(row);
+                        };
+
+                        document.addEventListener('DOMContentLoaded', function() {
+                            const masterSec = document.getElementById('masterTabSectionActive');
+                            if (masterSec && masterSec.parentElement) {
+                                let next = masterSec.nextElementSibling;
+                                while (next) {
+                                    const toRemove = next;
+                                    next = next.nextElementSibling;
+                                    toRemove.remove();
+                                }
+                            }
+                        });
+                    </script>
+                </div>
+            <?php } ?>
+
             <!-- 1. تبويب النظرة العامة للمكتب -->
             @if($tab == 'overview')
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
