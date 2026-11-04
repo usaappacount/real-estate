@@ -3341,33 +3341,6 @@ class CompanyErpController extends Controller
             ],
         ];
 
-        $defaultPlans = [
-            [
-                'badge' => 'الخيار الأول',
-                'title' => self::getSetting('landing_plan1_title', 'باقة الاشتراك السنوي للمكاتب'),
-                'price' => 'اشتراك سنوي ثابت',
-                'desc' => self::getSetting('landing_plan1_desc', 'اشتراك سنوي ثابت يمنح مكتبك شجرة حسابات مستقلة وإدارة غير محدودة للملاك والعقارات والسندات.'),
-                'btn_text' => 'ابدأ الآن',
-                'highlight' => 0
-            ],
-            [
-                'badge' => 'الخيار الأكثر مرونة',
-                'title' => self::getSetting('landing_plan2_title', 'باقة النسبة المرنة لكل عقد'),
-                'price' => 'نسبة ميسرة لكل عقد',
-                'desc' => self::getSetting('landing_plan2_desc', 'بدون رسوم تأسيس سنوية؛ يتم احتساب نسبة مئوية ميسرة فقط عند إبرام وتوثيق عقود الإيجار النشطة.'),
-                'btn_text' => 'ابدأ الآن',
-                'highlight' => 1
-            ],
-            [
-                'badge' => 'الخيار المتكامل',
-                'title' => self::getSetting('landing_plan3_title', 'الباقة المدمجة للشركات العقارية'),
-                'price' => 'رسوم مخفضة + نسبة رمزية',
-                'desc' => self::getSetting('landing_plan3_desc', 'تجمع بين رسوم سنوية مخفضة ونسبة رمزية على العقود، مع تفعيل الفوترة الضريبية باسم الملاك وبوابة العائلة.'),
-                'btn_text' => 'ابدأ الآن',
-                'highlight' => 0
-            ],
-        ];
-
         $stats = json_decode(self::getSetting('landing_stats_json', ''), true);
         if (!is_array($stats) || count($stats) === 0) $stats = $defaultStats;
 
@@ -3376,9 +3349,6 @@ class CompanyErpController extends Controller
 
         $portals = json_decode(self::getSetting('landing_portals_json', ''), true);
         if (!is_array($portals) || count($portals) === 0) $portals = $defaultPortals;
-
-        $plans = json_decode(self::getSetting('landing_plans_json', ''), true);
-        if (!is_array($plans) || count($plans) === 0) $plans = $defaultPlans;
 
         $customSections = json_decode(self::getSetting('landing_custom_sections_json', ''), true);
         if (!is_array($customSections)) $customSections = [];
@@ -3435,7 +3405,6 @@ class CompanyErpController extends Controller
             'stats' => $stats,
             'features' => $features,
             'portals' => $portals,
-            'plans' => $plans,
             'custom_sections' => $customSections,
         ];
     }
@@ -3443,7 +3412,14 @@ class CompanyErpController extends Controller
     public function showLandingPage()
     {
         $this->ensureDefaultAdminExists();
+        $this->ensureOfficePlansTable();
+
         $landing = self::getLandingSettings();
+        $officePlans = DB::table('office_plans')
+            ->where('show_on_landing', 1)
+            ->orderBy('id', 'asc')
+            ->get();
+        $availableOfficeTabs = self::getAvailableOfficeTabs();
 
         $liveStats = [
             'offices' => Schema::hasTable('offices') ? DB::table('offices')->count() : 0,
@@ -3452,7 +3428,7 @@ class CompanyErpController extends Controller
             'owners' => Schema::hasTable('owners') ? DB::table('owners')->count() : 0,
         ];
 
-        return view('welcome_landing', compact('landing', 'liveStats'));
+        return view('welcome_landing', compact('landing', 'liveStats', 'officePlans', 'availableOfficeTabs'));
     }
 
     public function saveLandingSettings(Request $request)
@@ -3538,7 +3514,7 @@ class CompanyErpController extends Controller
         }
         self::setSetting('landing_features_json', json_encode($features, JSON_UNESCAPED_UNICODE));
 
-        // 6. حفظ البوابات الذكية (4 بوابات أو أكثر/أقل)
+        // 6. حفظ البوابات الذكية
         $pBadges = $request->input('portal_badges', []);
         $pTitles = $request->input('portal_titles', []);
         $pDescs = $request->input('portal_descs', []);
@@ -3556,29 +3532,7 @@ class CompanyErpController extends Controller
         }
         self::setSetting('landing_portals_json', json_encode($portals, JSON_UNESCAPED_UNICODE));
 
-        // 7. حفظ الباقات والاشتراكات الديناميكية
-        $plBadges = $request->input('plan_badges', []);
-        $plTitles = $request->input('plan_titles', []);
-        $plPrices = $request->input('plan_prices', []);
-        $plDescs = $request->input('plan_descs', []);
-        $plBtns = $request->input('plan_btns', []);
-        $plHighlights = $request->input('plan_highlights', []);
-        $plans = [];
-        foreach ($plTitles as $idx => $plTitle) {
-            if (!empty(trim($plTitle))) {
-                $plans[] = [
-                    'badge' => trim($plBadges[$idx] ?? 'باقة اشتراك'),
-                    'title' => trim($plTitle),
-                    'price' => trim($plPrices[$idx] ?? ''),
-                    'desc' => trim($plDescs[$idx] ?? ''),
-                    'btn_text' => trim($plBtns[$idx] ?? 'ابدأ الآن') ?: 'ابدأ الآن',
-                    'highlight' => (int) ($plHighlights[$idx] ?? 0),
-                ];
-            }
-        }
-        self::setSetting('landing_plans_json', json_encode($plans, JSON_UNESCAPED_UNICODE));
-
-        // 8. حفظ الأقسام الإضافية المخصصة (Custom Sections)
+        // 7. حفظ الأقسام الإضافية المخصصة (Custom Sections)
         $csBadges = $request->input('custom_sec_badges', []);
         $csTitles = $request->input('custom_sec_titles', []);
         $csDescs = $request->input('custom_sec_descs', []);
@@ -3596,8 +3550,8 @@ class CompanyErpController extends Controller
         }
         self::setSetting('landing_custom_sections_json', json_encode($customSections, JSON_UNESCAPED_UNICODE));
 
-        return redirect()->route('erp.dashboard', ['tab' => 'settings'])
-            ->with('success', 'تم حفظ وتحديث جميع أقسام الواجهة الرئيسية وترتيبها وإعدادات الـ SEO بنجاح!');
+        return redirect()->route('erp.dashboard', ['tab' => 'office_plans'])
+            ->with('success', 'تم حفظ إعدادات الـ SEO والواجهة الرئيسية والباقات بنجاح!');
     }
 
     // =========================================================================
