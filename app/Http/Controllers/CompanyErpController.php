@@ -213,6 +213,9 @@ class CompanyErpController extends Controller
                 if (!Schema::hasColumn('offices', 'enable_auto_reminders')) {
                     $table->boolean('enable_auto_reminders')->default(true);
                 }
+                if (!Schema::hasColumn('offices', 'reminder_settings_json')) {
+                    $table->text('reminder_settings_json')->nullable();
+                }
                 if (!Schema::hasColumn('offices', 'plan_id')) {
                     $table->unsignedBigInteger('plan_id')->nullable();
                 }
