@@ -49,48 +49,127 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * فحص وإصلاح أعمدة الجداول تلقائياً + إنشاء حساب الأدمن الافتراضي
+     * فحص وإنشاء جميع جداول وأعمدة النظام تلقائياً (Self-Healing Schema) + إنشاء حساب الأدمن الافتراضي
      */
     public function ensureDefaultAdminExists(): void
     {
+        // 1. إنشاء جدول المستخدمين إذا لم يكن موجوداً
         if (!Schema::hasTable('users')) {
-            return;
+            Schema::create('users', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('username')->nullable()->unique();
+                $table->string('phone')->nullable();
+                $table->string('email')->nullable();
+                $table->string('national_id')->nullable();
+                $table->string('password');
+                $table->string('user_type')->default('office_admin');
+                $table->unsignedBigInteger('office_id')->nullable();
+                $table->unsignedBigInteger('owner_id')->nullable();
+                $table->boolean('is_active')->default(true);
+                $table->string('otp_code', 6)->nullable();
+                $table->timestamp('otp_expires_at')->nullable();
+                $table->json('custom_permissions')->nullable();
+                $table->rememberToken();
+                $table->timestamps();
+            });
+        } else {
+            Schema::table('users', function (Blueprint $table) {
+                if (!Schema::hasColumn('users', 'username')) {
+                    $table->string('username')->nullable()->unique();
+                }
+                if (!Schema::hasColumn('users', 'phone')) {
+                    $table->string('phone')->nullable();
+                }
+                if (!Schema::hasColumn('users', 'user_type')) {
+                    $table->string('user_type')->default('office_admin');
+                }
+                if (!Schema::hasColumn('users', 'office_id')) {
+                    $table->unsignedBigInteger('office_id')->nullable();
+                }
+                if (!Schema::hasColumn('users', 'owner_id')) {
+                    $table->unsignedBigInteger('owner_id')->nullable();
+                }
+                if (!Schema::hasColumn('users', 'national_id')) {
+                    $table->string('national_id')->nullable();
+                }
+                if (!Schema::hasColumn('users', 'is_active')) {
+                    $table->boolean('is_active')->default(true);
+                }
+                if (!Schema::hasColumn('users', 'otp_code')) {
+                    $table->string('otp_code', 6)->nullable();
+                }
+                if (!Schema::hasColumn('users', 'otp_expires_at')) {
+                    $table->timestamp('otp_expires_at')->nullable();
+                }
+                if (!Schema::hasColumn('users', 'custom_permissions')) {
+                    $table->json('custom_permissions')->nullable();
+                }
+            });
         }
 
-        Schema::table('users', function (Blueprint $table) {
-            if (!Schema::hasColumn('users', 'username')) {
-                $table->string('username')->nullable()->unique();
-            }
-            if (!Schema::hasColumn('users', 'phone')) {
-                $table->string('phone')->nullable();
-            }
-            if (!Schema::hasColumn('users', 'user_type')) {
-                $table->string('user_type')->default('office_admin');
-            }
-            if (!Schema::hasColumn('users', 'office_id')) {
-                $table->unsignedBigInteger('office_id')->nullable();
-            }
-            if (!Schema::hasColumn('users', 'owner_id')) {
-                $table->unsignedBigInteger('owner_id')->nullable();
-            }
-            if (!Schema::hasColumn('users', 'national_id')) {
-                $table->string('national_id')->nullable();
-            }
-            if (!Schema::hasColumn('users', 'is_active')) {
-                $table->boolean('is_active')->default(true);
-            }
-            if (!Schema::hasColumn('users', 'otp_code')) {
-                $table->string('otp_code', 6)->nullable();
-            }
-            if (!Schema::hasColumn('users', 'otp_expires_at')) {
-                $table->timestamp('otp_expires_at')->nullable();
-            }
-            if (!Schema::hasColumn('users', 'custom_permissions')) {
-                $table->json('custom_permissions')->nullable();
-            }
-        });
+        // 2. إنشاء جدول شجرة الحسابات المحاسبية (accounts) إذا لم يكن موجوداً
+        if (!Schema::hasTable('accounts')) {
+            Schema::create('accounts', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->nullable()->index();
+                $table->unsignedBigInteger('parent_id')->nullable()->index();
+                $table->string('code');
+                $table->string('name');
+                $table->string('type')->default('الأصول');
+                $table->boolean('is_group')->default(false);
+                $table->decimal('balance', 15, 2)->default(0);
+                $table->decimal('debit_balance', 15, 2)->default(0);
+                $table->decimal('credit_balance', 15, 2)->default(0);
+                $table->timestamps();
+            });
+        }
 
-        if (Schema::hasTable('offices')) {
+        // 3. إنشاء جدول مكاتب العقار (offices) إذا لم يكن موجوداً
+        if (!Schema::hasTable('offices')) {
+            Schema::create('offices', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('cr_number')->nullable();
+                $table->string('fal_license')->nullable();
+                $table->string('tax_number')->nullable();
+                $table->string('national_address')->nullable();
+                $table->string('phone')->nullable();
+                $table->string('email')->nullable();
+                $table->string('address')->nullable();
+                $table->string('billing_type')->default('annual_subscription');
+                $table->decimal('annual_fee', 15, 2)->default(0);
+                $table->decimal('company_commission_rate', 5, 2)->default(0);
+                $table->unsignedBigInteger('plan_id')->nullable();
+                $table->text('allowed_tabs')->nullable();
+                $table->boolean('allow_owner_tax_invoice')->default(false);
+                $table->date('subscription_ends_at')->nullable();
+                $table->string('status')->default('active');
+                $table->unsignedBigInteger('account_id')->nullable();
+                $table->boolean('use_custom_whatsapp')->default(false);
+                $table->string('whatsapp_mode')->default('company');
+                $table->string('whatsapp_sender_phone')->nullable();
+                $table->string('whatsapp_api_url')->nullable();
+                $table->string('whatsapp_api_token')->nullable();
+                $table->string('whatsapp_instance_id')->nullable();
+                $table->integer('reminder_days_before')->default(15);
+                $table->string('reminder_target')->default('both');
+                $table->text('reminder_template')->nullable();
+                $table->boolean('enable_auto_reminders')->default(true);
+                $table->decimal('wa_approval_threshold', 15, 2)->default(10000);
+                $table->string('wa_approval_keywords')->default('اعتمد,تم,اوك,موافق,نعم');
+                $table->boolean('enable_wa_voucher_approval')->default(false);
+                $table->decimal('anomaly_max_amount', 15, 2)->default(20000);
+                $table->integer('anomaly_night_start')->default(23);
+                $table->integer('anomaly_night_end')->default(5);
+                $table->boolean('anomaly_alert_on_delete')->default(true);
+                $table->boolean('enable_anomaly_detector')->default(true);
+                $table->text('wa_invoice_caption')->nullable();
+                $table->text('wa_voucher_caption')->nullable();
+                $table->text('wa_legal_caption')->nullable();
+                $table->timestamps();
+            });
+        } else {
             Schema::table('offices', function (Blueprint $table) {
                 if (!Schema::hasColumn('offices', 'account_id')) {
                     $table->unsignedBigInteger('account_id')->nullable();
@@ -126,7 +205,7 @@ class CompanyErpController extends Controller
                     $table->integer('reminder_days_before')->default(15);
                 }
                 if (!Schema::hasColumn('offices', 'reminder_target')) {
-                    $table->string('reminder_target')->default('both'); // office | tenant | both
+                    $table->string('reminder_target')->default('both');
                 }
                 if (!Schema::hasColumn('offices', 'reminder_template')) {
                     $table->text('reminder_template')->nullable();
@@ -140,7 +219,6 @@ class CompanyErpController extends Controller
                 if (!Schema::hasColumn('offices', 'allowed_tabs')) {
                     $table->text('allowed_tabs')->nullable();
                 }
-                // إعدادات اعتماد سندات الصرف عبر الواتساب + شروط كاشف الشذوذ المحاسبي
                 if (!Schema::hasColumn('offices', 'wa_approval_threshold')) {
                     $table->decimal('wa_approval_threshold', 15, 2)->default(10000);
                 }
@@ -154,10 +232,10 @@ class CompanyErpController extends Controller
                     $table->decimal('anomaly_max_amount', 15, 2)->default(20000);
                 }
                 if (!Schema::hasColumn('offices', 'anomaly_night_start')) {
-                    $table->integer('anomaly_night_start')->default(23); // 11 PM
+                    $table->integer('anomaly_night_start')->default(23);
                 }
                 if (!Schema::hasColumn('offices', 'anomaly_night_end')) {
-                    $table->integer('anomaly_night_end')->default(5); // 5 AM
+                    $table->integer('anomaly_night_end')->default(5);
                 }
                 if (!Schema::hasColumn('offices', 'anomaly_alert_on_delete')) {
                     $table->boolean('anomaly_alert_on_delete')->default(true);
@@ -177,7 +255,32 @@ class CompanyErpController extends Controller
             });
         }
 
-        if (Schema::hasTable('vouchers')) {
+        // 4. إنشاء جدول السندات المالية (vouchers) إذا لم يكن موجوداً
+        if (!Schema::hasTable('vouchers')) {
+            Schema::create('vouchers', function (Blueprint $table) {
+                $table->id();
+                $table->string('voucher_number')->unique();
+                $table->string('voucher_type')->default('receipt');
+                $table->unsignedBigInteger('office_id')->nullable()->index();
+                $table->unsignedBigInteger('owner_id')->nullable();
+                $table->unsignedBigInteger('tenant_id')->nullable();
+                $table->unsignedBigInteger('lease_contract_id')->nullable();
+                $table->unsignedBigInteger('property_id')->nullable();
+                $table->unsignedBigInteger('property_unit_id')->nullable();
+                $table->unsignedBigInteger('installment_id')->nullable();
+                $table->unsignedBigInteger('debit_account_id');
+                $table->unsignedBigInteger('credit_account_id');
+                $table->decimal('amount', 15, 2)->default(0);
+                $table->string('payment_method')->default('bank_transfer');
+                $table->string('reference_number')->nullable();
+                $table->date('voucher_date');
+                $table->text('notes')->nullable();
+                $table->string('approval_status')->default('approved');
+                $table->string('approval_code', 20)->nullable();
+                $table->unsignedBigInteger('created_by')->nullable();
+                $table->timestamps();
+            });
+        } else {
             Schema::table('vouchers', function (Blueprint $table) {
                 if (!Schema::hasColumn('vouchers', 'property_id')) {
                     $table->unsignedBigInteger('property_id')->nullable();
@@ -189,7 +292,7 @@ class CompanyErpController extends Controller
                     $table->unsignedBigInteger('installment_id')->nullable();
                 }
                 if (!Schema::hasColumn('vouchers', 'approval_status')) {
-                    $table->string('approval_status')->default('approved'); // approved | pending
+                    $table->string('approval_status')->default('approved');
                 }
                 if (!Schema::hasColumn('vouchers', 'approval_code')) {
                     $table->string('approval_code', 20)->nullable();
@@ -197,20 +300,50 @@ class CompanyErpController extends Controller
             });
         }
 
-        if (Schema::hasTable('journal_entry_items')) {
-            Schema::table('journal_entry_items', function (Blueprint $table) {
-                if (!Schema::hasColumn('journal_entry_items', 'property_id')) {
-                    $table->unsignedBigInteger('property_id')->nullable();
-                }
-                if (!Schema::hasColumn('journal_entry_items', 'property_unit_id')) {
-                    $table->unsignedBigInteger('property_unit_id')->nullable();
-                }
+        // 5. إنشاء جداول أنواع العقارات ومتطلباتها (property_types & property_type_attributes)
+        if (!Schema::hasTable('property_types')) {
+            Schema::create('property_types', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('category')->default('سكني');
+                $table->unsignedBigInteger('account_id')->nullable();
+                $table->boolean('has_units')->default(true);
+                $table->boolean('is_active')->default(true);
+                $table->timestamps();
             });
         }
 
-        self::ensureContractInstallmentsTable();
+        if (!Schema::hasTable('property_type_attributes')) {
+            Schema::create('property_type_attributes', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('property_type_id')->index();
+                $table->string('attribute_name');
+                $table->string('field_type')->default('نص (Text)');
+                $table->text('options')->nullable();
+                $table->boolean('is_required')->default(true);
+                $table->timestamps();
+            });
+        }
 
-        if (Schema::hasTable('owners')) {
+        // 6. إنشاء جداول الملاك، المستأجرين، العقارات، الوحدات، وعقود الإيجار إذا لم تكن موجودة
+        if (!Schema::hasTable('owners')) {
+            Schema::create('owners', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->string('name');
+                $table->string('national_id')->nullable();
+                $table->string('tax_number')->nullable();
+                $table->string('cr_number')->nullable();
+                $table->string('national_address')->nullable();
+                $table->string('phone')->nullable();
+                $table->string('email')->nullable();
+                $table->string('iban')->nullable();
+                $table->string('bank_name')->nullable();
+                $table->decimal('office_management_fee_rate', 5, 2)->default(5.00);
+                $table->unsignedBigInteger('account_id')->nullable();
+                $table->timestamps();
+            });
+        } else {
             Schema::table('owners', function (Blueprint $table) {
                 if (!Schema::hasColumn('owners', 'account_id')) {
                     $table->unsignedBigInteger('account_id')->nullable();
@@ -227,7 +360,21 @@ class CompanyErpController extends Controller
             });
         }
 
-        if (Schema::hasTable('tenants')) {
+        if (!Schema::hasTable('tenants')) {
+            Schema::create('tenants', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->string('name');
+                $table->string('id_type')->default('national_id');
+                $table->string('id_number')->nullable();
+                $table->string('tax_number')->nullable();
+                $table->string('national_address')->nullable();
+                $table->string('phone')->nullable();
+                $table->string('email')->nullable();
+                $table->unsignedBigInteger('account_id')->nullable();
+                $table->timestamps();
+            });
+        } else {
             Schema::table('tenants', function (Blueprint $table) {
                 if (!Schema::hasColumn('tenants', 'account_id')) {
                     $table->unsignedBigInteger('account_id')->nullable();
@@ -241,7 +388,90 @@ class CompanyErpController extends Controller
             });
         }
 
+        if (!Schema::hasTable('properties')) {
+            Schema::create('properties', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('owner_id')->index();
+                $table->unsignedBigInteger('property_type_id');
+                $table->string('title');
+                $table->string('deed_number')->nullable();
+                $table->date('deed_date')->nullable();
+                $table->decimal('total_area', 15, 2)->default(0);
+                $table->decimal('estimated_value', 15, 2)->default(0);
+                $table->string('city')->nullable();
+                $table->string('district')->nullable();
+                $table->string('street')->nullable();
+                $table->string('building_number')->nullable();
+                $table->string('postal_code')->nullable();
+                $table->string('additional_number')->nullable();
+                $table->text('custom_attributes')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('property_units')) {
+            Schema::create('property_units', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('property_id')->index();
+                $table->unsignedBigInteger('property_type_id')->nullable();
+                $table->string('unit_number');
+                $table->integer('floor_number')->default(0);
+                $table->decimal('area', 15, 2)->default(0);
+                $table->string('electricity_meter')->nullable();
+                $table->string('water_meter')->nullable();
+                $table->decimal('default_rent_price', 15, 2)->default(0);
+                $table->string('status')->default('vacant');
+                $table->text('custom_attributes')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('lease_contracts')) {
+            Schema::create('lease_contracts', function (Blueprint $table) {
+                $table->id();
+                $table->string('contract_number')->unique();
+                $table->string('ejar_contract_number')->nullable();
+                $table->string('ejar_status')->default('not_sent');
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('property_id')->index();
+                $table->unsignedBigInteger('property_unit_id')->nullable();
+                $table->unsignedBigInteger('owner_id')->index();
+                $table->unsignedBigInteger('tenant_id')->index();
+                $table->date('start_date');
+                $table->date('end_date');
+                $table->string('payment_cycle')->default('annual');
+                $table->decimal('total_rent_amount', 15, 2)->default(0);
+                $table->decimal('security_deposit', 15, 2)->default(0);
+                $table->decimal('office_commission', 15, 2)->default(0);
+                $table->decimal('company_fee_amount', 15, 2)->default(0);
+                $table->string('status')->default('active');
+                $table->timestamps();
+            });
+        }
+
+        // 7. تفعيل باقي الجداول المساندة تلقائياً في حال كانت قاعدة البيانات جديدة
         self::ensureSystemSettingsTable();
+        self::ensureContractInstallmentsTable();
+        $this->ensureDynamicPropertyTables();
+        $this->ensureDynamicAccountTables();
+        $this->ensurePaymentMethodsTable();
+        $this->ensureJournalTables();
+        $this->ensureSystemMonitoringTables();
+        $this->ensureTaxInvoicesTable();
+        $this->ensureOfficePlansTable();
+        self::ensureActivityLogsTable();
+
+        if (Schema::hasTable('journal_entry_items')) {
+            Schema::table('journal_entry_items', function (Blueprint $table) {
+                if (!Schema::hasColumn('journal_entry_items', 'property_id')) {
+                    $table->unsignedBigInteger('property_id')->nullable();
+                }
+                if (!Schema::hasColumn('journal_entry_items', 'property_unit_id')) {
+                    $table->unsignedBigInteger('property_unit_id')->nullable();
+                }
+            });
+        }
 
         $admin = DB::table('users')
             ->where('username', 'admin')
