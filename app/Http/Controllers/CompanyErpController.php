@@ -1887,15 +1887,21 @@ class CompanyErpController extends Controller
     public static function translatePaymentMethod(?string $method): string
     {
         if (!$method) return 'حوالة بنكية';
+        $clean = strtolower(trim($method));
         $map = [
             'bank_transfer' => 'حوالة بنكية',
-            'sadad' => 'نظام سداد',
-            'mada' => 'شبكة مدى',
-            'cash' => 'نقداً (كاش)',
-            'cheque' => 'شيك مصدق',
+            'transfer'      => 'حوالة بنكية',
+            'bank'          => 'حوالة بنكية',
+            'sadad'         => 'نظام سداد',
+            'mada'          => 'شبكة مدى',
+            'pos'           => 'شبكة مدى',
+            'card'          => 'شبكة مدى',
+            'cash'          => 'نقداً (كاش)',
+            'cheque'        => 'شيك مصدق',
+            'check'         => 'شيك مصدق',
         ];
-        if (isset($map[$method])) {
-            return $map[$method];
+        if (isset($map[$clean])) {
+            return $map[$clean];
         }
         if (Schema::hasTable('custom_payment_methods')) {
             $row = DB::table('custom_payment_methods')->where('code', $method)->orWhere('name', $method)->first();
@@ -2237,9 +2243,6 @@ class CompanyErpController extends Controller
         return back()->with('success', 'تم حذف السند وعكس قيده المحاسبي بنجاح.');
     }
 
-    // =========================================================================
-    // إدارة القيود اليومية المتعددة (Journal Entries) للشركة الأم
-    // =========================================================================
     public function storeJournalEntry(Request $request)
     {
         $this->ensureJournalTables();
@@ -2253,25 +2256,34 @@ class CompanyErpController extends Controller
         $rows = [];
         $totalDebit = 0;
         $totalCredit = 0;
-        $totalTax = 0;
+        $debitTaxSum = 0;
+        $creditTaxSum = 0;
 
         foreach ($accountIds as $idx => $accId) {
             if (empty($accId)) continue;
-            $d = (float) ($debits[$idx] ?? 0);
-            $c = (float) ($credits[$idx] ?? 0);
-            $t = (float) ($taxes[$idx] ?? 0);
+            $d = round((float) ($debits[$idx] ?? 0), 2);
+            $c = round((float) ($credits[$idx] ?? 0), 2);
+            $t = round((float) ($taxes[$idx] ?? 0), 2);
             if ($d == 0 && $c == 0) continue;
 
-            $totalDebit += $d;
-            $totalCredit += $c;
-            $totalTax += $t;
+            // إذا كان المبلغ مدين فإن الضريبة مدين، وإذا كان دائن فإن الضريبة دائن
+            $rowEffectiveDebit  = $d > 0 ? ($d + $t) : 0;
+            $rowEffectiveCredit = $c > 0 ? ($c + $t) : 0;
+
+            if ($d > 0) $debitTaxSum += $t;
+            if ($c > 0) $creditTaxSum += $t;
+
+            $totalDebit  += $rowEffectiveDebit;
+            $totalCredit += $rowEffectiveCredit;
 
             $rows[] = [
-                'account_id' => (int) $accId,
-                'debit' => $d,
-                'credit' => $c,
-                'tax' => $t,
-                'notes' => trim($itemNotes[$idx] ?? ''),
+                'account_id'       => (int) $accId,
+                'debit'            => $d,
+                'credit'           => $c,
+                'tax'              => $t,
+                'effective_debit'  => $rowEffectiveDebit,
+                'effective_credit' => $rowEffectiveCredit,
+                'notes'            => trim($itemNotes[$idx] ?? ''),
             ];
         }
 
@@ -2279,41 +2291,49 @@ class CompanyErpController extends Controller
             return back()->withErrors(['يرجى إدخال سطر واحد على الأقل يحتوي على مبلغ مدين أو دائن.']);
         }
 
+        if (abs($totalDebit - $totalCredit) > 0.05) {
+            return back()->withErrors([
+                'القيد غير متوازن! إجمالي المدين الشامل (' . number_format($totalDebit, 2) . ' ر.س) لا يساوي إجمالي الدائن الشامل (' . number_format($totalCredit, 2) . ' ر.س) — الفرق: ' . number_format(abs($totalDebit - $totalCredit), 2) . ' ر.س.'
+            ]);
+        }
+
+        $totalTax = max($debitTaxSum, $creditTaxSum);
+
         DB::transaction(function () use ($request, $rows, $totalDebit, $totalCredit, $totalTax) {
             $maxNo = DB::table('journal_entries')->whereNull('office_id')->max('entry_number') ?? 0;
             $nextEntryNo = $maxNo + 1;
 
             $entryId = DB::table('journal_entries')->insertGetId([
-                'office_id' => null,
-                'entry_number' => $nextEntryNo,
-                'entry_date' => $request->entry_date ?: date('Y-m-d'),
+                'office_id'     => null,
+                'entry_number'  => $nextEntryNo,
+                'entry_date'    => $request->entry_date ?: date('Y-m-d'),
                 'general_notes' => trim($request->general_notes),
-                'total_debit' => $totalDebit,
-                'total_credit' => $totalCredit,
-                'total_tax' => $totalTax,
-                'created_by' => Auth::id(),
-                'created_at' => now(),
-                'updated_at' => now(),
+                'total_debit'   => $totalDebit,
+                'total_credit'  => $totalCredit,
+                'total_tax'     => $totalTax,
+                'created_by'    => Auth::id(),
+                'created_at'    => now(),
+                'updated_at'    => now(),
             ]);
 
             foreach ($rows as $r) {
                 DB::table('journal_entry_items')->insert([
                     'journal_entry_id' => $entryId,
-                    'account_id' => $r['account_id'],
-                    'debit' => $r['debit'],
-                    'credit' => $r['credit'],
-                    'tax' => $r['tax'],
-                    'notes' => $r['notes'] ?: trim($request->general_notes),
-                    'created_at' => now(),
-                    'updated_at' => now(),
+                    'account_id'       => $r['account_id'],
+                    'debit'            => $r['debit'],
+                    'credit'           => $r['credit'],
+                    'tax'              => $r['tax'],
+                    'notes'            => $r['notes'] ?: trim($request->general_notes),
+                    'created_at'       => now(),
+                    'updated_at'       => now(),
                 ]);
 
-                self::applyAccountMovement($r['account_id'], $r['debit'], $r['credit']);
+                self::applyAccountMovement($r['account_id'], $r['effective_debit'], $r['effective_credit']);
             }
         });
 
-        return redirect()->route('erp.dashboard', ['tab' => 'accounting'])
-            ->with('success', 'تم حفظ القيد اليومي وترحيل جميع العمليات إلى شجرة الحسابات بنجاح.');
+        return redirect()->route('erp.dashboard', ['tab' => 'journal'])
+            ->with('success', 'تم حفظ القيد اليومي المتوازن بإجمالي (' . number_format($totalDebit, 2) . ' ر.س) وترحيله لشجرة الحسابات بنجاح.');
     }
 
     public function updateJournalEntry(Request $request, $id)
@@ -2332,62 +2352,84 @@ class CompanyErpController extends Controller
         $rows = [];
         $totalDebit = 0;
         $totalCredit = 0;
-        $totalTax = 0;
+        $debitTaxSum = 0;
+        $creditTaxSum = 0;
 
         foreach ($accountIds as $idx => $accId) {
             if (empty($accId)) continue;
-            $d = (float) ($debits[$idx] ?? 0);
-            $c = (float) ($credits[$idx] ?? 0);
-            $t = (float) ($taxes[$idx] ?? 0);
+            $d = round((float) ($debits[$idx] ?? 0), 2);
+            $c = round((float) ($credits[$idx] ?? 0), 2);
+            $t = round((float) ($taxes[$idx] ?? 0), 2);
             if ($d == 0 && $c == 0) continue;
 
-            $totalDebit += $d;
-            $totalCredit += $c;
-            $totalTax += $t;
+            $rowEffectiveDebit  = $d > 0 ? ($d + $t) : 0;
+            $rowEffectiveCredit = $c > 0 ? ($c + $t) : 0;
+
+            if ($d > 0) $debitTaxSum += $t;
+            if ($c > 0) $creditTaxSum += $t;
+
+            $totalDebit  += $rowEffectiveDebit;
+            $totalCredit += $rowEffectiveCredit;
 
             $rows[] = [
-                'account_id' => (int) $accId,
-                'debit' => $d,
-                'credit' => $c,
-                'tax' => $t,
-                'notes' => trim($itemNotes[$idx] ?? ''),
+                'account_id'       => (int) $accId,
+                'debit'            => $d,
+                'credit'           => $c,
+                'tax'              => $t,
+                'effective_debit'  => $rowEffectiveDebit,
+                'effective_credit' => $rowEffectiveCredit,
+                'notes'            => trim($itemNotes[$idx] ?? ''),
             ];
         }
+
+        if (count($rows) === 0) {
+            return back()->withErrors(['يرجى إدخال سطر واحد على الأقل يحتوي على مبلغ مدين أو دائن.']);
+        }
+
+        if (abs($totalDebit - $totalCredit) > 0.05) {
+            return back()->withErrors([
+                'القيد غير متوازن! إجمالي المدين الشامل (' . number_format($totalDebit, 2) . ' ر.س) لا يساوي إجمالي الدائن الشامل (' . number_format($totalCredit, 2) . ' ر.س) — الفرق: ' . number_format(abs($totalDebit - $totalCredit), 2) . ' ر.س.'
+            ]);
+        }
+
+        $totalTax = max($debitTaxSum, $creditTaxSum);
 
         DB::transaction(function () use ($request, $id, $rows, $totalDebit, $totalCredit, $totalTax) {
             $oldItems = DB::table('journal_entry_items')->where('journal_entry_id', $id)->get();
             foreach ($oldItems as $old) {
-                self::applyAccountMovement((int) $old->account_id, (float) $old->debit, (float) $old->credit, true);
+                $oldEffD = $old->debit > 0 ? ((float)$old->debit + (float)$old->tax) : 0;
+                $oldEffC = $old->credit > 0 ? ((float)$old->credit + (float)$old->tax) : 0;
+                self::applyAccountMovement((int) $old->account_id, $oldEffD, $oldEffC, true);
             }
             DB::table('journal_entry_items')->where('journal_entry_id', $id)->delete();
 
             DB::table('journal_entries')->where('id', $id)->update([
-                'entry_date' => $request->entry_date ?: date('Y-m-d'),
+                'entry_date'    => $request->entry_date ?: date('Y-m-d'),
                 'general_notes' => trim($request->general_notes),
-                'total_debit' => $totalDebit,
-                'total_credit' => $totalCredit,
-                'total_tax' => $totalTax,
-                'updated_at' => now(),
+                'total_debit'   => $totalDebit,
+                'total_credit'  => $totalCredit,
+                'total_tax'     => $totalTax,
+                'updated_at'    => now(),
             ]);
 
             foreach ($rows as $r) {
                 DB::table('journal_entry_items')->insert([
                     'journal_entry_id' => $id,
-                    'account_id' => $r['account_id'],
-                    'debit' => $r['debit'],
-                    'credit' => $r['credit'],
-                    'tax' => $r['tax'],
-                    'notes' => $r['notes'] ?: trim($request->general_notes),
-                    'created_at' => now(),
-                    'updated_at' => now(),
+                    'account_id'       => $r['account_id'],
+                    'debit'            => $r['debit'],
+                    'credit'           => $r['credit'],
+                    'tax'              => $r['tax'],
+                    'notes'            => $r['notes'] ?: trim($request->general_notes),
+                    'created_at'       => now(),
+                    'updated_at'       => now(),
                 ]);
 
-                self::applyAccountMovement($r['account_id'], $r['debit'], $r['credit']);
+                self::applyAccountMovement($r['account_id'], $r['effective_debit'], $r['effective_credit']);
             }
         });
 
         return redirect()->route('erp.dashboard', ['tab' => 'journal'])
-            ->with('success', 'تم تعديل القيد اليومي رقم (' . $entry->entry_number . ') وتحديث أرصدة الشجرة بنجاح.');
+            ->with('success', 'تم تعديل القيد اليومي رقم (' . $entry->entry_number . ') بإجمالي (' . number_format($totalDebit, 2) . ' ر.س) وتحديث أرصدة الشجرة بنجاح.');
     }
 
     public function deleteJournalEntry($id)

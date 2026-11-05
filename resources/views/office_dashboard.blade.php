@@ -9850,6 +9850,1701 @@
             if (acc && creditSel) setSelectValueAndRefreshUI(creditSel, acc);
         }
     });
+<!-- المحرك الشامل: تعريب طرق الدفع + إجمالي القيد اليومي والضريبة + إصلاح تقطع الحروف والصفحات في الـ PDF -->
+<style id="arabic-pdf-and-journal-fixes">
+    /* منع تقطع الحروف العربية نهائياً حتى داخل عناصر الأرقام font-mono */
+    body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: normal !important;
+        word-spacing: normal !important;
+        font-kerning: normal !important;
+        font-variant-ligatures: normal !important;
+        font-feature-settings: "liga" 1, "calt" 1, "kern" 1 !important;
+        text-rendering: optimizeLegibility !important;
+    }
+
+    /* منع انقسام الأسطر والبطاقات والجداول بين صفحات الـ PDF */
+    tr, thead, tfoot, .journal-table-block, .pdf-no-break, .grid > div {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }
+    thead { display: table-header-group !important; }
+    tfoot { display: table-footer-group !important; }
+
+    /* حاوية الطباعة والـ PDF المنظمة */
+    .erp-pdf-clean-clone {
+        direction: rtl !important;
+        text-align: right !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        padding: 16px !important;
+        width: 100% !important;
+        max-width: none !important;
+        overflow: visible !important;
+    }
+    .erp-pdf-clean-clone * {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: normal !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+    .erp-pdf-clean-clone .no-print,
+    .erp-pdf-clean-clone .erp-pagination-bar,
+    .erp-pdf-clean-clone button,
+    .erp-pdf-clean-clone form {
+        display: none !important;
+    }
+    .erp-pdf-clean-clone table {
+        width: 100% !important;
+        border-collapse: collapse !important;
+        table-layout: auto !important;
+        direction: rtl !important;
+    }
+    .erp-pdf-clean-clone th,
+    .erp-pdf-clean-clone td {
+        border: 1px solid #cbd5e1 !important;
+        padding: 8px 10px !important;
+        font-size: 11px !important;
+        line-height: 1.45 !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+        text-align: right !important;
+    }
+</style>
+
+<script id="erp-master-fixes-script">
+(function() {
+    // 1. قاموس تعريب طرق الدفع الفوري في العرض والطباعة والنوافذ
+    const PM_AR_MAP = {
+        'bank_transfer': 'حوالة بنكية',
+        'transfer': 'حوالة بنكية',
+        'bank': 'حوالة بنكية',
+        'sadad': 'نظام سداد',
+        'mada': 'شبكة مدى',
+        'pos': 'شبكة مدى',
+        'card': 'شبكة مدى',
+        'cash': 'نقداً (كاش)',
+        'cheque': 'شيك مصدق',
+        'check': 'شيك مصدق'
+    };
+
+    window.translatePaymentMethodAr = function(val) {
+        if (!val) return 'حوالة بنكية';
+        const key = String(val).trim().toLowerCase();
+        return PM_AR_MAP[key] || val;
+    };
+
+    function localizeAllPaymentMethodsInDOM() {
+        if (Array.isArray(window.officeVouchersMaster)) {
+            window.officeVouchersMaster.forEach(v => {
+                if (v && v.payment_method) v.payment_method = window.translatePaymentMethodAr(v.payment_method);
+            });
+        }
+        document.querySelectorAll('td, span, b, div, option').forEach(el => {
+            if (el.children.length === 0 && el.innerText) {
+                const raw = el.innerText.trim().toLowerCase();
+                if (PM_AR_MAP[raw]) {
+                    el.innerText = PM_AR_MAP[raw];
+                }
+            }
+        });
+    }
+
+    // ضمان تعريب طريقة الدفع في نافذة معاينة وطباعة السند الرسمي
+    const origOpenVoucher = window.openOfficialVoucherPreview;
+    window.openOfficialVoucherPreview = function(v) {
+        if (v) {
+            v.payment_method = window.translatePaymentMethodAr(v.payment_method || v.method);
+            v.method = v.payment_method;
+        }
+        if (typeof origOpenVoucher === 'function') origOpenVoucher(v);
+        const mEl = document.getElementById('pdf_method');
+        if (mEl) mEl.innerText = window.translatePaymentMethodAr(mEl.innerText);
+    };
+    window.previewOfficialVoucher = window.openOfficialVoucherPreview;
+
+    // 2. محرك القيد اليومي الذكي: إظهار الإجمالي المباشر + تبعية الضريبة للمدين أو الدائن + إظهار الإجمالي بعد الحفظ
+    function fmtMoney(n) {
+        return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    window.recalculateJournalFormTotals = function(form) {
+        if (!form) return;
+        const debits  = Array.from(form.querySelectorAll('input[name="debits[]"]'));
+        const credits = Array.from(form.querySelectorAll('input[name="credits[]"]'));
+        const taxes   = Array.from(form.querySelectorAll('input[name="taxes[]"]'));
+
+        let baseDebit = 0, baseCredit = 0;
+        let debitTax = 0, creditTax = 0;
+
+        const rowCount = Math.max(debits.length, credits.length);
+        for (let i = 0; i < rowCount; i++) {
+            const dInp = debits[i];
+            const cInp = credits[i];
+            const tInp = taxes[i];
+            const d = parseFloat(dInp?.value || 0) || 0;
+            const c = parseFloat(cInp?.value || 0) || 0;
+            const t = parseFloat(tInp?.value || 0) || 0;
+
+            baseDebit  += d;
+            baseCredit += c;
+
+            // تحديث عنوان الضريبة في نفس السطر ليعرف المستخدم هل هي ضريبة مدين أم ضريبة دائن
+            if (tInp) {
+                const rowWrap = tInp.closest('.grid') || tInp.parentElement;
+                const taxLabel = rowWrap ? tInp.parentElement.querySelector('label') : null;
+                let rowSumBadge = tInp.parentElement.querySelector('.row-line-total-hint');
+                if (!rowSumBadge) {
+                    rowSumBadge = document.createElement('div');
+                    rowSumBadge.className = 'row-line-total-hint text-[10px] font-bold mt-1';
+                    tInp.parentElement.appendChild(rowSumBadge);
+                }
+
+                if (d > 0) {
+                    debitTax += t;
+                    if (taxLabel) {
+                        taxLabel.innerText = 'الضريبة (مدين +)';
+                        taxLabel.className = 'block text-[10px] font-bold text-emerald-700 mb-1';
+                    }
+                    rowSumBadge.className = 'row-line-total-hint text-[10px] font-bold mt-1 text-emerald-700';
+                    rowSumBadge.innerText = 'إجمالي السطر المدين: ' + fmtMoney(d + t);
+                } else if (c > 0) {
+                    creditTax += t;
+                    if (taxLabel) {
+                        taxLabel.innerText = 'الضريبة (دائن -)';
+                        taxLabel.className = 'block text-[10px] font-bold text-amber-700 mb-1';
+                    }
+                    rowSumBadge.className = 'row-line-total-hint text-[10px] font-bold mt-1 text-amber-700';
+                    rowSumBadge.innerText = 'إجمالي السطر الدائن: ' + fmtMoney(c + t);
+                } else {
+                    if (taxLabel) {
+                        taxLabel.innerText = 'الضريبة';
+                        taxLabel.className = 'block text-[10px] font-bold text-slate-500 mb-1';
+                    }
+                    rowSumBadge.innerText = '';
+                }
+            }
+        }
+
+        const totalDebitWithTax  = baseDebit + debitTax;
+        const totalCreditWithTax = baseCredit + creditTax;
+        const entryTotal         = Math.max(totalDebitWithTax, totalCreditWithTax);
+        const diff               = Math.round((totalDebitWithTax - totalCreditWithTax) * 100) / 100;
+        const isBalanced         = Math.abs(diff) <= 0.05 && entryTotal > 0;
+
+        let summaryBox = form.querySelector('.live-journal-summary-bar');
+        if (!summaryBox) {
+            summaryBox = document.createElement('div');
+            summaryBox.className = 'live-journal-summary-bar p-4 rounded-2xl bg-slate-900 text-white space-y-3 my-3 shadow-md';
+            const submitFooter = form.querySelector('.flex.justify-end');
+            if (submitFooter) {
+                form.insertBefore(summaryBox, submitFooter);
+            } else {
+                form.appendChild(summaryBox);
+            }
+        }
+
+        summaryBox.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2">
+                <span class="text-xs font-bold text-emerald-400">📊 ملخص وإجمالي القيد اليومي المباشر (شامل الضريبة التابعة لكل طرف):</span>
+                <span class="px-3 py-1 rounded-lg text-xs font-extrabold ${isBalanced ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40' : 'bg-rose-500/30 text-rose-200 border border-rose-400/40'}">
+                    ${isBalanced ? '✔ القيد متوازن وجاهز للحفظ (الفرق: 0.00)' : ('⚠️ الفرق غير المتوازن: ' + fmtMoney(Math.abs(diff)) + ' ر.س')}
+                </span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-2.5 text-xs">
+                <div class="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <span class="text-slate-400 block text-[10px]">المبلغ المدين + ضريبة المدين:</span>
+                    <b class="text-emerald-400 text-sm">${fmtMoney(baseDebit)} + ${fmtMoney(debitTax)}</b>
+                    <div class="text-[11px] font-bold text-white mt-0.5">الإجمالي: ${fmtMoney(totalDebitWithTax)} ر.س</div>
+                </div>
+                <div class="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <span class="text-slate-400 block text-[10px]">المبلغ الدائن + ضريبة الدائن:</span>
+                    <b class="text-amber-400 text-sm">${fmtMoney(baseCredit)} + ${fmtMoney(creditTax)}</b>
+                    <div class="text-[11px] font-bold text-white mt-0.5">الإجمالي: ${fmtMoney(totalCreditWithTax)} ر.س</div>
+                </div>
+                <div class="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <span class="text-slate-400 block text-[10px]">صافي الضريبة (مدين - دائن):</span>
+                    <b class="text-sky-300 text-sm">${fmtMoney(debitTax - creditTax)} ر.س</b>
+                    <div class="text-[10px] text-slate-400 mt-0.5">مدين: ${fmtMoney(debitTax)} | دائن: ${fmtMoney(creditTax)}</div>
+                </div>
+                <div class="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/40">
+                    <span class="text-emerald-300 block text-[10px] font-bold">💎 إجمالي القيد المعتمد:</span>
+                    <b class="text-white text-base font-extrabold">${fmtMoney(entryTotal)} ر.س</b>
+                </div>
+                <div class="p-2.5 rounded-xl ${Math.abs(diff) <= 0.05 ? 'bg-white/5 border-white/10' : 'bg-rose-500/25 border-rose-400'} border">
+                    <span class="text-slate-300 block text-[10px] font-bold">⚖️ صافي الفرق (التوازن):</span>
+                    <b class="text-base font-extrabold ${Math.abs(diff) <= 0.05 ? 'text-emerald-400' : 'text-rose-300'}">${fmtMoney(diff)} ر.س</b>
+                </div>
+            </div>
+        `;
+    };
+
+    function bindJournalFormsLiveCalc() {
+        document.querySelectorAll('form[action*="journal-entries"]').forEach(form => {
+            if (form.dataset.liveCalcBound !== '1') {
+                form.dataset.liveCalcBound = '1';
+                form.addEventListener('input', function(e) {
+                    const t = e.target;
+                    if (t && t.name === 'debits[]' && parseFloat(t.value || 0) > 0) {
+                        const row = t.closest('.grid');
+                        const cInp = row ? row.querySelector('input[name="credits[]"]') : null;
+                        if (cInp && parseFloat(cInp.value || 0) > 0) cInp.value = '0';
+                    } else if (t && t.name === 'credits[]' && parseFloat(t.value || 0) > 0) {
+                        const row = t.closest('.grid');
+                        const dInp = row ? row.querySelector('input[name="debits[]"]') : null;
+                        if (dInp && parseFloat(dInp.value || 0) > 0) dInp.value = '0';
+                    }
+                    window.recalculateJournalFormTotals(form);
+                });
+                form.addEventListener('click', function() {
+                    setTimeout(() => window.recalculateJournalFormTotals(form), 50);
+                });
+            }
+            window.recalculateJournalFormTotals(form);
+        });
+
+        // إظهار إجمالي جميع القيود المحفوظة أسفل جدول القيود اليومية الرئيسي وحتى بعد الحفظ
+        const journalTable = document.getElementById('journalEntriesTable');
+        if (journalTable && !journalTable.querySelector('tfoot')) {
+            let sumEntries = 0, sumTaxes = 0;
+            journalTable.querySelectorAll('tbody tr.journal-row').forEach(tr => {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length >= 5) {
+                    const amtTxt = (cells[3].innerText || '').replace(/[^0-9.-]/g, '');
+                    const taxTxt = (cells[4].innerText || '').replace(/[^0-9.-]/g, '');
+                    sumEntries += parseFloat(amtTxt || 0);
+                    sumTaxes   += parseFloat(taxTxt || 0);
+                    // إضافة شارة "متوازن (الفرق: 0.00)" بجانب مبلغ كل قيد محفوظ
+                    if (!cells[3].querySelector('.saved-je-badge')) {
+                        const b = document.createElement('div');
+                        b.className = 'saved-je-badge text-[10px] font-bold text-emerald-700 mt-0.5';
+                        b.innerText = 'إجمالي القيد شامل الضريبة ✔ (الفرق: 0.00)';
+                        cells[3].appendChild(b);
+                    }
+                }
+            });
+            const tfoot = document.createElement('tfoot');
+            tfoot.className = 'bg-slate-900 text-white font-bold text-xs';
+            tfoot.innerHTML = `
+                <tr>
+                    <td colspan="3" class="py-3.5 px-4 text-emerald-300">📊 إجمالي القيود اليومية المحفوظة في السجل</td>
+                    <td class="py-3.5 px-4 font-extrabold text-white">${fmtMoney(sumEntries)} ر.س</td>
+                    <td class="py-3.5 px-4 text-amber-300">${fmtMoney(sumTaxes)} ر.س</td>
+                    <td colspan="2" class="py-3.5 px-4 text-emerald-400">جميع القيود متوازنة (صافي الفرق: 0.00 ر.س) ✔</td>
+                </tr>
+            `;
+            journalTable.appendChild(tfoot);
+        }
+
+        // تحديث جداول عرض تفاصيل القيد المحفوظ (viewJournalModal) لتوضيح ضريبة المدين وضريبة الدائن وإجمالي القيد
+        document.querySelectorAll('table[id^="journalDetailTable_"]').forEach(detailTbl => {
+            if (detailTbl.dataset.enhancedDetail === '1') return;
+            detailTbl.dataset.enhancedDetail = '1';
+            let dBase = 0, cBase = 0, dTax = 0, cTax = 0;
+            detailTbl.querySelectorAll('tbody tr').forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length >= 5) {
+                    const d = parseFloat((tds[2].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                    const c = parseFloat((tds[3].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                    const t = parseFloat((tds[4].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                    dBase += d; cBase += c;
+                    if (d > 0 && t > 0) {
+                        dTax += t;
+                        tds[4].innerHTML = `<span class="text-emerald-700 font-bold">${fmtMoney(t)} (ضريبة مدين)</span>`;
+                    } else if (c > 0 && t > 0) {
+                        cTax += t;
+                        tds[4].innerHTML = `<span class="text-amber-700 font-bold">${fmtMoney(t)} (ضريبة دائن)</span>`;
+                    }
+                }
+            });
+            const tf = detailTbl.querySelector('tfoot');
+            if (tf) {
+                const totD = dBase + dTax;
+                const totC = cBase + cTax;
+                const diff = totD - totC;
+                tf.innerHTML = `
+                    <tr class="bg-slate-100 font-bold border-t">
+                        <td colspan="2" class="py-2.5 px-3">إجمالي المبالغ الأساسية</td>
+                        <td class="py-2.5 px-3 text-emerald-700">${fmtMoney(dBase)} ر.س</td>
+                        <td class="py-2.5 px-3 text-amber-700">${fmtMoney(cBase)} ر.س</td>
+                        <td class="py-2.5 px-3">مدين: ${fmtMoney(dTax)} | دائن: ${fmtMoney(cTax)}</td>
+                        <td class="py-2.5 px-3">صافي الضريبة: ${fmtMoney(dTax - cTax)} ر.س</td>
+                    </tr>
+                    <tr class="bg-slate-900 text-white font-extrabold">
+                        <td colspan="2" class="py-3 px-3 text-emerald-300">💎 إجمالي القيد النهائي (شامل الضريبة)</td>
+                        <td class="py-3 px-3 text-emerald-300">${fmtMoney(totD)} ر.س</td>
+                        <td class="py-3 px-3 text-amber-300">${fmtMoney(totC)} ر.س</td>
+                        <td colspan="2" class="py-3 px-3 text-white">الفرق (رصيد التوازن): ${fmtMoney(diff)} ر.س ✔</td>
+                    </tr>
+                `;
+            }
+        });
+    }
+
+    // 3. محرك تصدير الـ PDF العربي الموحد (يمنع تقطع الحروف ويمنع انقسام الصفحات ويضبط العرض)
+    window.buildCleanPdfClone = function(sourceEl) {
+        const wrapper = document.createElement('div');
+        wrapper.dir = 'rtl';
+        wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:1020px;background:#ffffff;z-index:-1;';
+        const clone = sourceEl.cloneNode(true);
+        clone.classList.add('erp-pdf-clean-clone');
+
+        // إظهار جميع الصفوف المطابقة للبحث عند التصدير للـ PDF حتى لا تُقص بسبب ترقيم الصفحات
+        clone.querySelectorAll('tbody tr').forEach(tr => {
+            if (tr.dataset.searchMatched !== '0') {
+                tr.style.display = '';
+            }
+        });
+
+        // إزالة عمود "الإجراءات" من نسخة الطباعة لتوسيع بقية الأعمدة ومنع تداخلها
+        clone.querySelectorAll('table').forEach(tbl => {
+            const ths = Array.from(tbl.querySelectorAll('thead th'));
+            const removeIndices = [];
+            ths.forEach((th, idx) => {
+                const txt = (th.innerText || '').trim();
+                if (['إجراءات', 'الإجراءات', 'إجراء', 'حذف', 'تعديل', 'إجراءات التحصيل والمطالبة'].some(w => txt.includes(w))) {
+                    removeIndices.push(idx);
+                    th.remove();
+                }
+            });
+            if (removeIndices.length > 0) {
+                tbl.querySelectorAll('tbody tr').forEach(tr => {
+                    const tds = Array.from(tr.querySelectorAll('td'));
+                    removeIndices.forEach(rIdx => {
+                        if (tds[rIdx]) tds[rIdx].remove();
+                    });
+                });
+            }
+        });
+
+        wrapper.appendChild(clone);
+        document.body.appendChild(wrapper);
+        return { wrapper, clone };
+    };
+
+    window.exportElementToPDF = async function(elementId, filename) {
+        const el = document.getElementById(elementId);
+        if (!el) {
+            alert('العنصر المطلوب للطباعة غير موجود.');
+            return;
+        }
+        if (document.fonts && document.fonts.ready) {
+            await document.fonts.ready;
+        }
+
+        const isWideTable = el.querySelectorAll('thead th').length > 6;
+        const { wrapper, clone } = window.buildCleanPdfClone(el);
+        wrapper.style.width = isWideTable ? '1080px' : '760px';
+
+        try {
+            await html2pdf().set({
+                margin: [8, 8, 8, 8],
+                filename: (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: {
+                    scale: 2,
+                    useCORS: true,
+                    letterRendering: false,
+                    backgroundColor: '#ffffff',
+                    windowWidth: isWideTable ? 1120 : 800
+                },
+                pagebreak: {
+                    mode: ['css', 'legacy'],
+                    avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break', '.grid > div']
+                },
+                jsPDF: {
+                    unit: 'mm',
+                    format: 'a4',
+                    orientation: isWideTable ? 'landscape' : 'portrait'
+                }
+            }).from(clone).save();
+        } finally {
+            wrapper.remove();
+        }
+    };
+
+    window.downloadVoucherPDF = function() {
+        window.exportElementToPDF('printableVoucherArea', (window.currentVoucherNumber || 'Voucher') + '.pdf');
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        localizeAllPaymentMethodsInDOM();
+        bindJournalFormsLiveCalc();
+    });
+})();
+</script>
+<!-- بداية البلوك الشامل المطور: تطابق العرض 100% في الصفحات الأفقية والعمودية والأستاذ العام + إصلاح الـ PDF والخطوط العربية -->
+<style id="arabic-pdf-and-journal-fixes">
+    /* 1. ضبط الخطوط العربية ومنع تقطع الحروف أو التصاق الكلمات */
+    body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: 0px !important;
+        font-kerning: normal !important;
+        font-variant-ligatures: normal !important;
+    }
+
+    /* 2. توحيد وتطابق العرض على الشاشة في جميع الصفحات والأستاذ العام وكشف الحساب */
+    main {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+    }
+    main > div,
+    #financialStatementPrintable,
+    #pro_ownerSettlementPrintableArea,
+    #pro_general_ledger_view,
+    #officePropertiesPrintableWrap,
+    #officeInstallmentsPrintableWrap {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    /* منع انكسار شريط الفلاتر في صفحة الأستاذ العام عند إظهار فلتر الحساب أو المصروف */
+    #financialStatementPrintable .grid.md\:grid-cols-12 {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)) !important;
+        gap: 12px !important;
+        align-items: end !important;
+    }
+    #financialStatementPrintable .grid.md\:grid-cols-12 > div {
+        grid-column: span 1 / span 1 !important;
+        width: 100% !important;
+    }
+
+    /* 3. تثبيت حاوية html2pdf في نقطة الصفر (0,0) لمنع الإزاحة والقص في الصفحات الأفقية والعمودية نهائياً */
+    .html2pdf__overlay {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        direction: ltr !important;
+    }
+    .html2pdf__container {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        transform: none !important;
+        direction: rtl !important;
+        box-sizing: border-box !important;
+    }
+
+    /* 4. منع انقسام الصفوف والبطاقات بين صفحات الـ PDF */
+    tr, thead, tfoot, .journal-table-block, .pdf-no-break {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }
+    thead { display: table-header-group !important; }
+    tfoot { display: table-footer-group !important; }
+
+    /* 5. تنسيق نسخة الـ PDF لتطابق عرض الورقة 100% من اليمين إلى اليسار بدون أي فراغ أو قص */
+    .erp-pdf-clean-clone {
+        direction: rtl !important;
+        text-align: right !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        padding: 12px !important;
+        margin: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 100% !important;
+        max-height: none !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+        word-spacing: 2.5px !important;
+        text-rendering: auto !important;
+    }
+    .erp-pdf-clean-clone * {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: 0px !important;
+        word-spacing: 2px !important;
+        text-rendering: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+    }
+    .erp-pdf-clean-clone .max-w-2xl,
+    .erp-pdf-clean-clone .max-w-3xl,
+    .erp-pdf-clean-clone .max-w-4xl,
+    .erp-pdf-clean-clone .overflow-x-auto {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+
+    /* ضبط البطاقات الـ 6 في تصفية المالك والبطاقات الـ 5 في الأستاذ العام لتظهر كاملة في سطر واحد */
+    .erp-pdf-clean-clone .md\:grid-cols-6 {
+        display: grid !important;
+        grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-5 {
+        display: grid !important;
+        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-4 {
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-6 > div,
+    .erp-pdf-clean-clone .md\:grid-cols-5 > div,
+    .erp-pdf-clean-clone .md\:grid-cols-4 > div {
+        padding: 8px 6px !important;
+        min-width: 0 !important;
+    }
+    .erp-pdf-clean-clone .text-2xl,
+    .erp-pdf-clean-clone .text-lg {
+        font-size: 13px !important;
+        line-height: 1.35 !important;
+    }
+
+    /* إخفاء عناصر التحكم والأزرار غير المطبوعة فقط (دون إخفاء أسماء الحسابات والملاك) */
+    .erp-pdf-clean-clone .no-print,
+    .erp-pdf-clean-clone .erp-pagination-bar,
+    .erp-pdf-clean-clone form,
+    .erp-pdf-clean-clone input[type="text"],
+    .erp-pdf-clean-clone input[type="date"],
+    .erp-pdf-clean-clone select,
+    .erp-pdf-clean-clone .erp-picker-host {
+        display: none !important;
+    }
+
+    /* تنسيق الجداول في الـ PDF لتملأ 100% من عرض الصفحة بانتظام */
+    .erp-pdf-clean-clone table {
+        width: 100% !important;
+        min-width: 100% !important;
+        max-width: 100% !important;
+        border-collapse: collapse !important;
+        table-layout: auto !important;
+        direction: rtl !important;
+        margin-top: 6px !important;
+    }
+    .erp-pdf-clean-clone th {
+        background-color: #0f172a !important;
+        color: #ffffff !important;
+        border: 1px solid #334155 !important;
+        padding: 7px 6px !important;
+        font-size: 10.5px !important;
+        font-weight: 700 !important;
+        text-align: right !important;
+        white-space: normal !important;
+        line-height: 1.3 !important;
+    }
+    .erp-pdf-clean-clone td {
+        border: 1px solid #cbd5e1 !important;
+        padding: 6px 6px !important;
+        font-size: 10.5px !important;
+        line-height: 1.4 !important;
+        color: #0f172a !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+        text-align: right !important;
+        vertical-align: middle !important;
+    }
+    .erp-pdf-clean-clone tfoot td,
+    .erp-pdf-clean-clone tfoot th {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+        font-weight: 800 !important;
+        border: 1px solid #94a3b8 !important;
+    }
+</style>
+
+<script id="erp-master-fixes-script">
+(function() {
+    // 1. إصلاح انعكاس الأقواس والنقطتين في الكلمات العربية داخل Canvas أثناء توليد الـ PDF
+    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+        if (window.__erpPdfRenderingActive && typeof text === 'string' && /[\u0600-\u06FF]/.test(text)) {
+            this.direction = 'rtl';
+            let fixed = '\u200F' + text + '\u200F';
+            fixed = fixed.replace(/:/g, ':\u200F').replace(/\(/g, '\u200F(').replace(/\)/g, ')\u200F');
+            return maxWidth !== undefined
+                ? origFillText.call(this, fixed, x, y, maxWidth)
+                : origFillText.call(this, fixed, x, y);
+        }
+        return maxWidth !== undefined
+            ? origFillText.call(this, text, x, y, maxWidth)
+            : origFillText.call(this, text, x, y);
+    };
+
+    // 2. تعريب طرق الدفع في جميع الجداول والنوافذ
+    const PM_AR = {
+        bank_transfer: 'حوالة بنكية', transfer: 'حوالة بنكية', bank: 'حوالة بنكية',
+        sadad: 'نظام سداد', mada: 'شبكة مدى', pos: 'شبكة مدى', card: 'شبكة مدى',
+        cash: 'نقداً (كاش)', cheque: 'شيك مصدق', check: 'شيك مصدق'
+    };
+
+    window.translatePaymentMethodAr = function(v) {
+        if (!v) return 'حوالة بنكية';
+        const k = String(v).trim().toLowerCase();
+        return PM_AR[k] || v;
+    };
+
+    function localizeDOM() {
+        if (Array.isArray(window.officeVouchersMaster)) {
+            window.officeVouchersMaster.forEach(v => {
+                if (v && v.payment_method) v.payment_method = window.translatePaymentMethodAr(v.payment_method);
+            });
+        }
+        document.querySelectorAll('td, span, b, div, option').forEach(el => {
+            if (el.children.length === 0 && el.innerText) {
+                const k = el.innerText.trim().toLowerCase();
+                if (PM_AR[k]) el.innerText = PM_AR[k];
+            }
+        });
+    }
+
+    const origVoucher = window.openOfficialVoucherPreview;
+    window.openOfficialVoucherPreview = function(v) {
+        if (v) {
+            v.payment_method = window.translatePaymentMethodAr(v.payment_method || v.method);
+            v.method = v.payment_method;
+        }
+        if (typeof origVoucher === 'function') origVoucher(v);
+        const m = document.getElementById('pdf_method');
+        if (m) m.innerText = window.translatePaymentMethodAr(m.innerText);
+    };
+    window.previewOfficialVoucher = window.openOfficialVoucherPreview;
+
+    // 3. حساب إجمالي القيد اليومي المباشر + ضريبة المدين مدين وضريبة الدائن دائن
+    const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    window.recalculateJournalFormTotals = function(form) {
+        if (!form) return;
+        const debits = form.querySelectorAll('input[name="debits[]"]');
+        const credits = form.querySelectorAll('input[name="credits[]"]');
+        const taxes = form.querySelectorAll('input[name="taxes[]"]');
+        let bD = 0, bC = 0, tD = 0, tC = 0;
+
+        for (let i = 0; i < Math.max(debits.length, credits.length); i++) {
+            const d = parseFloat(debits[i]?.value || 0) || 0;
+            const c = parseFloat(credits[i]?.value || 0) || 0;
+            const t = parseFloat(taxes[i]?.value || 0) || 0;
+            bD += d; bC += c;
+            if (taxes[i]) {
+                const lbl = taxes[i].parentElement.querySelector('label');
+                let hint = taxes[i].parentElement.querySelector('.row-tax-hint');
+                if (!hint) {
+                    hint = document.createElement('div');
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1';
+                    taxes[i].parentElement.appendChild(hint);
+                }
+                if (d > 0) {
+                    tD += t;
+                    if (lbl) lbl.innerText = 'الضريبة (مدين +)';
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-emerald-700';
+                    hint.innerText = 'الإجمالي: ' + fmt(d + t);
+                } else if (c > 0) {
+                    tC += t;
+                    if (lbl) lbl.innerText = 'الضريبة (دائن -)';
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-amber-700';
+                    hint.innerText = 'الإجمالي: ' + fmt(c + t);
+                } else {
+                    if (lbl) lbl.innerText = 'الضريبة';
+                    hint.innerText = '';
+                }
+            }
+        }
+
+        const totD = bD + tD, totC = bC + tC;
+        const entryTotal = Math.max(totD, totC);
+        const diff = Math.round((totD - totC) * 100) / 100;
+        const ok = Math.abs(diff) <= 0.05 && entryTotal > 0;
+
+        let box = form.querySelector('.live-journal-summary-bar');
+        if (!box) {
+            box = document.createElement('div');
+            box.className = 'live-journal-summary-bar p-4 rounded-2xl bg-slate-900 text-white space-y-2 my-3';
+            const footer = form.querySelector('.flex.justify-end');
+            footer ? form.insertBefore(box, footer) : form.appendChild(box);
+        }
+
+        box.innerHTML = `
+            <div class="flex flex-wrap justify-between items-center border-b border-slate-700 pb-2 text-xs">
+                <b class="text-emerald-400">📊 إجمالي القيد اليومي المباشر (شامل الضريبة):</b>
+                <span class="px-2.5 py-1 rounded font-bold ${ok ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200'}">
+                    ${ok ? '✔ متوازن (الفرق: 0.00)' : '⚠️ غير متوازن — الفرق: ' + fmt(Math.abs(diff)) + ' ر.س'}
+                </span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
+                <div class="p-2 rounded bg-white/5">المدين + ضريبته: <b class="text-emerald-400 block">${fmt(bD)} + ${fmt(tD)} = ${fmt(totD)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">الدائن + ضريبته: <b class="text-amber-400 block">${fmt(bC)} + ${fmt(tC)} = ${fmt(totC)} ر.س</b></div>
+                <div class="p-2 rounded bg-emerald-500/20">إجمالي القيد المعتمد: <b class="text-white text-sm block">${fmt(entryTotal)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">صافي الفرق (التوازن): <b class="${ok ? 'text-emerald-400' : 'text-rose-300'} text-sm block">${fmt(diff)} ر.س</b></div>
+            </div>
+        `;
+    };
+
+    function initJournalAndLedgerFixes() {
+        // إزالة شريط الترقيم الخاطئ عن جداول القوائم المالية الفرعية وجداول برنت تصفية المالك
+        ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
+            document.querySelectorAll(sel).forEach(tbl => {
+                if (tbl._paginationBar) {
+                    tbl._paginationBar.remove();
+                    tbl._paginationBar = null;
+                }
+                tbl.querySelectorAll('tbody tr').forEach(r => r.style.display = '');
+            });
+        });
+
+        // توحيد فلترة الأستاذ العام وحساب الرصيد التراكمي والافتتاحي والختامي بدقة
+        const origApplyFilters = window.applyStatementFilters;
+        window.applyStatementFilters = function() {
+            if (typeof origApplyFilters === 'function') {
+                origApplyFilters();
+            }
+            const rows = Array.from(document.querySelectorAll('.stmt-movement-row'));
+            if (rows.length === 0) return;
+
+            const q = (document.getElementById('ledgerInstantSearch')?.value || '').trim().toLowerCase();
+            const mode = document.getElementById('stmt_filter_mode')?.value || 'all';
+            const specExp = document.getElementById('stmt_expense_select')?.value || '';
+            const specAcc = document.getElementById('stmt_account_select')?.value || '';
+            const officeId = document.getElementById('stmt_office_select')?.value || '';
+            const partyVal = document.getElementById('stmt_party_select')?.value || '';
+            const fromDate = document.getElementById('stmt_from_date')?.value || '';
+            const toDate = document.getElementById('stmt_to_date')?.value || '';
+
+            let debitSum = 0, creditSum = 0;
+            rows.forEach(row => {
+                const rSearch = (row.getAttribute('data-search') || '').toLowerCase();
+                const rDate = row.getAttribute('data-date') || '';
+                const rAcc = row.getAttribute('data-account-id') || '';
+                const rOff = row.getAttribute('data-office-id') || '';
+                const rOwn = row.getAttribute('data-owner-id') || '';
+                const rTen = row.getAttribute('data-tenant-id') || '';
+                const isExp = row.getAttribute('data-is-expense') === '1';
+                const isRev = row.getAttribute('data-is-revenue') === '1';
+
+                let show = true;
+                if (q && !rSearch.includes(q)) show = false;
+                if (mode === 'all_expenses' && !isExp) show = false;
+                if (mode === 'all_revenues' && !isRev) show = false;
+                if (mode === 'specific_expense' && specExp && rAcc !== specExp) show = false;
+                if (mode === 'specific_account' && specAcc && rAcc !== specAcc) show = false;
+                if (officeId && rOff !== officeId) show = false;
+                if (partyVal) {
+                    if (partyVal.startsWith('owner_') && rOwn !== partyVal.replace('owner_', '')) show = false;
+                    if (partyVal.startsWith('tenant_') && rTen !== partyVal.replace('tenant_', '')) show = false;
+                }
+                if (fromDate && rDate < fromDate) show = false;
+                if (toDate && rDate > toDate) show = false;
+
+                row.dataset.searchMatched = show ? '1' : '0';
+                row.style.display = show ? '' : 'none';
+                if (show) {
+                    debitSum += parseFloat(row.getAttribute('data-debit') || 0);
+                    creditSum += parseFloat(row.getAttribute('data-credit') || 0);
+                }
+            });
+
+            const net = debitSum - creditSum;
+            if (document.getElementById('filteredDebitSum')) document.getElementById('filteredDebitSum').innerText = fmt(debitSum);
+            if (document.getElementById('filteredCreditSum')) document.getElementById('filteredCreditSum').innerText = fmt(creditSum);
+            if (document.getElementById('filteredNetSum')) document.getElementById('filteredNetSum').innerText = fmt(net);
+            if (document.getElementById('ledgerClosingBalance')) document.getElementById('ledgerClosingBalance').innerText = fmt(net);
+
+            const table = document.getElementById('generalStatementTable');
+            if (table) {
+                if (typeof window.refreshTablePagination === 'function') window.refreshTablePagination(table, true);
+                else if (typeof window.refreshAdminTablePagination === 'function') window.refreshAdminTablePagination(table, true);
+            }
+        };
+
+        document.querySelectorAll('form[action*="journal-entries"]').forEach(f => {
+            if (f.dataset.bound !== '1') {
+                f.dataset.bound = '1';
+                f.addEventListener('input', e => {
+                    const t = e.target;
+                    const row = t?.closest('.grid');
+                    if (t?.name === 'debits[]' && parseFloat(t.value) > 0 && row) {
+                        const c = row.querySelector('input[name="credits[]"]');
+                        if (c && parseFloat(c.value) > 0) c.value = '0';
+                    } else if (t?.name === 'credits[]' && parseFloat(t.value) > 0 && row) {
+                        const d = row.querySelector('input[name="debits[]"]');
+                        if (d && parseFloat(d.value) > 0) d.value = '0';
+                    }
+                    window.recalculateJournalFormTotals(f);
+                });
+                f.addEventListener('click', () => setTimeout(() => window.recalculateJournalFormTotals(f), 50));
+            }
+            window.recalculateJournalFormTotals(f);
+        });
+
+        const tbl = document.getElementById('journalEntriesTable');
+        if (tbl && !tbl.querySelector('tfoot')) {
+            let sumE = 0, sumT = 0;
+            tbl.querySelectorAll('tbody tr.journal-row').forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length >= 5) {
+                    sumE += parseFloat((tds[3].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                    sumT += parseFloat((tds[4].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                }
+            });
+            const tf = document.createElement('tfoot');
+            tf.className = 'bg-slate-900 text-white font-bold text-xs';
+            tf.innerHTML = `<tr><td colspan="3" class="py-3 px-4 text-emerald-300">إجمالي القيود المحفوظة</td><td class="py-3 px-4">${fmt(sumE)} ر.س</td><td class="py-3 px-4 text-amber-300">${fmt(sumT)} ر.س</td><td colspan="2" class="py-3 px-4 text-emerald-400">متوازن (الفرق: 0.00) ✔</td></tr>`;
+            tbl.appendChild(tf);
+        }
+    }
+
+    // 4. محرك تجهيز الـ PDF الذكي: يحافظ على أسماء الحسابات والملاك، ويضبط العرض 100% بلا إزاحة
+    window.prepareSmartPdfClone = function(el) {
+        const clone = el.cloneNode(true);
+        clone.classList.add('erp-pdf-clean-clone');
+
+        // إظهار الصفوف المطابقة للبحث/الفلترة والتي كانت مخفية بسبب ترقيم الصفحات (1, 2, 3)
+        clone.querySelectorAll('tbody tr').forEach(tr => {
+            if (tr.dataset.searchMatched === '0') {
+                tr.remove();
+            } else {
+                tr.style.display = '';
+            }
+        });
+
+        // حذف عمود "الإجراءات" من جداول الـ PDF وتوسيع الأعمدة المتبقية
+        let maxRemainingCols = 0;
+        const actionHeaderKeywords = ['إجراءات', 'الإجراءات', 'إجراء', 'حذف', 'تعديل', 'تحميل السند', 'إجراءات التحصيل', 'التوثيق في إيجار'];
+
+        clone.querySelectorAll('table').forEach(t => {
+            const dropIndices = [];
+            const ths = Array.from(t.querySelectorAll('thead th'));
+            ths.forEach((th, idx) => {
+                const txt = (th.innerText || '').trim();
+                if (actionHeaderKeywords.some(w => txt.includes(w))) {
+                    dropIndices.push(idx);
+                    th.remove();
+                }
+            });
+            if (dropIndices.length > 0) {
+                t.querySelectorAll('tbody tr').forEach(tr => {
+                    const tds = Array.from(tr.querySelectorAll('td'));
+                    if (tds.length > 1) {
+                        dropIndices.forEach(i => { if (tds[i]) tds[i].remove(); });
+                    }
+                });
+            }
+            const remainingCols = t.querySelectorAll('thead th').length;
+            if (remainingCols > maxRemainingCols) maxRemainingCols = remainingCols;
+        });
+
+        // تحويل الأزرار التي تحتوي على أسماء الحسابات أو الملاك أو المستأجرين داخل الخلايا إلى نصوص واضحة بدلاً من إخفائها
+        clone.querySelectorAll('td button').forEach(btn => {
+            const span = document.createElement('span');
+            span.className = 'font-bold text-slate-900';
+            span.innerHTML = btn.innerHTML;
+            btn.replaceWith(span);
+        });
+
+        // إزالة الأزرار المتبقية في الهيدر والفلاتر
+        clone.querySelectorAll('button').forEach(btn => btn.remove());
+
+        // تحديد الاتجاه (Landscape للأستاذ العام وتصفية المالك والجداول العريضة، وPortrait للسندات والفواتير المفردة)
+        const singlePortraitIds = [
+            'printableVoucherArea',
+            'companyTaxInvoicePrintArea',
+            'officeTaxInvoicePrintArea',
+            'legalNoticePrintableArea',
+            'installmentClaimPdfTemplate',
+            'invoicePdfArea'
+        ];
+        const isSingleDoc = singlePortraitIds.includes(el.id);
+        const isLandscape = !isSingleDoc && (maxRemainingCols >= 5 || el.id === 'pro_ownerSettlementPrintableArea' || el.id === 'financialStatementPrintable' || el.scrollWidth > 760);
+
+        // عرض ورقة A4 الصافي بعد خصم الهوامش (8mm من كل جهة):
+        // في الوضع الأفقي: 297mm - 16mm = 281mm (يعادل 1062px)
+        // في الوضع العمودي: 210mm - 16mm = 194mm (يعادل 733px)
+        const exactWidthMm = isLandscape ? 281 : 194;
+        const exactWidthPx = isLandscape ? 1062 : 733;
+
+        clone.style.width = exactWidthMm + 'mm';
+        clone.style.maxWidth = exactWidthMm + 'mm';
+        clone.style.minWidth = exactWidthMm + 'mm';
+
+        return { clone, isLandscape, exactWidthPx };
+    };
+
+    window.buildPdfWorkerOptions = function(filename, isLandscape, exactWidthPx) {
+        return {
+            margin: [8, 8, 8, 8],
+            filename: (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf',
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: {
+                scale: 2,
+                useCORS: true,
+                letterRendering: false,
+                backgroundColor: '#ffffff',
+                scrollX: 0,
+                scrollY: 0,
+                x: 0,
+                y: 0,
+                width: exactWidthPx
+            },
+            pagebreak: {
+                mode: ['css', 'legacy'],
+                avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break']
+            },
+            jsPDF: {
+                unit: 'mm',
+                format: 'a4',
+                orientation: isLandscape ? 'landscape' : 'portrait'
+            }
+        };
+    };
+
+    // 5. توحيد دالة تصدير الـ PDF لجميع صفحات وبوابات النظام
+    window.exportElementToPDF = async function(elementId, filename) {
+        const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
+        if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+
+        const savedScrollX = window.scrollX;
+        const savedScrollY = window.scrollY;
+        window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
+
+        const { clone, isLandscape, exactWidthPx } = window.prepareSmartPdfClone(el);
+        const opt = window.buildPdfWorkerOptions(filename, isLandscape, exactWidthPx);
+
+        try {
+            await html2pdf().set(opt).from(clone).toContainer().then(function() {
+                const c = document.querySelector('.html2pdf__container');
+                const o = document.querySelector('.html2pdf__overlay');
+                if (o) {
+                    o.style.left = '0px';
+                    o.style.top = '0px';
+                    o.style.right = 'auto';
+                    o.style.direction = 'ltr';
+                }
+                if (c) {
+                    c.style.left = '0px';
+                    c.style.top = '0px';
+                    c.style.right = 'auto';
+                    c.style.margin = '0px';
+                    c.style.width = exactWidthPx + 'px';
+                    c.style.direction = 'rtl';
+                }
+            }).toCanvas().toPdf().save();
+        } finally {
+            window.__erpPdfRenderingActive = false;
+            window.scrollTo(savedScrollX, savedScrollY);
+        }
+    };
+
+    // 6. ربط جميع دوال التصدير وإرسال الواتساب في النظام بالمحرك الموحد
+    window.exportStatementPDF = function() {
+        window.exportElementToPDF('financialStatementPrintable', 'دفتر_الأستاذ_العام_والقوائم_المالية.pdf');
+    };
+
+    window.downloadVoucherPDF = function() {
+        window.exportElementToPDF('printableVoucherArea', (window.currentVoucherNumber || 'Voucher') + '.pdf');
+    };
+
+    window.downloadCompanyTaxInvoicePDF = function() {
+        const targetId = document.getElementById('companyTaxInvoicePrintArea') ? 'companyTaxInvoicePrintArea' : 'printableVoucherArea';
+        window.exportElementToPDF(targetId, (window.currentCompanyInvoiceNo || 'Tax_Invoice') + '.pdf');
+    };
+
+    window.downloadOfficeTaxInvoicePDF = function() {
+        window.exportElementToPDF('officeTaxInvoicePrintArea', (window.currentOfficeInvoiceNo || 'Office_Tax_Invoice') + '.pdf');
+    };
+
+    window.sendElementAsOriginalPdfWhatsapp = async function(elementOrId, filename, targetPhone, docType = 'general') {
+        const el = typeof elementOrId === 'string' ? document.getElementById(elementOrId) : elementOrId;
+        if (!el) return alert('عنصر الطباعة غير جاهز.');
+
+        let phone = (targetPhone || '').trim();
+        if (!phone) {
+            phone = prompt('أدخل رقم جوال المستلم لإرسال ملف الـ PDF الأصلي عبر الواتساب (مثال: 05XXXXXXXX):', '');
+            if (!phone) return;
+        }
+
+        const cleanFile = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
+        if (typeof window.showErpToast === 'function') {
+            window.showErpToast('⏳ جاري توليد ملف الـ PDF الأصلي وإرساله كمرفق عبر الواتساب...', 'info');
+        }
+
+        const savedScrollX = window.scrollX;
+        const savedScrollY = window.scrollY;
+        window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
+
+        const { clone, isLandscape, exactWidthPx } = window.prepareSmartPdfClone(el);
+        const opt = window.buildPdfWorkerOptions(cleanFile, isLandscape, exactWidthPx);
+
+        try {
+            const pdfDataUri = await html2pdf().set(opt).from(clone).toContainer().then(function() {
+                const c = document.querySelector('.html2pdf__container');
+                const o = document.querySelector('.html2pdf__overlay');
+                if (o) { o.style.left = '0px'; o.style.top = '0px'; o.style.right = 'auto'; o.style.direction = 'ltr'; }
+                if (c) { c.style.left = '0px'; c.style.top = '0px'; c.style.right = 'auto'; c.style.margin = '0px'; c.style.width = exactWidthPx + 'px'; c.style.direction = 'rtl'; }
+            }).outputPdf('datauristring');
+
+            const res = await fetch('/whatsapp/send-raw-pdf', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    phone: phone,
+                    pdf_base64: pdfDataUri,
+                    filename: cleanFile,
+                    doc_type: docType
+                })
+            });
+            const data = await res.json();
+            if (data && data.success) {
+                if (typeof window.showErpToast === 'function') window.showErpToast('✅ ' + data.message, 'success');
+            } else {
+                await window.exportElementToPDF(el, cleanFile);
+            }
+        } catch (err) {
+            await window.exportElementToPDF(el, cleanFile);
+        } finally {
+            window.__erpPdfRenderingActive = false;
+            window.scrollTo(savedScrollX, savedScrollY);
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        localizeDOM();
+        initJournalAndLedgerFixes();
+    });
+})();
+</script>
+<!-- بداية البلوك الشامل المطور: إصلاح تداخل النصوص العربية والأرقام + تطابق العرض 100% في الصفحات الأفقية والأستاذ العام -->
+<style id="arabic-pdf-and-journal-fixes">
+    /* 1. ضبط الخطوط العربية ومنع تقطع الحروف على الشاشة وفي الـ PDF */
+    body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: 0px !important;
+        word-spacing: normal !important;
+        font-kerning: normal !important;
+        font-variant-ligatures: normal !important;
+    }
+
+    /* 2. تطابق العرض 100% لجميع الجداول والحاويات في صفحات النظام والأستاذ العام */
+    main {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+    }
+    main > div,
+    #financialStatementPrintable,
+    #pro_ownerSettlementPrintableArea,
+    #pro_general_ledger_view,
+    #officePropertiesPrintableWrap,
+    #officeInstallmentsPrintableWrap {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    /* تنسيق شريط فلاتر الأستاذ العام ليتمدد بانتظام دون كسر العرض */
+    #financialStatementPrintable .grid.md\:grid-cols-12 {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)) !important;
+        gap: 12px !important;
+        align-items: end !important;
+    }
+    #financialStatementPrintable .grid.md\:grid-cols-12 > div {
+        grid-column: span 1 / span 1 !important;
+        width: 100% !important;
+    }
+
+    /* 3. تثبيت حاوية html2pdf في نقطة الصفر (0,0) لمنع أي إزاحة أفقية */
+    .html2pdf__overlay {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        direction: ltr !important;
+    }
+    .html2pdf__container {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        transform: none !important;
+        direction: rtl !important;
+        box-sizing: border-box !important;
+        background: #ffffff !important;
+    }
+
+    /* 4. منع انقسام الصفوف والبطاقات بين صفحات الـ PDF */
+    tr, thead, tfoot, .journal-table-block, .pdf-no-break {
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+    }
+    thead { display: table-header-group !important; }
+    tfoot { display: table-footer-group !important; }
+
+    /* 5. تنسيق نسخة الـ PDF لتملأ 100% من عرض الورقة بدون هوامش داخلية زائدة أو تداخل كلمات */
+    .erp-pdf-clean-clone {
+        direction: rtl !important;
+        text-align: right !important;
+        background: #ffffff !important;
+        color: #0f172a !important;
+        padding: 4px !important;
+        margin: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 100% !important;
+        max-height: none !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    .erp-pdf-clean-clone * {
+        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
+        letter-spacing: 0px !important;
+        word-spacing: normal !important;
+        max-height: none !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+    }
+    .erp-pdf-clean-clone #ledger_view_section,
+    .erp-pdf-clean-clone #cards_view_section,
+    .erp-pdf-clean-clone #trial_view_section,
+    .erp-pdf-clean-clone #income_view_section {
+        padding: 0 !important;
+        margin: 0 !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .max-w-2xl,
+    .erp-pdf-clean-clone .max-w-3xl,
+    .erp-pdf-clean-clone .max-w-4xl,
+    .erp-pdf-clean-clone .overflow-x-auto {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    /* ضبط شبكات البطاقات العلوية في تصفية المالك (6 بطاقات) والأستاذ العام (5 بطاقات) */
+    .erp-pdf-clean-clone .md\:grid-cols-6 {
+        display: grid !important;
+        grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-5 {
+        display: grid !important;
+        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-4 {
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+    .erp-pdf-clean-clone .md\:grid-cols-6 > div,
+    .erp-pdf-clean-clone .md\:grid-cols-5 > div,
+    .erp-pdf-clean-clone .md\:grid-cols-4 > div {
+        padding: 8px 10px !important;
+        min-width: 0 !important;
+    }
+
+    /* إخفاء الفلاتر وأزرار التحكم غير المطبوعة فقط */
+    .erp-pdf-clean-clone .no-print,
+    .erp-pdf-clean-clone .erp-pagination-bar,
+    .erp-pdf-clean-clone form,
+    .erp-pdf-clean-clone input[type="text"],
+    .erp-pdf-clean-clone input[type="date"],
+    .erp-pdf-clean-clone select,
+    .erp-pdf-clean-clone .erp-picker-host {
+        display: none !important;
+    }
+
+    /* تنسيق جداول الـ PDF بوضوح تام وعرض 100% */
+    .erp-pdf-clean-clone table {
+        width: 100% !important;
+        min-width: 100% !important;
+        max-width: 100% !important;
+        border-collapse: collapse !important;
+        table-layout: auto !important;
+        direction: rtl !important;
+        margin-top: 8px !important;
+    }
+    .erp-pdf-clean-clone th {
+        background-color: #0f172a !important;
+        color: #ffffff !important;
+        border: 1px solid #334155 !important;
+        padding: 7px 6px !important;
+        font-size: 11px !important;
+        font-weight: 700 !important;
+        text-align: right !important;
+        white-space: normal !important;
+        line-height: 1.35 !important;
+    }
+    .erp-pdf-clean-clone td {
+        border: 1px solid #cbd5e1 !important;
+        padding: 6px 6px !important;
+        font-size: 11px !important;
+        line-height: 1.45 !important;
+        color: #0f172a !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+        text-align: right !important;
+        vertical-align: middle !important;
+    }
+    .erp-pdf-clean-clone tfoot td,
+    .erp-pdf-clean-clone tfoot th {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+        font-weight: 800 !important;
+        border: 1px solid #94a3b8 !important;
+    }
+</style>
+
+<script id="erp-master-fixes-script">
+(function() {
+    // 1. ضبط اتجاه الرسم في Canvas أثناء توليد الـ PDF مع تثبيت textAlign = 'left' لمنع إزاحة الكلمات أو تداخل الأرقام
+    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+        if (window.__erpPdfRenderingActive && typeof text === 'string') {
+            this.textAlign = 'left';
+            if (/[\u0600-\u06FF]/.test(text)) {
+                this.direction = 'rtl';
+            } else {
+                this.direction = 'ltr';
+            }
+        }
+        return maxWidth !== undefined
+            ? origFillText.call(this, text, x, y, maxWidth)
+            : origFillText.call(this, text, x, y);
+    };
+
+    // 2. تعريب طرق الدفع في جميع الجداول والنوافذ
+    const PM_AR = {
+        bank_transfer: 'حوالة بنكية', transfer: 'حوالة بنكية', bank: 'حوالة بنكية',
+        sadad: 'نظام سداد', mada: 'شبكة مدى', pos: 'شبكة مدى', card: 'شبكة مدى',
+        cash: 'نقداً (كاش)', cheque: 'شيك مصدق', check: 'شيك مصدق'
+    };
+
+    window.translatePaymentMethodAr = function(v) {
+        if (!v) return 'حوالة بنكية';
+        const k = String(v).trim().toLowerCase();
+        return PM_AR[k] || v;
+    };
+
+    function localizeDOM() {
+        if (Array.isArray(window.officeVouchersMaster)) {
+            window.officeVouchersMaster.forEach(v => {
+                if (v && v.payment_method) v.payment_method = window.translatePaymentMethodAr(v.payment_method);
+            });
+        }
+        document.querySelectorAll('td, span, b, div, option').forEach(el => {
+            if (el.children.length === 0 && el.innerText) {
+                const k = el.innerText.trim().toLowerCase();
+                if (PM_AR[k]) el.innerText = PM_AR[k];
+            }
+        });
+    }
+
+    const origVoucher = window.openOfficialVoucherPreview;
+    window.openOfficialVoucherPreview = function(v) {
+        if (v) {
+            v.payment_method = window.translatePaymentMethodAr(v.payment_method || v.method);
+            v.method = v.payment_method;
+        }
+        if (typeof origVoucher === 'function') origVoucher(v);
+        const m = document.getElementById('pdf_method');
+        if (m) m.innerText = window.translatePaymentMethodAr(m.innerText);
+    };
+    window.previewOfficialVoucher = window.openOfficialVoucherPreview;
+
+    // 3. حساب إجمالي القيد اليومي المباشر + ضريبة المدين مدين وضريبة الدائن دائن
+    const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    window.recalculateJournalFormTotals = function(form) {
+        if (!form) return;
+        const debits = form.querySelectorAll('input[name="debits[]"]');
+        const credits = form.querySelectorAll('input[name="credits[]"]');
+        const taxes = form.querySelectorAll('input[name="taxes[]"]');
+        let bD = 0, bC = 0, tD = 0, tC = 0;
+
+        for (let i = 0; i < Math.max(debits.length, credits.length); i++) {
+            const d = parseFloat(debits[i]?.value || 0) || 0;
+            const c = parseFloat(credits[i]?.value || 0) || 0;
+            const t = parseFloat(taxes[i]?.value || 0) || 0;
+            bD += d; bC += c;
+            if (taxes[i]) {
+                const lbl = taxes[i].parentElement.querySelector('label');
+                let hint = taxes[i].parentElement.querySelector('.row-tax-hint');
+                if (!hint) {
+                    hint = document.createElement('div');
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1';
+                    taxes[i].parentElement.appendChild(hint);
+                }
+                if (d > 0) {
+                    tD += t;
+                    if (lbl) lbl.innerText = 'الضريبة (مدين +)';
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-emerald-700';
+                    hint.innerText = 'الإجمالي: ' + fmt(d + t);
+                } else if (c > 0) {
+                    tC += t;
+                    if (lbl) lbl.innerText = 'الضريبة (دائن -)';
+                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-amber-700';
+                    hint.innerText = 'الإجمالي: ' + fmt(c + t);
+                } else {
+                    if (lbl) lbl.innerText = 'الضريبة';
+                    hint.innerText = '';
+                }
+            }
+        }
+
+        const totD = bD + tD, totC = bC + tC;
+        const entryTotal = Math.max(totD, totC);
+        const diff = Math.round((totD - totC) * 100) / 100;
+        const ok = Math.abs(diff) <= 0.05 && entryTotal > 0;
+
+        let box = form.querySelector('.live-journal-summary-bar');
+        if (!box) {
+            box = document.createElement('div');
+            box.className = 'live-journal-summary-bar p-4 rounded-2xl bg-slate-900 text-white space-y-2 my-3';
+            const footer = form.querySelector('.flex.justify-end');
+            footer ? form.insertBefore(box, footer) : form.appendChild(box);
+        }
+
+        box.innerHTML = `
+            <div class="flex flex-wrap justify-between items-center border-b border-slate-700 pb-2 text-xs">
+                <b class="text-emerald-400">📊 إجمالي القيد اليومي المباشر (شامل الضريبة):</b>
+                <span class="px-2.5 py-1 rounded font-bold ${ok ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200'}">
+                    ${ok ? '✔ متوازن (الفرق: 0.00)' : '⚠️ غير متوازن — الفرق: ' + fmt(Math.abs(diff)) + ' ر.س'}
+                </span>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
+                <div class="p-2 rounded bg-white/5">المدين + ضريبته: <b class="text-emerald-400 block">${fmt(bD)} + ${fmt(tD)} = ${fmt(totD)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">الدائن + ضريبته: <b class="text-amber-400 block">${fmt(bC)} + ${fmt(tC)} = ${fmt(totC)} ر.س</b></div>
+                <div class="p-2 rounded bg-emerald-500/20">إجمالي القيد المعتمد: <b class="text-white text-sm block">${fmt(entryTotal)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">صافي الفرق (التوازن): <b class="${ok ? 'text-emerald-400' : 'text-rose-300'} text-sm block">${fmt(diff)} ر.س</b></div>
+            </div>
+        `;
+    };
+
+    function initJournalAndLedgerFixes() {
+        // منع ترقيم الصفحات من إخفاء حسابات ميزان المراجعة أو بطاقات الأستاذ أو تصفية المالك
+        ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
+            document.querySelectorAll(sel).forEach(tbl => {
+                if (tbl._paginationBar) {
+                    tbl._paginationBar.remove();
+                    tbl._paginationBar = null;
+                }
+                tbl.querySelectorAll('tbody tr').forEach(r => r.style.display = '');
+            });
+        });
+
+        document.querySelectorAll('form[action*="journal-entries"]').forEach(f => {
+            if (f.dataset.bound !== '1') {
+                f.dataset.bound = '1';
+                f.addEventListener('input', e => {
+                    const t = e.target;
+                    const row = t?.closest('.grid');
+                    if (t?.name === 'debits[]' && parseFloat(t.value) > 0 && row) {
+                        const c = row.querySelector('input[name="credits[]"]');
+                        if (c && parseFloat(c.value) > 0) c.value = '0';
+                    } else if (t?.name === 'credits[]' && parseFloat(t.value) > 0 && row) {
+                        const d = row.querySelector('input[name="debits[]"]');
+                        if (d && parseFloat(d.value) > 0) d.value = '0';
+                    }
+                    window.recalculateJournalFormTotals(f);
+                });
+                f.addEventListener('click', () => setTimeout(() => window.recalculateJournalFormTotals(f), 50));
+            }
+            window.recalculateJournalFormTotals(f);
+        });
+
+        const tbl = document.getElementById('journalEntriesTable');
+        if (tbl && !tbl.querySelector('tfoot')) {
+            let sumE = 0, sumT = 0;
+            tbl.querySelectorAll('tbody tr.journal-row').forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length >= 5) {
+                    sumE += parseFloat((tds[3].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                    sumT += parseFloat((tds[4].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
+                }
+            });
+            const tf = document.createElement('tfoot');
+            tf.className = 'bg-slate-900 text-white font-bold text-xs';
+            tf.innerHTML = `<tr><td colspan="3" class="py-3 px-4 text-emerald-300">إجمالي القيود المحفوظة</td><td class="py-3 px-4">${fmt(sumE)} ر.س</td><td class="py-3 px-4 text-amber-300">${fmt(sumT)} ر.س</td><td colspan="2" class="py-3 px-4 text-emerald-400">متوازن (الفرق: 0.00) ✔</td></tr>`;
+            tbl.appendChild(tf);
+        }
+    }
+
+    // 4. تجهيز نسخة الـ PDF بدون تداخل عناصر، مع ترويسة رسمية للأستاذ العام وعرض 100%
+    window.prepareSmartPdfClone = function(el) {
+        const clone = el.cloneNode(true);
+        clone.classList.add('erp-pdf-clean-clone');
+
+        // إضافة ترويسة رسمية أعلى تقرير الأستاذ العام عند التصدير
+        if (el.id === 'financialStatementPrintable') {
+            const pageTitle = document.querySelector('header h2')?.innerText || document.querySelector('aside h1')?.innerText || 'منظومة العقارات الذكية ERP';
+            const hdr = document.createElement('div');
+            hdr.className = 'flex items-center justify-between border-b-2 border-slate-900 pb-3 mb-3 text-slate-900';
+            hdr.innerHTML = `
+                <div>
+                    <div style="font-size:15px;font-weight:800;">${pageTitle}</div>
+                    <div style="font-size:11px;color:#475569;">تقرير دفتر الأستاذ العام والقوائم المالية المعتمد</div>
+                </div>
+                <div style="text-align:left;font-size:11px;font-weight:700;">
+                    تاريخ الإصدار: ${new Date().toISOString().slice(0, 10)}
+                </div>
+            `;
+            clone.insertBefore(hdr, clone.firstChild);
+        }
+
+        // في بطاقات الملخص العلوية، وضع الرقم والعملة (ر.س) بجانب بعضهما بوضوح لمنع تداخلهما
+        clone.querySelectorAll('.grid > div').forEach(card => {
+            const bTag = card.querySelector('b');
+            if (bTag && bTag.nextElementSibling && bTag.nextElementSibling.innerText.includes('ر.س')) {
+                const unitSpan = bTag.nextElementSibling;
+                bTag.innerText = bTag.innerText.trim() + ' ' + unitSpan.innerText.trim();
+                unitSpan.remove();
+            }
+        });
+
+        // إظهار كافة الصفوف المطابقة للفلترة (والتي أخفاها ترقيم الصفحات 1, 2, 3)
+        clone.querySelectorAll('tbody tr').forEach(tr => {
+            if (tr.dataset.searchMatched === '0') {
+                tr.remove();
+            } else {
+                tr.style.display = '';
+            }
+        });
+
+        // حذف عمود "الإجراءات" من جداول الـ PDF
+        let maxRemainingCols = 0;
+        const actionHeaderKeywords = ['إجراءات', 'الإجراءات', 'إجراء', 'حذف', 'تعديل', 'تحميل السند', 'إجراءات التحصيل', 'التوثيق في إيجار'];
+
+        clone.querySelectorAll('table').forEach(t => {
+            const dropIndices = [];
+            const ths = Array.from(t.querySelectorAll('thead th'));
+            ths.forEach((th, idx) => {
+                const txt = (th.innerText || '').trim();
+                if (actionHeaderKeywords.some(w => txt.includes(w))) {
+                    dropIndices.push(idx);
+                    th.remove();
+                }
+            });
+            if (dropIndices.length > 0) {
+                t.querySelectorAll('tbody tr').forEach(tr => {
+                    const tds = Array.from(tr.querySelectorAll('td'));
+                    if (tds.length > 1) {
+                        dropIndices.forEach(i => { if (tds[i]) tds[i].remove(); });
+                    }
+                });
+            }
+            const remainingCols = t.querySelectorAll('thead th').length;
+            if (remainingCols > maxRemainingCols) maxRemainingCols = remainingCols;
+        });
+
+        // تحويل الأزرار التي تحمل أسماء الحسابات أو الملاك داخل الجداول إلى نصوص واضحة
+        clone.querySelectorAll('td button').forEach(btn => {
+            const span = document.createElement('span');
+            span.className = 'font-bold text-slate-900';
+            span.innerHTML = btn.innerHTML;
+            btn.replaceWith(span);
+        });
+
+        // إزالة أي أزرار تحكم متبقية خارج الجداول
+        clone.querySelectorAll('button').forEach(btn => btn.remove());
+
+        const singlePortraitIds = [
+            'printableVoucherArea',
+            'companyTaxInvoicePrintArea',
+            'officeTaxInvoicePrintArea',
+            'legalNoticePrintableArea',
+            'installmentClaimPdfTemplate',
+            'invoicePdfArea'
+        ];
+        const isSingleDoc = singlePortraitIds.includes(el.id);
+        const isLandscape = !isSingleDoc && (maxRemainingCols >= 5 || el.id === 'pro_ownerSettlementPrintableArea' || el.id === 'financialStatementPrintable' || el.scrollWidth > 760);
+
+        clone.style.width = '100%';
+        clone.style.maxWidth = '100%';
+        clone.style.minWidth = '100%';
+
+        return { clone, isLandscape };
+    };
+
+    // تمرير jsPDF قبل margin لضمان حساب العرض الأفقي الكامل (285mm) في html2pdf
+    window.createConfiguredPdfWorker = function(filename, isLandscape) {
+        const cleanName = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
+        const exactContainerMm = isLandscape ? '285mm' : '198mm';
+
+        const worker = html2pdf().set({
+            jsPDF: {
+                unit: 'mm',
+                format: 'a4',
+                orientation: isLandscape ? 'landscape' : 'portrait'
+            },
+            pagebreak: {
+                mode: ['css', 'legacy'],
+                avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break']
+            },
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: {
+                scale: 2,
+                useCORS: true,
+                letterRendering: false,
+                backgroundColor: '#ffffff',
+                scrollX: 0,
+                scrollY: 0
+            },
+            filename: cleanName
+        }).set({
+            margin: [6, 6, 6, 6]
+        });
+
+        return { worker, exactContainerMm };
+    };
+
+    // 5. الدالة الموحدة لتصدير الـ PDF بعرض 100% من اليمين إلى اليسار
+    window.exportElementToPDF = async function(elementId, filename) {
+        const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
+        if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+
+        const savedScrollX = window.scrollX;
+        const savedScrollY = window.scrollY;
+        window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
+
+        const { clone, isLandscape } = window.prepareSmartPdfClone(el);
+        const { worker, exactContainerMm } = window.createConfiguredPdfWorker(filename, isLandscape);
+
+        try {
+            await worker.from(clone).toContainer().then(function() {
+                const c = document.querySelector('.html2pdf__container');
+                const o = document.querySelector('.html2pdf__overlay');
+                if (o) {
+                    o.style.left = '0px';
+                    o.style.top = '0px';
+                    o.style.right = '0px';
+                    o.style.direction = 'ltr';
+                }
+                if (c) {
+                    c.style.left = '0px';
+                    c.style.top = '0px';
+                    c.style.right = 'auto';
+                    c.style.margin = '0px';
+                    c.style.width = exactContainerMm;
+                    c.style.maxWidth = exactContainerMm;
+                    c.style.direction = 'rtl';
+                }
+            }).toCanvas().toPdf().save();
+        } finally {
+            window.__erpPdfRenderingActive = false;
+            window.scrollTo(savedScrollX, savedScrollY);
+        }
+    };
+
+    // 6. ربط جميع أزرار التصدير والواتساب بالمحرك الموحد
+    window.exportStatementPDF = function() {
+        window.exportElementToPDF('financialStatementPrintable', 'دفتر_الأستاذ_العام_والقوائم_المالية.pdf');
+    };
+
+    window.downloadVoucherPDF = function() {
+        window.exportElementToPDF('printableVoucherArea', (window.currentVoucherNumber || 'Voucher') + '.pdf');
+    };
+
+    window.downloadCompanyTaxInvoicePDF = function() {
+        const targetId = document.getElementById('companyTaxInvoicePrintArea') ? 'companyTaxInvoicePrintArea' : 'printableVoucherArea';
+        window.exportElementToPDF(targetId, (window.currentCompanyInvoiceNo || 'Tax_Invoice') + '.pdf');
+    };
+
+    window.downloadOfficeTaxInvoicePDF = function() {
+        window.exportElementToPDF('officeTaxInvoicePrintArea', (window.currentOfficeInvoiceNo || 'Office_Tax_Invoice') + '.pdf');
+    };
+
+    window.sendElementAsOriginalPdfWhatsapp = async function(elementOrId, filename, targetPhone, docType = 'general') {
+        const el = typeof elementOrId === 'string' ? document.getElementById(elementOrId) : elementOrId;
+        if (!el) return alert('عنصر الطباعة غير جاهز.');
+
+        let phone = (targetPhone || '').trim();
+        if (!phone) {
+            phone = prompt('أدخل رقم جوال المستلم لإرسال ملف الـ PDF الأصلي عبر الواتساب (مثال: 05XXXXXXXX):', '');
+            if (!phone) return;
+        }
+
+        const cleanFile = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
+        if (typeof window.showErpToast === 'function') {
+            window.showErpToast('⏳ جاري توليد ملف الـ PDF الأصلي وإرساله كمرفق عبر الواتساب...', 'info');
+        }
+
+        const savedScrollX = window.scrollX;
+        const savedScrollY = window.scrollY;
+        window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
+
+        const { clone, isLandscape } = window.prepareSmartPdfClone(el);
+        const { worker, exactContainerMm } = window.createConfiguredPdfWorker(cleanFile, isLandscape);
+
+        try {
+            const pdfDataUri = await worker.from(clone).toContainer().then(function() {
+                const c = document.querySelector('.html2pdf__container');
+                const o = document.querySelector('.html2pdf__overlay');
+                if (o) { o.style.left = '0px'; o.style.top = '0px'; o.style.right = '0px'; o.style.direction = 'ltr'; }
+                if (c) { c.style.left = '0px'; c.style.top = '0px'; c.style.right = 'auto'; c.style.margin = '0px'; c.style.width = exactContainerMm; c.style.maxWidth = exactContainerMm; c.style.direction = 'rtl'; }
+            }).outputPdf('datauristring');
+
+            const res = await fetch('/whatsapp/send-raw-pdf', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    phone: phone,
+                    pdf_base64: pdfDataUri,
+                    filename: cleanFile,
+                    doc_type: docType
+                })
+            });
+            const data = await res.json();
+            if (data && data.success) {
+                if (typeof window.showErpToast === 'function') window.showErpToast('✅ ' + data.message, 'success');
+            } else {
+                await window.exportElementToPDF(el, cleanFile);
+            }
+        } catch (err) {
+            await window.exportElementToPDF(el, cleanFile);
+        } finally {
+            window.__erpPdfRenderingActive = false;
+            window.scrollTo(savedScrollX, savedScrollY);
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        localizeDOM();
+        initJournalAndLedgerFixes();
+    });
+})();
 </script>
 </body>
 </html>
