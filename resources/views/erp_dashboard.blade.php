@@ -7522,9 +7522,9 @@
     });
 })();
 </script>
-<!-- بداية البلوك الشامل المطور: إصلاح تداخل النصوص العربية والأرقام + تطابق العرض 100% في الصفحات الأفقية والأستاذ العام -->
+<!-- بداية البلوك الشامل المطور: فصل الكلمات لمنع الالتصاق + عزل الأكواد والأرقام LTR + احتواء كامل لعرض الجداول في الـ PDF -->
 <style id="arabic-pdf-and-journal-fixes">
-    /* 1. ضبط الخطوط العربية ومنع تقطع الحروف على الشاشة وفي الـ PDF */
+    /* 1. ضبط الخطوط العربية على الشاشة وفي الـ PDF */
     body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
         font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
         letter-spacing: 0px !important;
@@ -7545,7 +7545,9 @@
     #pro_ownerSettlementPrintableArea,
     #pro_general_ledger_view,
     #officePropertiesPrintableWrap,
-    #officeInstallmentsPrintableWrap {
+    #officeInstallmentsPrintableWrap,
+    #officeOverviewContractsWrap,
+    #adminOverviewOfficesWrap {
         width: 100% !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
@@ -7563,7 +7565,7 @@
         width: 100% !important;
     }
 
-    /* 3. تثبيت حاوية html2pdf في نقطة الصفر (0,0) لمنع أي إزاحة أفقية */
+    /* 3. تثبيت حاوية html2pdf في نقطة الصفر (0,0) لمنع أي إزاحة */
     .html2pdf__overlay {
         position: fixed !important;
         top: 0 !important;
@@ -7594,13 +7596,13 @@
     thead { display: table-header-group !important; }
     tfoot { display: table-footer-group !important; }
 
-    /* 5. تنسيق نسخة الـ PDF لتملأ 100% من عرض الورقة بدون هوامش داخلية زائدة أو تداخل كلمات */
+    /* 5. تنسيق نسخة الـ PDF لتحتوي جميع الأعمدة بالكامل بدون قص أو التصاق كلمات */
     .erp-pdf-clean-clone {
         direction: rtl !important;
         text-align: right !important;
         background: #ffffff !important;
         color: #0f172a !important;
-        padding: 4px !important;
+        padding: 8px 10px !important;
         margin: 0 !important;
         width: 100% !important;
         max-width: 100% !important;
@@ -7615,9 +7617,15 @@
         font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
         letter-spacing: 0px !important;
         word-spacing: normal !important;
+        text-decoration: none !important;
         max-height: none !important;
         overflow: visible !important;
         box-sizing: border-box !important;
+    }
+    .erp-pdf-clean-clone .pdf-word-token {
+        display: inline-block !important;
+        white-space: nowrap !important;
+        vertical-align: baseline !important;
     }
     .erp-pdf-clean-clone #ledger_view_section,
     .erp-pdf-clean-clone #cards_view_section,
@@ -7688,22 +7696,23 @@
         background-color: #0f172a !important;
         color: #ffffff !important;
         border: 1px solid #334155 !important;
-        padding: 7px 6px !important;
+        padding: 8px 8px !important;
         font-size: 11px !important;
         font-weight: 700 !important;
         text-align: right !important;
-        white-space: normal !important;
+        direction: rtl !important;
+        white-space: nowrap !important;
         line-height: 1.35 !important;
     }
     .erp-pdf-clean-clone td {
         border: 1px solid #cbd5e1 !important;
-        padding: 6px 6px !important;
+        padding: 7px 8px !important;
         font-size: 11px !important;
-        line-height: 1.45 !important;
+        line-height: 1.5 !important;
         color: #0f172a !important;
         white-space: normal !important;
-        word-break: break-word !important;
         text-align: right !important;
+        direction: rtl !important;
         vertical-align: middle !important;
     }
     .erp-pdf-clean-clone tfoot td,
@@ -7717,7 +7726,7 @@
 
 <script id="erp-master-fixes-script">
 (function() {
-    // 1. ضبط اتجاه الرسم في Canvas أثناء توليد الـ PDF مع تثبيت textAlign = 'left' لمنع إزاحة الكلمات أو تداخل الأرقام
+    // 1. ضبط اتجاه الرسم في Canvas أثناء توليد الـ PDF مع تثبيت textAlign = 'left'
     const origFillText = CanvasRenderingContext2D.prototype.fillText;
     CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
         if (window.__erpPdfRenderingActive && typeof text === 'string') {
@@ -7842,7 +7851,6 @@
     };
 
     function initJournalAndLedgerFixes() {
-        // منع ترقيم الصفحات من إخفاء حسابات ميزان المراجعة أو بطاقات الأستاذ أو تصفية المالك
         ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
             document.querySelectorAll(sel).forEach(tbl => {
                 if (tbl._paginationBar) {
@@ -7890,7 +7898,55 @@
         }
     }
 
-    // 4. تجهيز نسخة الـ PDF بدون تداخل عناصر، مع ترويسة رسمية للأستاذ العام وعرض 100%
+    // 4. الدالة الذكية لفصل الكلمات وعزل الأكواد الإنجليزية والأرقام لمنع التصاق الحروف أو انقلاب رقم العقد والجوال
+    window.tokenizeCloneTextNodesForPdf = function(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const textNodes = [];
+        let n;
+        while ((n = walker.nextNode())) {
+            const pTag = n.parentElement ? n.parentElement.tagName : '';
+            if (['SCRIPT', 'STYLE', 'SVG', 'TEXTAREA', 'OPTION', 'NOSCRIPT'].includes(pTag)) continue;
+            if (n.nodeValue && n.nodeValue.trim().length > 0) {
+                textNodes.push(n);
+            }
+        }
+
+        textNodes.forEach(node => {
+            const raw = node.nodeValue;
+            const hasArabicInNode = /[\u0600-\u06FF]/.test(raw);
+            // إذا كان النص يحتوي على عربي وأقواس، نفصل الأقواس والمسافات كوحدات مستقلة لمنع التصاق الرقم بالقوس
+            const parts = hasArabicInNode ? raw.split(/(\s+|[()])/) : raw.split(/(\s+)/);
+
+            const frag = document.createDocumentFragment();
+            parts.forEach(part => {
+                if (!part) return;
+                if (/^\s+$/.test(part)) {
+                    frag.appendChild(document.createTextNode(' '));
+                    return;
+                }
+                const span = document.createElement('span');
+                span.className = 'pdf-word-token';
+                const hasAr = /[\u0600-\u06FF]/.test(part);
+                const hasLatinOrDigit = /[A-Za-z0-9]/.test(part);
+
+                if (hasAr) {
+                    span.dir = 'rtl';
+                } else if (hasLatinOrDigit) {
+                    span.dir = 'ltr';
+                } else {
+                    span.dir = hasArabicInNode ? 'rtl' : 'ltr';
+                }
+                span.textContent = part;
+                frag.appendChild(span);
+            });
+
+            if (node.parentNode) {
+                node.parentNode.replaceChild(frag, node);
+            }
+        });
+    };
+
+    // 5. تجهيز نسخة الـ PDF بدون تداخل عناصر، مع ترويسة رسمية وعرض يستوعب كافة الأعمدة 100%
     window.prepareSmartPdfClone = function(el) {
         const clone = el.cloneNode(true);
         clone.classList.add('erp-pdf-clean-clone');
@@ -7912,7 +7968,7 @@
             clone.insertBefore(hdr, clone.firstChild);
         }
 
-        // في بطاقات الملخص العلوية، وضع الرقم والعملة (ر.س) بجانب بعضهما بوضوح لمنع تداخلهما
+        // دمج الرقم مع (ر.س) داخل البطاقات العلوية لمنع التداخل
         clone.querySelectorAll('.grid > div').forEach(card => {
             const bTag = card.querySelector('b');
             if (bTag && bTag.nextElementSibling && bTag.nextElementSibling.innerText.includes('ر.س')) {
@@ -7929,6 +7985,11 @@
             } else {
                 tr.style.display = '';
             }
+        });
+
+        // إزالة dir="ltr" من وسوم td و th لكي تحاذي جميع الخلايا (بما فيها الجوال) لليمين تحت عنوان العمود مباشرة
+        clone.querySelectorAll('td[dir="ltr"], th[dir="ltr"]').forEach(cell => {
+            cell.setAttribute('dir', 'rtl');
         });
 
         // حذف عمود "الإجراءات" من جداول الـ PDF
@@ -7968,6 +8029,9 @@
         // إزالة أي أزرار تحكم متبقية خارج الجداول
         clone.querySelectorAll('button').forEach(btn => btn.remove());
 
+        // تغليف كل كلمة ورقم وكود في span مستقل لمنع التصاق الكلمات أو قص رقم العقد والجوال
+        window.tokenizeCloneTextNodesForPdf(clone);
+
         const singlePortraitIds = [
             'printableVoucherArea',
             'companyTaxInvoicePrintArea',
@@ -7986,10 +8050,8 @@
         return { clone, isLandscape };
     };
 
-    // تمرير jsPDF قبل margin لضمان حساب العرض الأفقي الكامل (285mm) في html2pdf
     window.createConfiguredPdfWorker = function(filename, isLandscape) {
         const cleanName = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
-        const exactContainerMm = isLandscape ? '285mm' : '198mm';
 
         const worker = html2pdf().set({
             jsPDF: {
@@ -8015,10 +8077,41 @@
             margin: [6, 6, 6, 6]
         });
 
-        return { worker, exactContainerMm };
+        return { worker };
     };
 
-    // 5. الدالة الموحدة لتصدير الـ PDF بعرض 100% من اليمين إلى اليسار
+    // توسيع حاوية التصدير لتستوعب كامل عرض الجدول (scrollWidth) دون قص أي عمود من اليمين أو اليسار
+    window.expandPdfContainerToFitTables = function(c, isLandscape) {
+        const o = document.querySelector('.html2pdf__overlay');
+        if (o) {
+            o.style.left = '0px';
+            o.style.top = '0px';
+            o.style.right = '0px';
+            o.style.direction = 'ltr';
+        }
+        if (c) {
+            c.style.left = '0px';
+            c.style.top = '0px';
+            c.style.right = 'auto';
+            c.style.margin = '0px';
+            c.style.direction = 'rtl';
+
+            const baseWidthPx = isLandscape ? 1220 : 790;
+            c.style.width = baseWidthPx + 'px';
+            c.style.maxWidth = 'none';
+
+            let maxTableW = c.scrollWidth;
+            c.querySelectorAll('table').forEach(t => {
+                if (t.scrollWidth > maxTableW) maxTableW = t.scrollWidth;
+            });
+
+            const finalWidthPx = Math.max(baseWidthPx, maxTableW + 24);
+            c.style.width = finalWidthPx + 'px';
+            c.style.maxWidth = finalWidthPx + 'px';
+        }
+    };
+
+    // 6. الدالة الموحدة لتصدير الـ PDF
     window.exportElementToPDF = async function(elementId, filename) {
         const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
         if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
@@ -8030,27 +8123,12 @@
         window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
-        const { worker, exactContainerMm } = window.createConfiguredPdfWorker(filename, isLandscape);
+        const { worker } = window.createConfiguredPdfWorker(filename, isLandscape);
 
         try {
             await worker.from(clone).toContainer().then(function() {
                 const c = document.querySelector('.html2pdf__container');
-                const o = document.querySelector('.html2pdf__overlay');
-                if (o) {
-                    o.style.left = '0px';
-                    o.style.top = '0px';
-                    o.style.right = '0px';
-                    o.style.direction = 'ltr';
-                }
-                if (c) {
-                    c.style.left = '0px';
-                    c.style.top = '0px';
-                    c.style.right = 'auto';
-                    c.style.margin = '0px';
-                    c.style.width = exactContainerMm;
-                    c.style.maxWidth = exactContainerMm;
-                    c.style.direction = 'rtl';
-                }
+                window.expandPdfContainerToFitTables(c, isLandscape);
             }).toCanvas().toPdf().save();
         } finally {
             window.__erpPdfRenderingActive = false;
@@ -8058,7 +8136,7 @@
         }
     };
 
-    // 6. ربط جميع أزرار التصدير والواتساب بالمحرك الموحد
+    // 7. ربط جميع أزرار التصدير والواتساب بالمحرك الموحد
     window.exportStatementPDF = function() {
         window.exportElementToPDF('financialStatementPrintable', 'دفتر_الأستاذ_العام_والقوائم_المالية.pdf');
     };
@@ -8097,14 +8175,12 @@
         window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
-        const { worker, exactContainerMm } = window.createConfiguredPdfWorker(cleanFile, isLandscape);
+        const { worker } = window.createConfiguredPdfWorker(cleanFile, isLandscape);
 
         try {
             const pdfDataUri = await worker.from(clone).toContainer().then(function() {
                 const c = document.querySelector('.html2pdf__container');
-                const o = document.querySelector('.html2pdf__overlay');
-                if (o) { o.style.left = '0px'; o.style.top = '0px'; o.style.right = '0px'; o.style.direction = 'ltr'; }
-                if (c) { c.style.left = '0px'; c.style.top = '0px'; c.style.right = 'auto'; c.style.margin = '0px'; c.style.width = exactContainerMm; c.style.maxWidth = exactContainerMm; c.style.direction = 'rtl'; }
+                window.expandPdfContainerToFitTables(c, isLandscape);
             }).outputPdf('datauristring');
 
             const res = await fetch('/whatsapp/send-raw-pdf', {
