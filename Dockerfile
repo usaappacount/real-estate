@@ -1,16 +1,21 @@
 FROM php:8.5-apache
 
-# تثبيت الحزم والأدوات اللازمة لنظام PHP وقواعد البيانات
+# تثبيت الحزم والأدوات اللازمة لنظام PHP وقواعد البيانات + تثبيت Node.js 20 لمحرك واتساب QR
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    ca-certificates \
+    gnupg \
     libpng-dev \
     libonig-dev \
     libxml2-dev \
     zip \
     unzip \
     sqlite3 \
-    libsqlite3-dev
+    libsqlite3-dev \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # تفعيل إضافات PHP الضرورية
 RUN docker-php-ext-install pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd
@@ -36,20 +41,17 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # نسخ ملفات المشروع إلى السيرفر
 COPY . /var/www/html
 
-# العمل داخل مجلد المشروع وتثبيت الحزم مع تجاهل قيود النسخ والسكربتات التلقائية
+# العمل داخل مجلد المشروع وتثبيت حزم PHP وحزم Node.js (لمحرك الواتساب)
 WORKDIR /var/www/html
-RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts
+RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
+    && npm install --no-audit --no-fund
 
-# إنشاء مجلد قاعدة البيانات وجلسات لارافيل والتأكد من الصلاحيات المطلوبة
-RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache \
+# إنشاء مجلد قاعدة البيانات وجلسات لارافيل ومجلد جلسة واتساب والتأكد من الصلاحيات المطلوبة
+RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache \
     && touch database/database.sqlite \
-    && chown -R www-data:www-data /var/www/html \
-    && chmod -R 775 storage bootstrap/cache database \
     && find /var/www/html -type d -exec chmod 755 {} \; \
-    && find /var/www/html -type f -exec chmod 644 {} \;
+    && find /var/www/html -type f -exec chmod 644 {} \; \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 storage bootstrap/cache database
 
 # ضبط منفذ العمل
-EXPOSE 80
-
-# تشغيل Apache في الخلفية
-CMD ["apache2-foreground"]

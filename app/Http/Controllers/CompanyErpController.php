@@ -5254,7 +5254,7 @@ class CompanyErpController extends Controller
         return back()->with('success', 'تم تصفير سجل إحصائيات الزيارات بنجاح.');
     }
 
-    /**
+   /**
      * تشغيل محرك واتساب QR المحلي في الخلفية تلقائياً والانتظار حتى يصبح جاهزاً
      */
     private function ensureMarketingQrEngineRunning(): bool
@@ -5282,8 +5282,8 @@ class CompanyErpController extends Controller
                 @exec($cmd);
             }
 
-            // الانتظار التدريجي حتى يفتح المحرك المنفذ 3005 (حتى 6 ثوانٍ)
-            for ($i = 0; $i < 15; $i++) {
+            // الانتظار حتى يفتح المحرك المنفذ 3005 (حتى 8 ثوانٍ)
+            for ($i = 0; $i < 20; $i++) {
                 usleep(400000);
                 try {
                     $check = Http::timeout(1)->get('http://127.0.0.1:3005/status');
@@ -5298,7 +5298,7 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * فحص حالة الاتصال الفعلية من محرك واتساب
+     * فحص حالة الاتصال الفعلية من محرك واتساب الحقيقي فقط
      */
     private function fetchLiveMarketingQrState(): array
     {
@@ -5319,13 +5319,11 @@ class CompanyErpController extends Controller
             }
         } catch (\Throwable $e) {}
 
-        $fallbackQr = self::getSetting('wa_cloud_qr_url', '');
-
         return [
             'engine_up'     => false,
             'connected'     => false,
-            'status'        => !empty($fallbackQr) ? 'qr_ready' : 'disconnected',
-            'qr_url'        => $fallbackQr,
+            'status'        => 'disconnected',
+            'qr_url'        => '',
             'account_name'  => '',
             'account_phone' => '',
             'connected_at'  => '',
@@ -5333,7 +5331,7 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * توليد كود QR حقيقي لواتساب ويب بدون رسائل خطأ مزعجة
+     * توليد كود QR حقيقي ومشفر من خوادم واتساب ويب
      */
     public function generateAdsWhatsappQr(Request $request)
     {
@@ -5341,34 +5339,28 @@ class CompanyErpController extends Controller
 
         if ($engineUp) {
             try {
-                $res = Http::timeout(15)->retry(2, 500)->post('http://127.0.0.1:3005/init-qr');
+                $res = Http::timeout(20)->post('http://127.0.0.1:3005/init-qr', [
+                    'force' => true,
+                ]);
                 if ($res->successful()) {
                     $data = $res->json();
-                    self::setSetting('wa_cloud_qr_url', '');
-                    return response()->json([
-                        'success'       => true,
-                        'connected'     => !empty($data['connected']),
-                        'status'        => $data['status'] ?? 'qr_ready',
-                        'qr_url'        => $data['qr_url'] ?? '',
-                        'account_name'  => $data['account_name'] ?? '',
-                        'account_phone' => $data['account_phone'] ?? '',
-                    ]);
+                    if (!empty($data['qr_url']) || !empty($data['connected'])) {
+                        return response()->json([
+                            'success'       => true,
+                            'connected'     => !empty($data['connected']),
+                            'status'        => $data['status'] ?? 'qr_ready',
+                            'qr_url'        => $data['qr_url'] ?? '',
+                            'account_name'  => $data['account_name'] ?? '',
+                            'account_phone' => $data['account_phone'] ?? '',
+                        ]);
+                    }
                 }
             } catch (\Throwable $e) {}
         }
 
-        // بديل تلقائي فوري في حال فتح الموقع على استضافة سحابية لا يعمل بها Node محلياً
-        $qrPayload = '2@' . base64_encode('WA_ERP_' . url('/') . '_' . time()) . ',' . bin2hex(random_bytes(16)) . ',2';
-        $fallbackQrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&margin=10&data=' . urlencode($qrPayload);
-        self::setSetting('wa_cloud_qr_url', $fallbackQrUrl);
-
         return response()->json([
-            'success'       => true,
-            'connected'     => false,
-            'status'        => 'qr_ready',
-            'qr_url'        => $fallbackQrUrl,
-            'account_name'  => '',
-            'account_phone' => '',
+            'success' => false,
+            'message' => 'جاري تشغيل محرك واتساب الحقيقي في الخلفية، يرجى الانتظار 3 ثوانٍ ثم الضغط مرة أخرى.'
         ]);
     }
 
@@ -5386,7 +5378,6 @@ class CompanyErpController extends Controller
      */
     public function disconnectAdsWhatsappQr()
     {
-        self::setSetting('wa_cloud_qr_url', '');
         try {
             Http::timeout(4)->post('http://127.0.0.1:3005/logout');
         } catch (\Throwable $e) {}
