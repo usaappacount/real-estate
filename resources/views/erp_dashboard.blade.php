@@ -1139,7 +1139,7 @@
                 </div>
             @endif
 
-            <!-- 1. النظرة العامة -->
+            <!-- 1. النظرة العامة + إحصائيات الزوار والدول الحية -->
             @if($tab == 'overview')
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
                     <div class="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm">
@@ -1257,6 +1257,720 @@
                         </table>
                     </div>
                 </div>
+
+                <!-- ==================== مركز إحصائيات زوار المنصة والتتبع الجغرافي الحي ==================== -->
+                @php
+                    $sa = $siteAnalytics ?? [
+                        'total_views' => 0, 'unique_visitors' => 0, 'today_views' => 0,
+                        'today_unique' => 0, 'online_now' => 1, 'countries_count' => 0,
+                        'countries' => collect(), 'cities' => collect(), 'devices' => collect(),
+                        'referrers' => collect(), 'daily_trend' => [], 'recent_visitors' => collect()
+                    ];
+                @endphp
+                <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden mt-6">
+                    <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4 bg-slate-900 text-white">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-2xl">🌍</div>
+                            <div>
+                                <div class="flex items-center gap-2.5">
+                                    <h3 class="font-bold text-base text-white">مركز إحصائيات زوار الموقع والدول (Real-Time Geo Analytics)</h3>
+                                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[11px] font-bold">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                                        متواجد الآن: {{ $sa['online_now'] }} زائر
+                                    </span>
+                                </div>
+                                <p class="text-xs text-slate-400 mt-0.5">إحصائيات حقيقية لعدد الزيارات، الدول والمدن، نوع الأجهزة، ومصادر قدوم الزوار</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="exportTableToCSV('liveVisitorsLogTable', 'سجل_زوار_الموقع_والدول.xlsx')"
+                                    class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                📊 تصدير الزيارات Excel
+                            </button>
+                            <form action="{{ route('erp.analytics.clear') }}" method="POST" onsubmit="return confirm('تصفير سجل إحصائيات الزيارات؟');">
+                                @csrf
+                                <button type="submit" class="px-3.5 py-2 rounded-xl bg-rose-500/20 text-rose-200 border border-rose-500/30 text-xs font-bold">
+                                    🗑️ تصفير السجل
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="p-6 space-y-6">
+                        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <span class="text-xs text-slate-500 font-semibold block">إجمالي الزيارات</span>
+                                <span class="text-2xl font-extrabold text-slate-900 font-mono mt-1 block">{{ number_format($sa['total_views']) }}</span>
+                                <span class="text-[11px] text-emerald-600 font-bold">مشاهدات الصفحات</span>
+                            </div>
+                            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <span class="text-xs text-slate-500 font-semibold block">الزوار الفريدون (Unique)</span>
+                                <span class="text-2xl font-extrabold text-sky-700 font-mono mt-1 block">{{ number_format($sa['unique_visitors']) }}</span>
+                                <span class="text-[11px] text-slate-500">أجهزة / IP مستقلة</span>
+                            </div>
+                            <div class="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200">
+                                <span class="text-xs text-emerald-800 font-semibold block">زيارات اليوم ({{ date('Y-m-d') }})</span>
+                                <span class="text-2xl font-extrabold text-emerald-700 font-mono mt-1 block">{{ number_format($sa['today_views']) }}</span>
+                                <span class="text-[11px] text-emerald-700 font-bold">{{ number_format($sa['today_unique']) }} زائر فريد اليوم</span>
+                            </div>
+                            <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <span class="text-xs text-slate-500 font-semibold block">عدد الدول النشطة</span>
+                                <span class="text-2xl font-extrabold text-indigo-700 font-mono mt-1 block">{{ $sa['countries_count'] }}</span>
+                                <span class="text-[11px] text-slate-500">توزيع جغرافي دولي</span>
+                            </div>
+                            <div class="p-4 rounded-2xl bg-amber-50/60 border border-amber-200">
+                                <span class="text-xs text-amber-900 font-semibold block">المتواجدون حالياً</span>
+                                <span class="text-2xl font-extrabold text-amber-700 font-mono mt-1 block">{{ $sa['online_now'] }}</span>
+                                <span class="text-[11px] text-amber-800 font-bold">نشط خلال آخر 10 دقائق</span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                            <div class="lg:col-span-5 p-5 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-3">
+                                <h4 class="font-bold text-sm text-slate-900 border-b pb-2">🏳️ الزيارات حسب الدول (Geo-IP)</h4>
+                                <div class="space-y-2.5 max-h-64 overflow-y-auto">
+                                    @forelse($sa['countries'] as $cnt)
+                                        <div class="p-3 rounded-xl bg-white border space-y-1.5">
+                                            <div class="flex items-center justify-between text-xs">
+                                                <span class="font-bold text-slate-900">{{ $cnt->flag }} {{ $cnt->country_name }} ({{ $cnt->country_code }})</span>
+                                                <span class="font-mono font-bold text-emerald-700">{{ number_format($cnt->visits_count) }} زيارة ({{ $cnt->percentage }}%)</span>
+                                            </div>
+                                            <div class="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                                                <div class="h-full bg-emerald-600 rounded-full" style="width: {{ max(5, $cnt->percentage) }}%"></div>
+                                            </div>
+                                        </div>
+                                    @empty
+                                        <div class="py-6 text-center text-xs text-slate-400">لا توجد زيارات مسجلة بعد.</div>
+                                    @endforelse
+                                </div>
+                            </div>
+
+                            <div class="lg:col-span-7 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="p-5 rounded-2xl border border-slate-200 bg-white space-y-3">
+                                    <h4 class="font-bold text-sm text-slate-900 border-b pb-2">📱 الأجهزة ومصادر الزيارات</h4>
+                                    @foreach($sa['devices'] as $dv)
+                                        <div class="flex items-center justify-between text-xs p-2 rounded-lg bg-slate-50 border">
+                                            <span class="font-bold">{{ $dv->device_type }}</span>
+                                            <span class="font-mono font-bold text-emerald-700">{{ $dv->visits_count }} ({{ $dv->percentage }}%)</span>
+                                        </div>
+                                    @endforeach
+                                    <div class="pt-2 border-t space-y-1.5">
+                                        @foreach($sa['referrers'] as $ref)
+                                            <div class="flex items-center justify-between text-xs p-2 rounded-lg bg-slate-50 border">
+                                                <span class="font-semibold">{{ $ref->referrer_source }}</span>
+                                                <span class="font-mono font-bold text-sky-700">{{ $ref->visits_count }} زيارة</span>
+                                            </div>
+                                        @endforeach
+                                    </div>
+                                </div>
+
+                                <div class="p-5 rounded-2xl border border-slate-200 bg-white flex flex-col justify-between space-y-4">
+                                    <div>
+                                        <h4 class="font-bold text-sm text-slate-900 border-b pb-2 mb-2">🏙️ أبرز المدن</h4>
+                                        <div class="flex flex-wrap gap-1.5">
+                                            @foreach($sa['cities'] as $ct)
+                                                <span class="px-2.5 py-1 rounded-lg bg-slate-100 border text-xs font-bold">
+                                                    {{ $ct->city }} <b class="text-emerald-700 font-mono">({{ $ct->visits_count }})</b>
+                                                </span>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                    <div class="pt-2 border-t">
+                                        <div class="text-xs font-bold text-slate-700 mb-2">📈 حركة آخر 7 أيام:</div>
+                                        @php $maxDayViews = max(1, collect($sa['daily_trend'])->max('views')); @endphp
+                                        <div class="grid grid-cols-7 gap-1.5 items-end h-24 pt-3 px-2 bg-slate-50 rounded-xl border">
+                                            @foreach($sa['daily_trend'] as $dt)
+                                                @php $barH = max(12, round(($dt['views'] / $maxDayViews) * 100)); @endphp
+                                                <div class="flex flex-col items-center justify-end h-full">
+                                                    <span class="text-[10px] font-mono font-bold text-emerald-700">{{ $dt['views'] }}</span>
+                                                    <div class="w-full bg-slate-900 rounded-t" style="height: {{ $barH }}%"></div>
+                                                    <span class="text-[9px] font-mono text-slate-500 mt-1">{{ $dt['label'] }}</span>
+                                                </div>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-3">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <h4 class="font-bold text-sm text-slate-900">🕵️‍♂️ السجل المباشر لحركة الزوار (آخر 150 زيارة حقيقية)</h4>
+                                <input type="text" id="visitorStreamSearch" oninput="filterTableRows('visitorStreamSearch', 'visitorStreamTbody')"
+                                       placeholder="🔍 ابحث بالدولة، المدينة، الـ IP، أو الجهاز..."
+                                       class="w-64 rounded-xl border border-slate-300 px-3 py-1.5 text-xs bg-slate-50">
+                            </div>
+                            <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                                <table class="w-full text-xs text-right" id="liveVisitorsLogTable">
+                                    <thead class="bg-slate-100 text-slate-700 border-b">
+                                        <tr>
+                                            <th class="py-3 px-4">الدولة والمدينة</th>
+                                            <th class="py-3 px-4">عنوان الـ IP والمزود</th>
+                                            <th class="py-3 px-4">الجهاز والنظام</th>
+                                            <th class="py-3 px-4">المتصفح</th>
+                                            <th class="py-3 px-4">الصفحة</th>
+                                            <th class="py-3 px-4">المصدر</th>
+                                            <th class="py-3 px-4">الوقت</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="visitorStreamTbody" class="divide-y divide-slate-100">
+                                        @forelse($sa['recent_visitors'] as $v)
+                                            <tr class="hover:bg-slate-50">
+                                                <td class="py-3 px-4 font-bold">{{ $v->flag }} {{ $v->country_name }} — <span class="text-emerald-700">{{ $v->city }}</span></td>
+                                                <td class="py-3 px-4 font-mono" dir="ltr">{{ $v->ip_address }} <span class="block text-[10px] text-slate-400">{{ $v->isp }}</span></td>
+                                                <td class="py-3 px-4 font-bold">{{ $v->device_type }} <span class="block text-[10px] text-slate-500">{{ $v->os }}</span></td>
+                                                <td class="py-3 px-4">{{ $v->browser }}</td>
+                                                <td class="py-3 px-4 font-bold text-emerald-700">{{ $v->page_visited }}</td>
+                                                <td class="py-3 px-4"><span class="px-2 py-0.5 rounded bg-sky-50 text-sky-800 font-bold">{{ $v->referrer_source }}</span></td>
+                                                <td class="py-3 px-4 font-mono text-slate-500" dir="ltr">{{ $v->created_at }}</td>
+                                            </tr>
+                                        @empty
+                                            <tr><td colspan="7" class="py-6 text-center text-slate-400">لا توجد زيارات مسجلة بعد.</td></tr>
+                                        @endforelse
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @endif
+
+            <!-- ==================== نظام الحملات الإعلانية عبر الواتساب بـ API مستقل (يظهر في تبويب إعدادات واتساب) ==================== -->
+            @if($tab == 'whatsapp')
+                @php
+                    $adsWa = $adsWhatsappSettings ?? [
+                        'sender_phone' => '0500000000',
+                        'api_url' => 'https://api.greatwhats.com/v1/messages',
+                        'api_token' => '',
+                        'instance_id' => '',
+                    ];
+                @endphp
+                <div class="space-y-6 mb-6">
+                    <!-- 1. إعدادات API الواتساب الإعلاني المستقل (منفصل عن النظام الأساسي) -->
+                    <div class="bg-white rounded-3xl border-2 border-slate-900 shadow-sm overflow-hidden">
+                        <div class="p-5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <div class="flex items-center gap-2">
+                                    <h3 class="font-bold text-base text-white">📢 أولاً: إعدادات ربط API الواتساب المستقل (الخاص بالرسائل الإعلانية فقط)</h3>
+                                    <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {{ !empty($adsWa['api_token']) ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40' : 'bg-rose-500/20 text-rose-300 border border-rose-400/40' }}">
+                                        {{ !empty($adsWa['api_token']) ? '✔ API الإعلانات متصل' : '⚠️ غير متصل' }}
+                                    </span>
+                                </div>
+                                <p class="text-xs text-slate-300 mt-0.5">معزول تماماً عن واتساب النظام الأساسي (OTP والسندات) لحماية رقم النظام من الحظر</p>
+                            </div>
+                        </div>
+                        <form action="{{ route('erp.whatsapp_ads.settings') }}" method="POST" class="p-5 grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50">
+                            @csrf
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">رقم واتساب الإعلانات *</label>
+                                <input type="text" name="ads_sender_phone" value="{{ $adsWa['sender_phone'] }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white font-bold">
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-xs font-bold text-slate-700 mb-1">رابط الـ API المستقل للإعلانات (Endpoint URL) *</label>
+                                <input type="url" name="ads_api_url" value="{{ $adsWa['api_url'] }}" required dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">Instance ID (اختياري)</label>
+                                <input type="text" name="ads_instance_id" value="{{ $adsWa['instance_id'] }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
+                            </div>
+                            <div class="md:col-span-3">
+                                <label class="block text-xs font-bold text-slate-700 mb-1">توكن الإعلانات السري (Marketing API Token) *</label>
+                                <input type="text" name="ads_api_token" value="{{ $adsWa['api_token'] }}" required dir="ltr" placeholder="أدخل التوكن الخاص برقم الإعلانات..." class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white font-bold text-emerald-800">
+                            </div>
+                            <div class="flex items-end">
+                                <button type="submit" class="w-full py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">💾 حفظ API الإعلانات</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- 2. منصة استيراد الإكسل وإطلاق الحملات الإعلانية بالفاصل الزمني -->
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 space-y-6">
+                        <div class="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
+                            <div>
+                                <h3 class="font-bold text-lg text-slate-900">🚀 منصة إطلاق الحملات الإعلانية الذكية عبر الواتساب</h3>
+                                <p class="text-xs text-slate-500">استيراد إكسل (تحديد عمود رقم العميل وعمود اسم العميل) + إرسال ملفات وصور + فاصل زمني بالثواني بين كل رسالة</p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <button type="button" onclick="downloadAdsExcelTemplate()" class="px-3 py-2 rounded-xl bg-slate-100 text-slate-800 text-xs font-bold">📥 تحميل قالب Excel جاهز</button>
+                                <button type="button" onclick="importSystemContactsToAds()" class="px-3 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold">👥 سحب جهات النظام ({{ count($crmContactsForAds ?? []) }})</button>
+                                <button type="button" onclick="clearAdsRecipientsList()" class="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold">🗑️ تفريغ القائمة</button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                            <!-- يمين: استيراد الإكسل وتحديد عمود الاسم والرقم + جدول المستلمين -->
+                            <div class="lg:col-span-6 space-y-4">
+                                <div class="p-4 rounded-2xl bg-emerald-50/50 border-2 border-dashed border-emerald-400 space-y-3">
+                                    <div class="flex items-center justify-between">
+                                        <div>
+                                            <h4 class="font-bold text-sm text-slate-900">📊 استيراد ملف الإكسل (.xlsx / .csv)</h4>
+                                            <p class="text-[11px] text-slate-600">ارفع ملف الإكسل ثم اختر عمود الرقم وعمود الاسم</p>
+                                        </div>
+                                        <label class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold cursor-pointer">
+                                            <span>📂 اختر ملف Excel</span>
+                                            <input type="file" id="adsExcelFileInput" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleAdsExcelUpload(this)">
+                                        </label>
+                                    </div>
+
+                                    <!-- صندوق تحديد عمود رقم العميل وعمود اسم العميل -->
+                                    <div id="excelColumnMapperBox" class="hidden p-3.5 rounded-xl bg-white border border-emerald-300 space-y-3">
+                                        <div class="text-xs font-bold text-emerald-900 flex justify-between">
+                                            <span>✅ حدد أعمدة ملف الإكسل:</span>
+                                            <span id="excelTotalRowsBadge" class="font-mono text-emerald-700">0 صف</span>
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">📞 عامود رقم العميل *</label>
+                                                <select id="excelPhoneColSelect" onchange="applyExcelColumnsMapping()" class="w-full rounded-xl border px-2.5 py-2 text-xs font-bold bg-slate-50"></select>
+                                            </div>
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">👤 عامود اسم العميل *</label>
+                                                <select id="excelNameColSelect" onchange="applyExcelColumnsMapping()" class="w-full rounded-xl border px-2.5 py-2 text-xs font-bold bg-slate-50"></select>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-12 gap-2 pt-2 border-t border-emerald-200">
+                                        <input type="text" id="manualAdName" placeholder="اسم العميل يدوياً" class="col-span-5 rounded-xl border px-3 py-1.5 text-xs bg-white">
+                                        <input type="text" id="manualAdPhone" placeholder="05XXXXXXXX" dir="ltr" class="col-span-5 rounded-xl border px-3 py-1.5 text-xs font-mono bg-white">
+                                        <button type="button" onclick="addManualAdRecipient()" class="col-span-2 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold">+ أضف</button>
+                                    </div>
+                                </div>
+
+                                <div class="rounded-2xl border border-slate-200 overflow-hidden">
+                                    <div class="px-4 py-2.5 bg-slate-100 border-b flex justify-between text-xs font-bold">
+                                        <span>📋 المستلمون (<span id="adsRecipientsCount" class="text-emerald-700 font-mono">0</span> عميل)</span>
+                                        <span class="text-slate-500 text-[11px]">فلترة المكرر تلقائياً</span>
+                                    </div>
+                                    <div class="max-h-72 overflow-y-auto">
+                                        <table class="w-full text-xs text-right">
+                                            <thead class="bg-slate-50 border-b sticky top-0">
+                                                <tr>
+                                                    <th class="py-2 px-3">#</th>
+                                                    <th class="py-2 px-3">اسم العميل</th>
+                                                    <th class="py-2 px-3">رقم العميل</th>
+                                                    <th class="py-2 px-3 text-center">الحالة</th>
+                                                    <th class="py-2 px-3 text-center">حذف</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="adsRecipientsTbody" class="divide-y">
+                                                <tr><td colspan="5" class="py-8 text-center text-slate-400">ارفع ملف Excel أو أضف عملاء للبدء.</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- يسار: الرسالة الإعلانية + المرفق + تحديد الثواني (من كذا إلى كذا) + شريط الإرسال -->
+                            <div class="lg:col-span-6 space-y-4">
+                                <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">اسم الحملة الإعلانية</label>
+                                        <input type="text" id="adCampaignTitle" value="حملة إعلانية - {{ date('Y-m-d') }}" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                    </div>
+
+                                    <div>
+                                        <div class="flex flex-wrap items-center justify-between gap-1 mb-1">
+                                            <label class="text-xs font-bold text-slate-700">💬 نص الرسالة الإعلانية *</label>
+                                            <div class="flex flex-wrap gap-1">
+                                                <button type="button" onclick="insertAdTag('{اسم_العميل}')" class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">+ {اسم_العميل}</button>
+                                                <button type="button" onclick="insertAdTag('{رقم_العميل}')" class="px-2 py-0.5 rounded bg-sky-100 text-sky-800 text-[10px] font-bold">+ {رقم_العميل}</button>
+                                                <button type="button" onclick="insertAdTag('{مرحباً|أهلاً بك|حياك الله}')" class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">+ صيغ متعددة</button>
+                                                <button type="button" onclick="insertAdTag('{كود_عشوائي}')" class="px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-[10px] font-bold">+ {كود_عشوائي}</button>
+                                            </div>
+                                        </div>
+                                        <textarea id="adMessageTemplate" rows="4" oninput="updateAdLivePreview()"
+                                                  placeholder="{مرحباً|أهلاً بك} أستاذ {اسم_العميل} 🌹&#10;يسرنا دعوتك للاطلاع على أحدث عروضنا العقارية..."
+                                                  class="w-full rounded-xl border px-3 py-2 text-xs bg-white leading-relaxed"></textarea>
+                                    </div>
+
+                                    <!-- رفع ملف مرفق (صورة، PDF، فيديو) -->
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 rounded-xl bg-white border">
+                                        <div>
+                                            <label class="block text-[11px] font-bold text-slate-700 mb-1">📎 إرفاق ملف (صورة / PDF / فيديو)</label>
+                                            <input type="file" id="adMediaFileInput" accept="image/*,.pdf,video/*,audio/*" onchange="handleAdMediaUpload(this)" class="w-full text-xs">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[11px] font-bold text-slate-700 mb-1">أو رابط ملف مباشر (URL اختياري)</label>
+                                            <input type="url" id="adMediaDirectUrl" dir="ltr" placeholder="https://example.com/brochure.pdf" class="w-full rounded-lg border px-2.5 py-1.5 text-xs font-mono">
+                                        </div>
+                                        <div id="adMediaSelectedInfo" class="hidden md:col-span-2 text-[11px] text-emerald-700 font-bold flex justify-between bg-emerald-50 px-3 py-1.5 rounded-lg">
+                                            <span id="adMediaFileNameLabel"></span>
+                                            <button type="button" onclick="clearAdMediaFile()" class="text-rose-600 underline">إزالة المرفق</button>
+                                        </div>
+                                    </div>
+
+                                    <!-- تحديد مدة الانتظار بين كل رسالة والأخرى بالثواني -->
+                                    <div class="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 space-y-2">
+                                        <div class="text-xs font-bold text-amber-950">⏱️ الفاصل الزمني الذكي بين الرسائل (نظام الحماية من الحظر Anti-Ban)</div>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">من (ثانية) *</label>
+                                                <input type="number" id="adMinDelaySec" value="5" min="1" max="300" class="w-full rounded-xl border px-3 py-1.5 text-xs font-mono font-bold bg-white">
+                                            </div>
+                                            <div>
+                                                <label class="block text-[11px] font-bold text-slate-700 mb-1">إلى (ثانية) *</label>
+                                                <input type="number" id="adMaxDelaySec" value="15" min="1" max="600" class="w-full rounded-xl border px-3 py-1.5 text-xs font-mono font-bold bg-white">
+                                            </div>
+                                        </div>
+                                        <p class="text-[11px] text-amber-800">سيختار النظام وقت انتظار عشوائي بين هذين الرقمين قبل إرسال كل رسالة تالية.</p>
+                                    </div>
+
+                                    <!-- معاينة الرسالة -->
+                                    <div class="p-3 rounded-xl bg-emerald-950 text-white text-xs space-y-1">
+                                        <div class="text-[10px] text-emerald-400 font-bold">📱 معاينة حية لرسالة العميل الأول:</div>
+                                        <div id="adLivePreviewBox" class="whitespace-pre-line text-slate-100 text-xs">اكتب نص الرسالة بالأعلى لمعاينتها هنا...</div>
+                                    </div>
+
+                                    <!-- شريط التقدم والعداد التنازلي وأزرار التحكم بالحملة -->
+                                    <div class="p-4 rounded-2xl bg-slate-900 text-white space-y-3">
+                                        <div class="flex items-center justify-between text-xs">
+                                            <span id="adCampaignStatusText" class="font-bold text-emerald-400">جاهز لإطلاق الحملة</span>
+                                            <span id="adCountdownBadge" class="px-2.5 py-0.5 rounded bg-white/10 font-mono text-[11px]">الانتظار: 0 ث</span>
+                                        </div>
+                                        <div class="w-full h-2.5 rounded-full bg-slate-800 overflow-hidden">
+                                            <div id="adProgressBar" class="h-full bg-emerald-500 transition-all" style="width: 0%"></div>
+                                        </div>
+                                        <div class="flex justify-between text-[11px] font-mono text-slate-300">
+                                            <span>✅ نجح: <b id="adSentCounter" class="text-emerald-400">0</b></span>
+                                            <span>❌ فشل: <b id="adFailedCounter" class="text-rose-400">0</b></span>
+                                            <span>📊 المتبقي: <b id="adRemainingCounter" class="text-amber-300">0</b></span>
+                                        </div>
+                                        <div class="flex gap-2 pt-1">
+                                            <button type="button" id="btnStartAdCampaign" onclick="startWhatsappAdCampaign()" class="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">
+                                                🚀 بدء إرسال الحملة الآن
+                                            </button>
+                                            <button type="button" id="btnPauseAdCampaign" onclick="togglePauseAdCampaign()" disabled class="px-4 py-2.5 rounded-xl bg-amber-600 text-white text-xs font-bold opacity-50">
+                                                ⏸️ إيقاف مؤقت
+                                            </button>
+                                            <button type="button" id="btnStopAdCampaign" onclick="stopAdCampaign()" disabled class="px-4 py-2.5 rounded-xl bg-rose-600 text-white text-xs font-bold opacity-50">
+                                                ⏹️ إنهاء
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    window.adsRawExcelRows = [];
+                    window.adsRecipientsList = [];
+                    window.adSelectedMediaBase64 = '';
+                    window.adSelectedMediaName = '';
+                    window.adSelectedMediaMime = '';
+                    window.adCampaignRunning = false;
+                    window.adCampaignPaused = false;
+                    window.adCampaignAborted = false;
+                    window.crmSystemContacts = @json($crmContactsForAds ?? []);
+
+                    function normalizeSaudiAdPhone(raw) {
+                        let d = String(raw || '').replace(/\D/g, '');
+                        if (!d) return '';
+                        if (d.startsWith('00966')) d = '0' + d.slice(5);
+                        else if (d.startsWith('966') && d.length >= 11) d = '0' + d.slice(3);
+                        else if (d.length === 9 && d.startsWith('5')) d = '0' + d;
+                        return d;
+                    }
+
+                    function handleAdsExcelUpload(input) {
+                        const file = input.files[0];
+                        if (!file || typeof XLSX === 'undefined') return;
+                        const reader = new FileReader();
+                        reader.onload = function(e) {
+                            const data = new Uint8Array(e.target.result);
+                            const wb = XLSX.read(data, { type: 'array' });
+                            const sheet = wb.Sheets[wb.SheetNames[0]];
+                            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+                            if (rows.length < 2) {
+                                alert('ملف الإكسل فارغ أو لا يحتوي على صفوف كافية.');
+                                return;
+                            }
+                            window.adsRawExcelRows = rows;
+                            const headers = rows[0].map((h, i) => String(h || ('عمود ' + (i + 1))).trim());
+                            const phoneSel = document.getElementById('excelPhoneColSelect');
+                            const nameSel = document.getElementById('excelNameColSelect');
+                            phoneSel.innerHTML = '';
+                            nameSel.innerHTML = '';
+
+                            let guessedPhoneIdx = 0, guessedNameIdx = 0;
+                            headers.forEach((h, idx) => {
+                                const lower = h.toLowerCase();
+                                if (lower.includes('جوال') || lower.includes('رقم') || lower.includes('هاتف') || lower.includes('phone') || lower.includes('mobile')) guessedPhoneIdx = idx;
+                                if (lower.includes('اسم') || lower.includes('عميل') || lower.includes('name') || lower.includes('client')) guessedNameIdx = idx;
+                                phoneSel.innerHTML += `<option value="${idx}">${h}</option>`;
+                                nameSel.innerHTML += `<option value="${idx}">${h}</option>`;
+                            });
+                            if (guessedPhoneIdx === guessedNameIdx && headers.length > 1) guessedPhoneIdx = 1;
+                            phoneSel.value = guessedPhoneIdx;
+                            nameSel.value = guessedNameIdx;
+
+                            document.getElementById('excelTotalRowsBadge').innerText = (rows.length - 1) + ' صف';
+                            document.getElementById('excelColumnMapperBox').classList.remove('hidden');
+                            applyExcelColumnsMapping();
+                        };
+                        reader.readAsArrayBuffer(file);
+                    }
+
+                    function applyExcelColumnsMapping() {
+                        const rows = window.adsRawExcelRows;
+                        if (!rows || rows.length < 2) return;
+                        const phoneCol = parseInt(document.getElementById('excelPhoneColSelect').value, 10);
+                        const nameCol = parseInt(document.getElementById('excelNameColSelect').value, 10);
+                        for (let i = 1; i < rows.length; i++) {
+                            const r = rows[i];
+                            const phone = normalizeSaudiAdPhone(r[phoneCol]);
+                            const name = String(r[nameCol] || 'عميلنا الكريم').trim();
+                            if (phone.length >= 9 && !window.adsRecipientsList.some(x => x.phone === phone)) {
+                                window.adsRecipientsList.push({ name: name || 'عميلنا الكريم', phone: phone, status: 'pending', note: 'بالانتظار' });
+                            }
+                        }
+                        renderAdsRecipientsTable();
+                    }
+
+                    function addManualAdRecipient() {
+                        const nameEl = document.getElementById('manualAdName');
+                        const phoneEl = document.getElementById('manualAdPhone');
+                        const phone = normalizeSaudiAdPhone(phoneEl.value);
+                        const name = (nameEl.value || 'عميلنا الكريم').trim();
+                        if (phone.length < 9) { alert('يرجى إدخال رقم جوال صحيح.'); return; }
+                        if (!window.adsRecipientsList.some(x => x.phone === phone)) {
+                            window.adsRecipientsList.push({ name, phone, status: 'pending', note: 'بالانتظار' });
+                        }
+                        nameEl.value = ''; phoneEl.value = '';
+                        renderAdsRecipientsTable();
+                    }
+
+                    function importSystemContactsToAds() {
+                        (window.crmSystemContacts || []).forEach(c => {
+                            const p = normalizeSaudiAdPhone(c.phone);
+                            if (p.length >= 9 && !window.adsRecipientsList.some(x => x.phone === p)) {
+                                window.adsRecipientsList.push({ name: c.name || 'عميلنا الكريم', phone: p, status: 'pending', note: 'بالانتظار' });
+                            }
+                        });
+                        renderAdsRecipientsTable();
+                    }
+
+                    function clearAdsRecipientsList() {
+                        if (window.adCampaignRunning) return;
+                        window.adsRecipientsList = [];
+                        renderAdsRecipientsTable();
+                    }
+
+                    function removeSingleAdRecipient(idx) {
+                        if (window.adCampaignRunning) return;
+                        window.adsRecipientsList.splice(idx, 1);
+                        renderAdsRecipientsTable();
+                    }
+
+                    function renderAdsRecipientsTable() {
+                        const tbody = document.getElementById('adsRecipientsTbody');
+                        document.getElementById('adsRecipientsCount').innerText = window.adsRecipientsList.length;
+                        document.getElementById('adRemainingCounter').innerText = window.adsRecipientsList.filter(x => x.status === 'pending').length;
+                        if (window.adsRecipientsList.length === 0) {
+                            tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-slate-400">ارفع ملف Excel أو أضف عملاء للبدء.</td></tr>';
+                            updateAdLivePreview();
+                            return;
+                        }
+                        tbody.innerHTML = window.adsRecipientsList.map((item, idx) => {
+                            let badge = '<span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">⏳ بالانتظار</span>';
+                            if (item.status === 'sending') badge = '<span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">📤 جاري الإرسال...</span>';
+                            else if (item.status === 'sent') badge = '<span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">✔ تم الإرسال</span>';
+                            else if (item.status === 'failed') badge = `<span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold" title="${item.note || ''}">✖ فشل</span>`;
+                            return `<tr>
+                                <td class="py-2 px-3 font-mono">${idx + 1}</td>
+                                <td class="py-2 px-3 font-bold text-slate-900">${item.name}</td>
+                                <td class="py-2 px-3 font-mono text-emerald-700 font-bold" dir="ltr">${item.phone}</td>
+                                <td class="py-2 px-3 text-center">${badge}</td>
+                                <td class="py-2 px-3 text-center"><button type="button" onclick="removeSingleAdRecipient(${idx})" class="text-rose-500 font-bold">✕</button></td>
+                            </tr>`;
+                        }).join('');
+                        updateAdLivePreview();
+                    }
+
+                    function insertAdTag(tag) {
+                        const ta = document.getElementById('adMessageTemplate');
+                        const start = ta.selectionStart || 0;
+                        const end = ta.selectionEnd || 0;
+                        ta.value = ta.value.substring(0, start) + tag + ta.value.substring(end);
+                        ta.focus();
+                        updateAdLivePreview();
+                    }
+
+                    function compileAdMessageForRecipient(template, recipient) {
+                        let msg = String(template || '');
+                        msg = msg.replace(/\{اسم_العميل\}/g, recipient.name || 'عميلنا الكريم');
+                        msg = msg.replace(/\{رقم_العميل\}/g, recipient.phone || '');
+                        msg = msg.replace(/\{التاريخ\}/g, new Date().toISOString().slice(0, 10));
+                        msg = msg.replace(/\{كود_عشوائي\}/g, Math.floor(1000 + Math.random() * 9000));
+                        msg = msg.replace(/\{([^{}]+\|[^{}]+)\}/g, function(_, group) {
+                            const opts = group.split('|');
+                            return opts[Math.floor(Math.random() * opts.length)];
+                        });
+                        return msg;
+                    }
+
+                    function updateAdLivePreview() {
+                        const tpl = document.getElementById('adMessageTemplate')?.value || '';
+                        const sample = window.adsRecipientsList[0] || { name: 'صالح عبدالله', phone: '0556666037' };
+                        document.getElementById('adLivePreviewBox').innerText = tpl ? compileAdMessageForRecipient(tpl, sample) : 'اكتب نص الرسالة بالأعلى لمعاينتها هنا...';
+                    }
+
+                    function handleAdMediaUpload(input) {
+                        const f = input.files[0];
+                        if (!f) return;
+                        if (f.size > 12 * 1024 * 1024) { alert('حجم الملف يتجاوز 12MB.'); input.value = ''; return; }
+                        const reader = new FileReader();
+                        reader.onload = function(e) {
+                            window.adSelectedMediaBase64 = e.target.result;
+                            window.adSelectedMediaName = f.name;
+                            window.adSelectedMediaMime = f.type || 'application/octet-stream';
+                            document.getElementById('adMediaFileNameLabel').innerText = '📎 المرفق الجاهز: ' + f.name;
+                            document.getElementById('adMediaSelectedInfo').classList.remove('hidden');
+                        };
+                        reader.readAsDataURL(f);
+                    }
+
+                    function clearAdMediaFile() {
+                        window.adSelectedMediaBase64 = '';
+                        window.adSelectedMediaName = '';
+                        window.adSelectedMediaMime = '';
+                        document.getElementById('adMediaFileInput').value = '';
+                        document.getElementById('adMediaSelectedInfo').classList.add('hidden');
+                    }
+
+                    function downloadAdsExcelTemplate() {
+                        if (typeof XLSX === 'undefined') return;
+                        const ws = XLSX.utils.aoa_to_sheet([
+                            ['اسم العميل', 'رقم العميل'],
+                            ['صالح عبدالله', '0556666037'],
+                            ['فهد العتيبي', '0501234567']
+                        ]);
+                        ws['!views'] = [{ rightToLeft: true }];
+                        const wb = XLSX.utils.book_new();
+                        XLSX.utils.book_append_sheet(wb, ws, 'العملاء');
+                        XLSX.writeFile(wb, 'قالب_إعلانات_واتساب.xlsx');
+                    }
+
+                    function sleepSecondsWithCountdown(sec) {
+                        return new Promise(resolve => {
+                            let left = sec;
+                            const badge = document.getElementById('adCountdownBadge');
+                            const timer = setInterval(() => {
+                                if (window.adCampaignAborted) { clearInterval(timer); resolve(); return; }
+                                if (window.adCampaignPaused) { badge.innerText = '⏸️ متوقف مؤقتاً'; return; }
+                                badge.innerText = `⏳ الرسالة التالية بعد ${left} ثانية...`;
+                                left--;
+                                if (left < 0) { clearInterval(timer); resolve(); }
+                            }, 1000);
+                        });
+                    }
+
+                    async function startWhatsappAdCampaign() {
+                        if (window.adCampaignRunning) return;
+                        const tpl = (document.getElementById('adMessageTemplate')?.value || '').trim();
+                        const directUrl = (document.getElementById('adMediaDirectUrl')?.value || '').trim();
+                        if (window.adsRecipientsList.length === 0) { alert('يرجى استيراد ملف الإكسل أو إضافة عملاء أولاً.'); return; }
+                        if (!tpl && !window.adSelectedMediaBase64 && !directUrl) { alert('يرجى كتابة نص الرسالة أو إرفاق ملف.'); return; }
+
+                        let minSec = Math.max(1, parseInt(document.getElementById('adMinDelaySec').value || 5, 10));
+                        let maxSec = Math.max(minSec, parseInt(document.getElementById('adMaxDelaySec').value || 15, 10));
+
+                        window.adCampaignRunning = true;
+                        window.adCampaignPaused = false;
+                        window.adCampaignAborted = false;
+
+                        document.getElementById('btnStartAdCampaign').disabled = true;
+                        document.getElementById('btnPauseAdCampaign').disabled = false;
+                        document.getElementById('btnPauseAdCampaign').classList.remove('opacity-50');
+                        document.getElementById('btnStopAdCampaign').disabled = false;
+                        document.getElementById('btnStopAdCampaign').classList.remove('opacity-50');
+
+                        let sent = 0, failed = 0;
+                        const total = window.adsRecipientsList.length;
+
+                        for (let i = 0; i < total; i++) {
+                            if (window.adCampaignAborted) break;
+                            while (window.adCampaignPaused && !window.adCampaignAborted) {
+                                await new Promise(r => setTimeout(r, 500));
+                            }
+                            if (window.adCampaignAborted) break;
+
+                            const rec = window.adsRecipientsList[i];
+                            if (rec.status === 'sent') { sent++; continue; }
+
+                            rec.status = 'sending';
+                            renderAdsRecipientsTable();
+                            document.getElementById('adCampaignStatusText').innerText = `📤 جاري الإرسال إلى: ${rec.name} (${i + 1} من ${total})`;
+
+                            const compiledMsg = compileAdMessageForRecipient(tpl, rec);
+                            try {
+                                const res = await fetch("{{ route('erp.whatsapp_ads.send_single') }}", {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                                    body: JSON.stringify({
+                                        phone: rec.phone,
+                                        message: compiledMsg,
+                                        media_data: window.adSelectedMediaBase64 || directUrl,
+                                        media_filename: window.adSelectedMediaName || 'Attachment',
+                                        media_type: window.adSelectedMediaMime || ''
+                                    })
+                                });
+                                const json = await res.json();
+                                if (json.success) { rec.status = 'sent'; sent++; }
+                                else { rec.status = 'failed'; rec.note = json.message; failed++; }
+                            } catch (err) {
+                                rec.status = 'failed'; failed++;
+                            }
+
+                            document.getElementById('adSentCounter').innerText = sent;
+                            document.getElementById('adFailedCounter').innerText = failed;
+                            document.getElementById('adProgressBar').style.width = Math.round(((i + 1) / total) * 100) + '%';
+                            renderAdsRecipientsTable();
+
+                            if (i < total - 1 && !window.adCampaignAborted) {
+                                const randomDelay = Math.floor(Math.random() * (maxSec - minSec + 1)) + minSec;
+                                await sleepSecondsWithCountdown(randomDelay);
+                            }
+                        }
+
+                        fetch("{{ route('erp.whatsapp_ads.log_campaign') }}", {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                            body: JSON.stringify({
+                                campaign_name: document.getElementById('adCampaignTitle')?.value || 'حملة إعلانية',
+                                message_template: tpl,
+                                attachment_type: window.adSelectedMediaName ? 'ملف مرفق' : 'نص فقط',
+                                total_targets: total,
+                                sent_count: sent,
+                                failed_count: failed,
+                                min_delay_sec: minSec,
+                                max_delay_sec: maxSec
+                            })
+                        });
+
+                        window.adCampaignRunning = false;
+                        document.getElementById('adCampaignStatusText').innerText = window.adCampaignAborted ? '⏹️ تم إيقاف الحملة' : '🎉 اكتملت الحملة الإعلانية بنجاح!';
+                        document.getElementById('adCountdownBadge').innerText = 'انتهى';
+                        document.getElementById('btnStartAdCampaign').disabled = false;
+                        document.getElementById('btnPauseAdCampaign').disabled = true;
+                        document.getElementById('btnPauseAdCampaign').classList.add('opacity-50');
+                        document.getElementById('btnStopAdCampaign').disabled = true;
+                        document.getElementById('btnStopAdCampaign').classList.add('opacity-50');
+                    }
+
+                    function togglePauseAdCampaign() {
+                        if (!window.adCampaignRunning) return;
+                        window.adCampaignPaused = !window.adCampaignPaused;
+                        document.getElementById('btnPauseAdCampaign').innerText = window.adCampaignPaused ? '▶️ استئناف' : '⏸️ إيقاف مؤقت';
+                    }
+
+                    function stopAdCampaign() {
+                        if (!window.adCampaignRunning) return;
+                        window.adCampaignAborted = true;
+                    }
+                </script>
             @endif
 
             <!-- 2. إدارة مكاتب العقار (الجدول فقط + بحث فوري + زر إضافة مكتب أقصى اليسار + كشف حساب عند الضغط على الاسم) -->
