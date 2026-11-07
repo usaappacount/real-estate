@@ -1435,53 +1435,195 @@
                 </div>
             @endif
 
-            <!-- ==================== نظام الحملات الإعلانية عبر الواتساب بـ API مستقل (يظهر في تبويب إعدادات واتساب) ==================== -->
+            <!-- ==================== نظام الحملات الإعلانية عبر الواتساب بربط QR مستقل (يظهر في تبويب إعدادات واتساب) ==================== -->
             @if($tab == 'whatsapp')
                 @php
                     $adsWa = $adsWhatsappSettings ?? [
-                        'sender_phone' => '0500000000',
-                        'api_url' => 'https://api.greatwhats.com/v1/messages',
-                        'api_token' => '',
-                        'instance_id' => '',
+                        'sender_phone'    => '0500000000',
+                        'api_url'         => 'https://api.greatwhats.com/v1/messages',
+                        'api_token'       => '',
+                        'instance_id'     => '',
+                        'qr_status'       => 'disconnected',
+                        'qr_connected_at' => '',
+                        'qr_session_id'   => '',
                     ];
+                    $isAdsQrConnected = ($adsWa['qr_status'] ?? 'disconnected') === 'connected';
                 @endphp
                 <div class="space-y-6 mb-6">
-                    <!-- 1. إعدادات API الواتساب الإعلاني المستقل (منفصل عن النظام الأساسي) -->
+                    <!-- 1. بطاقة ربط رقم الواتساب التسويقي عبر مسح كود QR فقط (منفصل تماماً عن واتساب النظام) -->
                     <div class="bg-white rounded-3xl border-2 border-slate-900 shadow-sm overflow-hidden">
                         <div class="p-5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                                <div class="flex items-center gap-2">
-                                    <h3 class="font-bold text-base text-white">📢 أولاً: إعدادات ربط API الواتساب المستقل (الخاص بالرسائل الإعلانية فقط)</h3>
-                                    <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {{ !empty($adsWa['api_token']) ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40' : 'bg-rose-500/20 text-rose-300 border border-rose-400/40' }}">
-                                        {{ !empty($adsWa['api_token']) ? '✔ API الإعلانات متصل' : '⚠️ غير متصل' }}
-                                    </span>
+                            <div class="flex items-center gap-3">
+                                <div class="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-2xl">
+                                    📱
                                 </div>
-                                <p class="text-xs text-slate-300 mt-0.5">معزول تماماً عن واتساب النظام الأساسي (OTP والسندات) لحماية رقم النظام من الحظر</p>
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <h3 class="font-bold text-base text-white">أولاً: ربط رقم الواتساب الإعلاني (التسويقي فقط) عبر كود QR</h3>
+                                        <span id="adsQrTopBadge" class="px-3 py-0.5 rounded-full text-[11px] font-bold {{ $isAdsQrConnected ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40' : 'bg-amber-500/20 text-amber-300 border border-amber-400/40' }}">
+                                            {{ $isAdsQrConnected ? '🟢 متصل عبر QR وجاهز للإعلانات' : '🟡 غير مرتبط - امسح الـ QR للربط' }}
+                                        </span>
+                                    </div>
+                                    <p class="text-xs text-slate-300 mt-0.5">هذا الربط مخصص فقط للرقم التسويقي عبر مسح الباركود (QR Code)، ولا يؤثر نهائياً على واتساب النظام الأساسي</p>
+                                </div>
+                            </div>
+
+                            @if($isAdsQrConnected)
+                                <form action="{{ route('erp.whatsapp_ads.qr_disconnect') }}" method="POST" onsubmit="return confirm('هل تريد فصل جلسة الـ QR للرقم التسويقي الحالي؟');">
+                                    @csrf
+                                    <button type="submit" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition">
+                                        🔌 إلغاء ربط الرقم التسويقي
+                                    </button>
+                                </form>
+                            @endif
+                        </div>
+
+                        <div class="p-6 bg-slate-50/70">
+                            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+                                <!-- يمين: خطوات الربط وإدخال الرقم التسويقي وزر توليد الـ QR -->
+                                <div class="lg:col-span-7 space-y-4">
+                                    <div class="p-4 rounded-2xl bg-white border border-slate-200 space-y-3">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <span class="text-xs font-bold text-slate-800">📞 رقم الجوال التسويقي المراد ربطه بالـ QR:</span>
+                                            @if($isAdsQrConnected)
+                                                <span class="text-[11px] font-mono text-emerald-700 font-bold">الجلسة: {{ $adsWa['qr_session_id'] }}</span>
+                                            @endif
+                                        </div>
+
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <input type="text" id="adsQrPhoneInput" value="{{ $adsWa['sender_phone'] }}" dir="ltr" placeholder="05XXXXXXXX"
+                                                   class="flex-1 rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm font-mono font-bold bg-slate-50 focus:bg-white">
+                                            <button type="button" onclick="generateMarketingQrCode()"
+                                                    class="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow transition flex items-center gap-2">
+                                                <span>📷</span>
+                                                <span>{{ $isAdsQrConnected ? 'تحديث / إعادة توليد كود QR' : 'توليد كود QR للربط الآن' }}</span>
+                                            </button>
+                                        </div>
+
+                                        <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-1.5 text-xs text-slate-700">
+                                            <div class="font-bold text-emerald-950">📲 خطوات ربط الرقم التسويقي عبر الـ QR:</div>
+                                            <div>1. اضغط على زر <b>"توليد كود QR للربط الآن"</b> ليظهر الباركود في المربع المقابل.</div>
+                                            <div>2. افتح تطبيق <b>واتساب</b> في جوال الرقم التسويقي ⬅️ <b>الأجهزة المرتبطة</b> ⬅️ <b>ربط جهاز</b>.</div>
+                                            <div>3. وجّه كاميرا الجوال لمسح كود الـ QR الظاهر على الشاشة ثم اضغط <b>"تأكيد إتمام المسح والربط"</b>.</div>
+                                        </div>
+
+                                        <!-- حالة الاتصال الحالية -->
+                                        <div id="adsQrStatusBox" class="p-3.5 rounded-xl border {{ $isAdsQrConnected ? 'bg-emerald-100/70 border-emerald-300 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900' }} flex items-center justify-between text-xs">
+                                            <div>
+                                                <div class="font-bold" id="adsQrStatusTitle">
+                                                    {{ $isAdsQrConnected ? '✅ الرقم التسويقي (' . $adsWa['sender_phone'] . ') متصل ومرتبط بنجاح عبر QR!' : '⏳ بانتظار توليد ومسح كود الـ QR للرقم التسويقي...' }}
+                                                </div>
+                                                @if(!empty($adsWa['qr_connected_at']))
+                                                    <div class="text-[11px] font-mono mt-0.5">تاريخ الربط: {{ $adsWa['qr_connected_at'] }}</div>
+                                                @endif
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- يسار: شاشة عرض كود الـ QR التفاعلية -->
+                                <div class="lg:col-span-5 flex flex-col items-center justify-center p-6 rounded-2xl bg-white border-2 border-dashed border-slate-300 min-h-[290px] text-center space-y-3">
+                                    @if($isAdsQrConnected)
+                                        <div id="adsQrConnectedView" class="space-y-3">
+                                            <div class="w-20 h-20 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-4xl mx-auto shadow-inner">
+                                                ✔
+                                            </div>
+                                            <div class="font-bold text-sm text-slate-900">الرقم التسويقي متصل حالياً عبر QR</div>
+                                            <div class="text-xs font-mono font-bold text-emerald-700" dir="ltr">{{ $adsWa['sender_phone'] }}</div>
+                                            <p class="text-[11px] text-slate-500">يمكنك البدء بإرسال الحملات الإعلانية بالأسفل مباشرة</p>
+                                        </div>
+                                    @endif
+
+                                    <div id="adsQrPlaceholderView" class="{{ $isAdsQrConnected ? 'hidden' : '' }} space-y-2">
+                                        <div class="text-5xl">🏁</div>
+                                        <div class="font-bold text-sm text-slate-800">شاشة باركود الربط (QR Scanner)</div>
+                                        <p class="text-xs text-slate-500 max-w-xs">اضغط على زر "توليد كود QR للربط الآن" لإظهار رمز الاستجابة السريعة الخاص بالرقم التسويقي</p>
+                                    </div>
+
+                                    <!-- صندوق صورة الـ QR عند التوليد -->
+                                    <div id="adsQrActiveScannerBox" class="hidden flex-col items-center space-y-3 w-full">
+                                        <div class="relative p-3 rounded-2xl bg-white border-2 border-slate-900 shadow-lg inline-block">
+                                            <img id="adsQrImageEl" src="" alt="WhatsApp Marketing QR" class="w-48 h-48 object-contain mx-auto">
+                                        </div>
+                                        <div class="flex items-center justify-center gap-2 text-xs">
+                                            <span id="adsQrExpireTimer" class="font-mono font-bold text-amber-700">صلاحية الكود: 60 ثانية</span>
+                                            <button type="button" onclick="generateMarketingQrCode()" class="text-emerald-700 font-bold underline text-[11px]">🔄 تحديث الكود</button>
+                                        </div>
+                                        <button type="button" onclick="confirmMarketingQrScanned()"
+                                                class="w-full max-w-xs py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition">
+                                            ✅ تم مسح الـ QR من الجوال (تفعيل الربط)
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <form action="{{ route('erp.whatsapp_ads.settings') }}" method="POST" class="p-5 grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50">
-                            @csrf
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">رقم واتساب الإعلانات *</label>
-                                <input type="text" name="ads_sender_phone" value="{{ $adsWa['sender_phone'] }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white font-bold">
-                            </div>
-                            <div class="md:col-span-2">
-                                <label class="block text-xs font-bold text-slate-700 mb-1">رابط الـ API المستقل للإعلانات (Endpoint URL) *</label>
-                                <input type="url" name="ads_api_url" value="{{ $adsWa['api_url'] }}" required dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Instance ID (اختياري)</label>
-                                <input type="text" name="ads_instance_id" value="{{ $adsWa['instance_id'] }}" dir="ltr" class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
-                            </div>
-                            <div class="md:col-span-3">
-                                <label class="block text-xs font-bold text-slate-700 mb-1">توكن الإعلانات السري (Marketing API Token) *</label>
-                                <input type="text" name="ads_api_token" value="{{ $adsWa['api_token'] }}" required dir="ltr" placeholder="أدخل التوكن الخاص برقم الإعلانات..." class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white font-bold text-emerald-800">
-                            </div>
-                            <div class="flex items-end">
-                                <button type="submit" class="w-full py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">💾 حفظ API الإعلانات</button>
-                            </div>
-                        </form>
                     </div>
+
+                    <script>
+                        window.adsQrTimerInterval = null;
+
+                        async function generateMarketingQrCode() {
+                            const phone = (document.getElementById('adsQrPhoneInput')?.value || '').trim();
+                            const placeholder = document.getElementById('adsQrPlaceholderView');
+                            const connectedView = document.getElementById('adsQrConnectedView');
+                            const scannerBox = document.getElementById('adsQrActiveScannerBox');
+                            const imgEl = document.getElementById('adsQrImageEl');
+
+                            if (placeholder) placeholder.classList.add('hidden');
+                            if (connectedView) connectedView.classList.add('hidden');
+                            if (scannerBox) {
+                                scannerBox.classList.remove('hidden');
+                                scannerBox.classList.add('flex');
+                            }
+
+                            try {
+                                const res = await fetch("{{ route('erp.whatsapp_ads.qr_generate') }}", {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                                    body: JSON.stringify({ ads_sender_phone: phone })
+                                });
+                                const data = await res.json();
+                                if (data.success && data.qr_url) {
+                                    imgEl.src = data.qr_url;
+                                    startQrCountdownTimer(60);
+                                }
+                            } catch (e) {
+                                alert('تعذر توليد الكود، حاول مرة أخرى.');
+                            }
+                        }
+
+                        function startQrCountdownTimer(seconds) {
+                            if (window.adsQrTimerInterval) clearInterval(window.adsQrTimerInterval);
+                            let left = seconds;
+                            const label = document.getElementById('adsQrExpireTimer');
+                            window.adsQrTimerInterval = setInterval(() => {
+                                left--;
+                                if (left <= 0) {
+                                    clearInterval(window.adsQrTimerInterval);
+                                    if (label) label.innerText = 'انتهت صلاحية الكود — اضغط تحديث الكود';
+                                } else {
+                                    if (label) label.innerText = 'صلاحية الكود: ' + left + ' ثانية';
+                                }
+                            }, 1000);
+                        }
+
+                        async function confirmMarketingQrScanned() {
+                            const phone = (document.getElementById('adsQrPhoneInput')?.value || '').trim();
+                            try {
+                                const res = await fetch("{{ route('erp.whatsapp_ads.qr_confirm') }}", {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+                                    body: JSON.stringify({ ads_sender_phone: phone })
+                                });
+                                const data = await res.json();
+                                if (data.success) {
+                                    window.location.reload();
+                                }
+                            } catch (e) {
+                                alert('حدث خطأ أثناء تأكيد الربط.');
+                            }
+                        }
+                    </script>
 
                     <!-- 2. منصة استيراد الإكسل وإطلاق الحملات الإعلانية بالفاصل الزمني -->
                     <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 space-y-6">
