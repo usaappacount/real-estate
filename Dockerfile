@@ -41,21 +41,22 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # نسخ ملفات المشروع إلى السيرفر
 COPY . /var/www/html
 
-# العمل داخل مجلد المشروع وتثبيت حزم PHP وحزم Node.js (لمحرك الواتساب)
+# العمل داخل مجلد المشروع وتثبيت حزم PHP وحزم Node.js الضرورية لمحرك الواتساب
 WORKDIR /var/www/html
 RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
-    && npm install --no-audit --no-fund
+    && npm install --no-audit --no-fund \
+    && npm install express qrcode pino @whiskeysockets/baileys@6.7.9 --no-audit --no-fund
 
-# إنشاء مجلد قاعدة البيانات ومجلدات التخزين ومجلد جلسة واتساب والتأكد من الصلاحيات
+# إنشاء مجلد قاعدة البيانات ومجلدات التخزين ومجلد جلسة واتساب والتأكد من الصلاحيات الكاملة
 RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache \
-    && touch database/database.sqlite \
+    && touch database/database.sqlite storage/logs/whatsapp-qr-engine.log \
     && find /var/www/html -type d -exec chmod 755 {} \; \
     && find /var/www/html -type f -exec chmod 644 {} \; \
     && chown -R www-data:www-data /var/www/html \
-    && chmod -R 775 storage bootstrap/cache database
+    && chmod -R 777 storage bootstrap/cache database
 
 # ضبط منفذ العمل
 EXPOSE 80
 
 # تشغيل محرك واتساب QR تلقائياً في الخلفية بشكل مستمر + تشغيل Apache
-CMD ["sh", "-c", "(while true; do node /var/www/html/whatsapp-qr-engine.js >> /var/www/html/storage/logs/whatsapp-qr-engine.log 2>&1; sleep 2; done) & apache2-foreground"]
+CMD ["sh", "-c", "(while true; do node /var/www/html/whatsapp-qr-engine.js >> /tmp/whatsapp-qr-engine.log 2>&1; sleep 2; done) & apache2-foreground"]

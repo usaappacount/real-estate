@@ -1563,24 +1563,25 @@
                             if (spinner) spinner.classList.remove('hidden');
                             if (imgWrap) imgWrap.classList.add('hidden');
 
+                            // تشغيل الفحص التلقائي فوراً لالتقاط الباركود بمجرد توليده دون إيقاف الشاشة
+                            startLiveQrStatusPolling();
+
                             try {
                                 const res = await fetch("{{ route('erp.whatsapp_ads.qr_generate') }}", {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
                                 });
                                 const data = await res.json();
-                                if (!data.success) {
-                                    alert(data.message || 'تأكد من تشغيل محرك واتساب QR.');
-                                    return;
-                                }
+
                                 if (data.qr_url) {
                                     imgEl.src = data.qr_url;
                                     spinner.classList.add('hidden');
                                     imgWrap.classList.remove('hidden');
+                                } else {
+                                    setTimeout(pollLiveMarketingQrStatus, 1000);
                                 }
-                                startLiveQrStatusPolling();
                             } catch (e) {
-                                alert('تعذر الاتصال بمحرك الـ QR المحلي.');
+                                setTimeout(pollLiveMarketingQrStatus, 1500);
                             }
                         }
 
@@ -1639,7 +1640,7 @@
 
                         function startLiveQrStatusPolling() {
                             if (window.adsQrPollingTimer) clearInterval(window.adsQrPollingTimer);
-                            window.adsQrPollingTimer = setInterval(pollLiveMarketingQrStatus, 2500);
+                            window.adsQrPollingTimer = setInterval(pollLiveMarketingQrStatus, 2000);
                         }
 
                         document.addEventListener('DOMContentLoaded', function() {

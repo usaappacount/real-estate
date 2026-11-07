@@ -3,15 +3,6 @@ const QRCode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
-const baileys = require('@whiskeysockets/baileys');
-
-const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
-const {
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion,
-    Browsers
-} = baileys;
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -19,6 +10,7 @@ app.use(express.json({ limit: '25mb' }));
 const PORT = 3005;
 const AUTH_DIR = path.join(__dirname, 'storage', 'app', 'wa_marketing_qr_auth');
 
+let baileysModule = null;
 let sock = null;
 let connectionStatus = 'disconnected'; // disconnected | qr_ready | connecting | connected
 let currentQrBase64 = '';
@@ -26,6 +18,15 @@ let accountName = '';
 let accountPhone = '';
 let connectedAt = '';
 let isInitializing = false;
+let reconnectTimer = null;
+let versionAttempt = 0;
+
+function clearReconnectTimer() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+}
 
 function clearAuthFolder() {
     try {
@@ -35,52 +36,103 @@ function clearAuthFolder() {
     } catch (e) {}
 }
 
-// جلب أحدث رقم إصدار رسمي لواتساب ويب لعام 2026 لضمان قبول الربط من الجوال فوراً
-async function getLatestWaWebVersion() {
+// تحميل مكتبة Baileys بدعم كامل لنظامي CommonJS و ESM في Node 20
+async function loadBaileys() {
+    if (baileysModule) return baileysModule;
     try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3500);
-        const res = await fetch('https://web.whatsapp.com/sw.js', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-            },
-            signal: controller.signal
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-            const text = await res.text();
-            const match = text.match(/"client_revision"\s*:\s*(\d+)/);
-            if (match && match[1]) {
-                return [2, 3000, parseInt(match[1], 10)];
+        baileysModule = require('@whiskeysockets/baileys');
+    } catch (e) {
+        baileysModule = await import('@whiskeysockets/baileys');
+    }
+    return baileysModule;
+}
+
+// جلب أحدث رقم إصدار رسمي لواتساب ويب مع فحص رقم المراجعة الفعلي (Index 2)
+async function getLatestWaWebVersion(baileys) {
+    const fallbackVersions = [
+        [2, 3000, 1025190524],
+        [2, 3000, 1024180211],
+        [2, 3000, 1023202255]
+    ];
+
+    if (versionAttempt > 0) {
+        return fallbackVersions[versionAttempt % fallbackVersions.length];
+    }
+
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Sec-Fetch-Dest': 'script',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'same-origin'
+    };
+
+    try {
+        if (typeof baileys.fetchLatestWaWebVersion === 'function') {
+            const waVer = await Promise.race([
+                baileys.fetchLatestWaWebVersion({ headers }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+            ]);
+            if (Array.isArray(waVer?.version) && waVer.version[2] >= 1020000000) {
+                return waVer.version;
             }
         }
     } catch (e) {}
 
+    for (const url of ['https://web.whatsapp.com/sw.js', 'https://web.whatsapp.com/']) {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 3500);
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timer);
+            if (res.ok) {
+                const text = await res.text();
+                const match = text.match(/(?:client_revision["']?\s*:\s*|2\.3000\.)(\d{9,11})/);
+                if (match && match[1]) {
+                    const rev = parseInt(match[1], 10);
+                    if (rev >= 1020000000) {
+                        return [2, 3000, rev];
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+
     try {
-        const vRes = await Promise.race([
-            fetchLatestBaileysVersion(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
-        ]);
-        if (Array.isArray(vRes?.version) && vRes.version[1] >= 3000) {
-            return vRes.version;
+        if (typeof baileys.fetchLatestBaileysVersion === 'function') {
+            const vRes = await Promise.race([
+                baileys.fetchLatestBaileysVersion(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
+            ]);
+            // فحص الخانة الثالثة [2] وليس الثانية [1] لتجنب الإصدارات القديمة المرفوضة
+            if (Array.isArray(vRes?.version) && vRes.version[2] >= 1023000000) {
+                return vRes.version;
+            }
         }
     } catch (e) {}
 
-    return [2, 3000, 1023202255];
+    return fallbackVersions[0];
 }
 
 async function startWhatsAppSocket(forceNewQr = false) {
     if (isInitializing && !forceNewQr) return;
     isInitializing = true;
+    clearReconnectTimer();
 
     try {
+        const baileys = await loadBaileys();
+        const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
+        const useMultiFileAuthState = baileys.useMultiFileAuthState || baileys.default?.useMultiFileAuthState;
+        const DisconnectReason = baileys.DisconnectReason || baileys.default?.DisconnectReason || {};
+        const Browsers = baileys.Browsers || baileys.default?.Browsers;
+
         if (forceNewQr) {
             if (sock) {
                 try { sock.ev.removeAllListeners(); sock.end(); } catch (e) {}
                 sock = null;
             }
             clearAuthFolder();
-            connectionStatus = 'disconnected';
+            connectionStatus = 'connecting';
             currentQrBase64 = '';
             accountName = '';
             accountPhone = '';
@@ -91,7 +143,7 @@ async function startWhatsAppSocket(forceNewQr = false) {
         }
 
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-        const version = await getLatestWaWebVersion();
+        const version = await getLatestWaWebVersion(baileys);
 
         sock = makeWASocket({
             version,
@@ -112,11 +164,14 @@ async function startWhatsAppSocket(forceNewQr = false) {
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
-                connectionStatus = 'qr_ready';
-                currentQrBase64 = await QRCode.toDataURL(qr, { margin: 2, width: 280 });
+                try {
+                    currentQrBase64 = await QRCode.toDataURL(qr, { margin: 2, width: 280 });
+                    connectionStatus = 'qr_ready';
+                } catch (e) {}
             }
 
             if (connection === 'open') {
+                versionAttempt = 0;
                 connectionStatus = 'connected';
                 currentQrBase64 = '';
                 const rawId = sock.user?.id || '';
@@ -128,15 +183,26 @@ async function startWhatsAppSocket(forceNewQr = false) {
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-                // الكود 515 يعني أن الجوال مسح الباركود بنجاح ويطلب إعادة اتصال فورية لإتمام الربط
                 if (statusCode === DisconnectReason.restartRequired || statusCode === 515) {
                     connectionStatus = 'connecting';
                     currentQrBase64 = '';
-                    setTimeout(() => startWhatsAppSocket(false), 150);
+                    clearReconnectTimer();
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 200);
                     return;
                 }
 
-                const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403 || statusCode === 405;
+                // في حال رفض الإصدار بكود 405 نجرب الإصدار البديل فوراً لتوليد الباركود
+                if (statusCode === 405) {
+                    versionAttempt++;
+                    clearAuthFolder();
+                    connectionStatus = 'connecting';
+                    currentQrBase64 = '';
+                    clearReconnectTimer();
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 300);
+                    return;
+                }
+
+                const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403;
 
                 connectionStatus = 'disconnected';
                 currentQrBase64 = '';
@@ -144,22 +210,24 @@ async function startWhatsAppSocket(forceNewQr = false) {
                 accountPhone = '';
                 connectedAt = '';
 
+                clearReconnectTimer();
                 if (isLoggedOut) {
                     clearAuthFolder();
-                    setTimeout(() => startWhatsAppSocket(false), 1500);
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1200);
                 } else {
-                    setTimeout(() => startWhatsAppSocket(false), 2000);
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1800);
                 }
             }
         });
     } catch (err) {
         connectionStatus = 'disconnected';
+        clearReconnectTimer();
+        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 2500);
     } finally {
         isInitializing = false;
     }
 }
 
-// فحص الحالة الحقيقية
 app.get('/status', (req, res) => {
     res.json({
         connected: connectionStatus === 'connected',
@@ -171,7 +239,6 @@ app.get('/status', (req, res) => {
     });
 });
 
-// طلب توليد كود QR حقيقي جديد
 app.post('/init-qr', async (req, res) => {
     if (connectionStatus === 'connected') {
         return res.json({
@@ -184,7 +251,6 @@ app.post('/init-qr', async (req, res) => {
         });
     }
 
-    // إذا كان هناك باركود حقيقي جاهز حالياً لا نمسحه حتى لا يفشل المسح من الجوال
     if (currentQrBase64 && connectionStatus === 'qr_ready') {
         return res.json({
             success: true,
@@ -198,24 +264,23 @@ app.post('/init-qr', async (req, res) => {
 
     await startWhatsAppSocket(true);
 
-    // انتظار توليد الباركود من خوادم واتساب (حتى 12 ثانية)
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 65; i++) {
         if (currentQrBase64 || connectionStatus === 'connected') break;
         await new Promise(r => setTimeout(r, 200));
     }
 
     res.json({
-        success: Boolean(currentQrBase64 || connectionStatus === 'connected'),
+        success: true,
         connected: connectionStatus === 'connected',
-        status: connectionStatus,
+        status: currentQrBase64 ? 'qr_ready' : (connectionStatus === 'connected' ? 'connected' : 'connecting'),
         qr_url: currentQrBase64,
         account_name: accountName,
         account_phone: accountPhone
     });
 });
 
-// فصل الحساب المرتبط وتسجيل الخروج
 app.post('/logout', async (req, res) => {
+    clearReconnectTimer();
     try {
         if (sock) {
             await sock.logout();
@@ -232,7 +297,6 @@ app.post('/logout', async (req, res) => {
     res.json({ success: true, status: 'disconnected' });
 });
 
-// إرسال رسالة إعلانية (نص أو مرفق صورة/PDF/فيديو) عبر الحساب المرتبط
 app.post('/send', async (req, res) => {
     if (connectionStatus !== 'connected' || !sock) {
         return res.status(400).json({ success: false, message: 'لا يوجد حساب واتساب مرتبط حالياً عبر الـ QR.' });
@@ -278,6 +342,7 @@ app.post('/send', async (req, res) => {
     }
 });
 
+// فتح المنفذ فوراً قبل بدء اتصال السوكيت لضمان استجابة المحرك دائماً
 app.listen(PORT, '127.0.0.1', () => {
     startWhatsAppSocket(false);
 });

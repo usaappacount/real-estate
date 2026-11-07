@@ -5260,7 +5260,7 @@ class CompanyErpController extends Controller
     private function ensureMarketingQrEngineRunning(): bool
     {
         try {
-            $ping = Http::timeout(1)->get('http://127.0.0.1:3005/status');
+            $ping = Http::timeout(2)->get('http://127.0.0.1:3005/status');
             if ($ping->successful()) {
                 return true;
             }
@@ -5273,16 +5273,26 @@ class CompanyErpController extends Controller
         }
 
         try {
-            $logPath = storage_path('logs/whatsapp-qr-engine.log');
+            $authDir = storage_path('app/wa_marketing_qr_auth');
+            if (!is_dir($authDir)) {
+                @mkdir($authDir, 0777, true);
+            }
+            @chmod($authDir, 0777);
+
+            // استخدام مسار سجل في /tmp على لينكس لمنع تعارض الصلاحيات بين root و www-data
+            $logPath = PHP_OS_FAMILY === 'Windows'
+                ? storage_path('logs/whatsapp-qr-engine.log')
+                : '/tmp/whatsapp-qr-engine.log';
+
             if (PHP_OS_FAMILY === 'Windows') {
                 $cmd = 'cd /d ' . escapeshellarg($baseDir) . ' && start /B "" node ' . escapeshellarg($scriptPath) . ' > ' . escapeshellarg($logPath) . ' 2>&1';
                 @pclose(@popen($cmd, 'r'));
             } else {
-                $cmd = 'export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; cd ' . escapeshellarg($baseDir) . ' && nohup node ' . escapeshellarg($scriptPath) . ' > ' . escapeshellarg($logPath) . ' 2>&1 &';
+                $cmd = 'export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; cd ' . escapeshellarg($baseDir) . ' && nohup node ' . escapeshellarg($scriptPath) . ' >> ' . escapeshellarg($logPath) . ' 2>&1 &';
                 @exec($cmd);
             }
 
-            // الانتظار حتى يفتح المحرك المنفذ 3005 (حتى 8 ثوانٍ)
+            // الانتظار حتى يفتح المحرك المنفذ 3005
             for ($i = 0; $i < 20; $i++) {
                 usleep(400000);
                 try {
@@ -5344,23 +5354,28 @@ class CompanyErpController extends Controller
                 ]);
                 if ($res->successful()) {
                     $data = $res->json();
-                    if (!empty($data['qr_url']) || !empty($data['connected'])) {
-                        return response()->json([
-                            'success'       => true,
-                            'connected'     => !empty($data['connected']),
-                            'status'        => $data['status'] ?? 'qr_ready',
-                            'qr_url'        => $data['qr_url'] ?? '',
-                            'account_name'  => $data['account_name'] ?? '',
-                            'account_phone' => $data['account_phone'] ?? '',
-                        ]);
-                    }
+                    return response()->json([
+                        'success'       => true,
+                        'connected'     => !empty($data['connected']),
+                        'status'        => $data['status'] ?? (!empty($data['qr_url']) ? 'qr_ready' : 'connecting'),
+                        'qr_url'        => $data['qr_url'] ?? '',
+                        'account_name'  => $data['account_name'] ?? '',
+                        'account_phone' => $data['account_phone'] ?? '',
+                    ]);
                 }
-            } catch (\Throwable $e) {}
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'success'   => true,
+                    'connected' => false,
+                    'status'    => 'connecting',
+                    'qr_url'    => '',
+                ]);
+            }
         }
 
         return response()->json([
             'success' => false,
-            'message' => 'جاري تشغيل محرك واتساب الحقيقي في الخلفية، يرجى الانتظار 3 ثوانٍ ثم الضغط مرة أخرى.'
+            'message' => 'جاري تشغيل محرك واتساب الحقيقي في الخلفية، سيظهر الباركود تلقائياً خلال لحظات.'
         ]);
     }
 
@@ -5370,6 +5385,10 @@ class CompanyErpController extends Controller
     public function checkAdsWhatsappQrStatus()
     {
         $state = $this->fetchLiveMarketingQrState();
+        if (!$state['engine_up']) {
+            $this->ensureMarketingQrEngineRunning();
+            $state = $this->fetchLiveMarketingQrState();
+        }
         return response()->json($state);
     }
 
