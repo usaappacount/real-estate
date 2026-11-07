@@ -1646,14 +1646,16 @@
                                     } else if (scannerBox && !scannerBox.classList.contains('hidden')) {
                                         window.adsQrWaitTicks++;
                                         if (!data.engine_up) {
-                                            spinner.innerText = '⚠️ محرك Node.js قيد التشغيل في السيرفر... جاري المحاولة تلقائياً';
-                                        } else if (window.adsQrWaitTicks >= 6) {
-                                            // إذا مرت 12 ثانية دون صدور الباركود، نرسل طلب تحفيز تلقائي للمحرك
-                                            window.adsQrWaitTicks = 0;
-                                            fetch("{{ route('erp.whatsapp_ads.qr_generate') }}", {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
-                                            }).catch(() => {});
+                                            spinner.innerText = '⚠️ محرك Node.js قيد التشغيل... ' + (data.last_error ? '(' + data.last_error + ')' : '');
+                                        } else {
+                                            spinner.innerText = '⏳ جاري توليد كود الـ QR من واتساب ويب... ' + (data.last_error ? '(' + data.last_error + ')' : '');
+                                            if (window.adsQrWaitTicks >= 6) {
+                                                window.adsQrWaitTicks = 0;
+                                                fetch("{{ route('erp.whatsapp_ads.qr_generate') }}", {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
+                                                }).catch(() => {});
+                                            }
                                         }
                                     } else {
                                         if (placeholder) placeholder.classList.remove('hidden');

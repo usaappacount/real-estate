@@ -649,7 +649,46 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * إرسال رسالة واتساب عبر إعدادات الشركة الأم أو إعدادات المكتب
+     * التحقق مما إذا كانت الإعدادات تستخدم Meta WhatsApp Cloud API الرسمي (graph.facebook.com)
+     */
+    public static function isMetaCloudApi(?string $apiUrl, ?string $apiToken, ?string $instanceId): bool
+    {
+        $url = strtolower(trim((string) $apiUrl));
+        $tok = trim((string) $apiToken);
+        $inst = trim((string) $instanceId);
+
+        if (str_contains($url, 'graph.facebook.com')) {
+            return true;
+        }
+        if (str_starts_with($tok, 'EAA') && preg_match('/^\d{8,25}$/', $inst)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * بناء رابط إرسال الرسائل الرسمي في Meta Cloud API:
+     * https://graph.facebook.com/v23.0/<PHONE_NUMBER_ID>/messages
+     */
+    public static function buildMetaMessagesUrl(?string $apiUrl, ?string $phoneNumberId): string
+    {
+        $url = rtrim(trim((string) $apiUrl), '/');
+        $phoneId = preg_replace('/\D/', '', (string) $phoneNumberId);
+
+        if (str_contains($url, 'graph.facebook.com') && str_ends_with($url, '/messages')) {
+            return $url;
+        }
+        if (!empty($phoneId)) {
+            return "https://graph.facebook.com/v23.0/{$phoneId}/messages";
+        }
+        if (preg_match('#graph\.facebook\.com/v[\d\.]+/(\d+)#i', $url, $m)) {
+            return "https://graph.facebook.com/v23.0/{$m[1]}/messages";
+        }
+        return $url ?: 'https://graph.facebook.com/v23.0/messages';
+    }
+
+    /**
+     * إرسال رسالة واتساب عبر إعدادات الشركة الأم أو إعدادات المكتب (يدعم Meta Cloud API الرسمي)
      */
     public static function sendWhatsAppMessage(string $toPhone, string $message, ?int $officeId = null): bool
     {
@@ -660,14 +699,59 @@ class CompanyErpController extends Controller
         if ($officeId && Schema::hasTable('offices')) {
             $office = DB::table('offices')->where('id', $officeId)->first();
             $isCustom = (!empty($office->use_custom_whatsapp) || ($office->whatsapp_mode ?? '') === 'custom');
-            if ($office && $isCustom && !empty($office->whatsapp_api_url)) {
-                $apiUrl = $office->whatsapp_api_url;
+            if ($office && $isCustom && !empty($office->whatsapp_api_token)) {
+                $apiUrl = $office->whatsapp_api_url ?: $apiUrl;
                 $apiToken = $office->whatsapp_api_token;
                 $instanceId = $office->whatsapp_instance_id ?? '';
             }
         }
 
-        if (empty($apiUrl) || empty($apiToken)) {
+        if (empty($apiToken)) {
+            return false;
+        }
+
+        $formattedPhone = self::formatSaudiPhone($toPhone);
+        $cleanDigitsPhone = ltrim($formattedPhone, '+');
+
+        // 1. الإرسال عبر Meta WhatsApp Cloud API الرسمي (graph.facebook.com/v23.0)
+        if (self::isMetaCloudApi($apiUrl, $apiToken, $instanceId)) {
+            $endpoint = self::buildMetaMessagesUrl($apiUrl, $instanceId);
+            try {
+                $response = Http::withToken(trim($apiToken))
+                    ->acceptJson()
+                    ->contentType('application/json')
+                    ->timeout(12)
+                    ->post($endpoint, [
+                        'messaging_product' => 'whatsapp',
+                        'recipient_type'    => 'individual',
+                        'to'                => $cleanDigitsPhone,
+                        'type'              => 'text',
+                        'text'              => [
+                            'preview_url' => true,
+                            'body'        => $message,
+                        ],
+                    ]);
+
+                if ($response->successful()) {
+                    return true;
+                }
+
+                self::logSystemIssue(
+                    'Meta WhatsApp Cloud API',
+                    'HTTP ' . $response->status() . ': ' . mb_substr($response->body(), 0, 300),
+                    'WARNING',
+                    $endpoint,
+                    'تأكد من صلاحية التوكن الدائم (System User Token) ومعرف الرقم (Phone Number ID) وفتح نافذة الـ 24 ساعة.'
+                );
+                return false;
+            } catch (\Throwable $e) {
+                self::logSystemIssue('Meta WhatsApp Cloud API Exception', $e->getMessage(), 'ERROR');
+                return false;
+            }
+        }
+
+        // 2. الإرسال عبر بوابات الـ API الأخرى
+        if (empty($apiUrl)) {
             return false;
         }
 
@@ -675,7 +759,7 @@ class CompanyErpController extends Controller
             $response = Http::timeout(8)->post($apiUrl, [
                 'token' => $apiToken,
                 'instance_id' => $instanceId,
-                'to' => self::formatSaudiPhone($toPhone),
+                'to' => $formattedPhone,
                 'message' => $message,
             ]);
             return $response->successful();
@@ -1126,18 +1210,101 @@ class CompanyErpController extends Controller
     public function updateWhatsappSettings(Request $request)
     {
         $senderPhone = $request->input('sender_phone', $request->input('whatsapp_sender_phone', '0500000000'));
-        $apiUrl      = $request->input('api_url', $request->input('whatsapp_api_url', ''));
-        $apiToken    = $request->input('api_token', $request->input('whatsapp_api_token', ''));
-        $instanceId  = $request->input('instance_id', $request->input('whatsapp_instance_id', ''));
+        $apiUrl      = trim((string) $request->input('api_url', $request->input('whatsapp_api_url', 'https://graph.facebook.com/v23.0')));
+        $apiToken    = trim((string) $request->input('api_token', $request->input('whatsapp_api_token', '')));
+        $instanceId  = trim((string) $request->input('instance_id', $request->input('whatsapp_instance_id', '')));
+        $wabaId      = trim((string) $request->input('waba_id', ''));
+        $verifyToken = trim((string) $request->input('webhook_verify_token', 'erp_whatsapp_verify_2026'));
+
+        if (str_contains(strtolower($apiUrl), 'graph.facebook.com') && !empty($instanceId)) {
+            $cleanPhoneId = preg_replace('/\D/', '', $instanceId);
+            if ($cleanPhoneId !== '') {
+                $apiUrl = "https://graph.facebook.com/v23.0/{$cleanPhoneId}/messages";
+            }
+        }
 
         self::setSetting('whatsapp_sender_phone', self::formatSaudiPhone(trim($senderPhone)));
-        self::setSetting('whatsapp_api_url', trim($apiUrl));
-        self::setSetting('whatsapp_api_token', trim($apiToken));
-        self::setSetting('whatsapp_instance_id', trim($instanceId));
+        self::setSetting('whatsapp_api_url', $apiUrl);
+        self::setSetting('whatsapp_api_token', $apiToken);
+        self::setSetting('whatsapp_instance_id', $instanceId);
+        self::setSetting('whatsapp_waba_id', $wabaId);
+        self::setSetting('whatsapp_webhook_verify_token', $verifyToken ?: 'erp_whatsapp_verify_2026');
         self::setSetting('whatsapp_default_for_offices', '1');
 
         return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
-            ->with('success', 'تم حفظ إعدادات الربط مع واتساب API وتعميمها بنجاح.');
+            ->with('success', 'تم حفظ إعدادات الربط مع WhatsApp Business Cloud API وتعميمها بنجاح.');
+    }
+
+    public function testWhatsappApiConnection(Request $request)
+    {
+        $testPhone = trim((string) $request->input('test_phone', ''));
+        $testMode  = trim((string) $request->input('test_mode', 'text'));
+        if (empty($testPhone)) {
+            return back()->withErrors(['يرجى إدخال رقم الجوال المراد إرسال رسالة الاختبار إليه.']);
+        }
+
+        $apiUrl     = self::getSetting('whatsapp_api_url', env('WHATSAPP_API_URL', 'https://graph.facebook.com/v23.0'));
+        $apiToken   = self::getSetting('whatsapp_api_token', env('WHATSAPP_API_TOKEN', ''));
+        $instanceId = self::getSetting('whatsapp_instance_id', '');
+
+        if (empty($apiToken)) {
+            return back()->withErrors(['يرجى حفظ الـ Access Token أولاً قبل إجراء الاختبار.']);
+        }
+
+        $cleanDigitsPhone = ltrim(self::formatSaudiPhone($testPhone), '+');
+
+        if (self::isMetaCloudApi($apiUrl, $apiToken, $instanceId)) {
+            $endpoint = self::buildMetaMessagesUrl($apiUrl, $instanceId);
+            $payload = [
+                'messaging_product' => 'whatsapp',
+                'recipient_type'    => 'individual',
+                'to'                => $cleanDigitsPhone,
+            ];
+
+            if ($testMode === 'template') {
+                $payload['type'] = 'template';
+                $payload['template'] = [
+                    'name'     => 'hello_world',
+                    'language' => ['code' => 'en_US'],
+                ];
+            } else {
+                $payload['type'] = 'text';
+                $payload['text'] = [
+                    'preview_url' => false,
+                    'body'        => "✅ رسالة اختبار ناجحة من منظومة العقارات الذكية عبر Meta WhatsApp Cloud API الرسمي!\nالتاريخ: " . now()->toDateTimeString(),
+                ];
+            }
+
+            try {
+                $res = Http::withToken(trim($apiToken))
+                    ->acceptJson()
+                    ->contentType('application/json')
+                    ->timeout(15)
+                    ->post($endpoint, $payload);
+
+                if ($res->successful()) {
+                    $msgId = $res->json('messages.0.id') ?? 'OK';
+                    return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+                        ->with('success', "🎉 نجح الإرسال الفوري عبر Meta WhatsApp Cloud API إلى ({$testPhone})! معرف الرسالة: {$msgId}");
+                }
+
+                $errMsg = $res->json('error.message') ?: $res->body();
+                return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+                    ->withErrors(["رد خادم Meta (HTTP {$res->status()}): {$errMsg}"]);
+            } catch (\Throwable $e) {
+                return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+                    ->withErrors(['تعذر الاتصال بخادم Meta Cloud API: ' . $e->getMessage()]);
+            }
+        }
+
+        $ok = self::sendWhatsAppMessage($testPhone, "✅ رسالة اختبار ناجحة من منظومة العقارات الذكية ERP", null);
+        if ($ok) {
+            return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+                ->with('success', "🎉 تم إرسال رسالة الاختبار إلى ({$testPhone}) بنجاح.");
+        }
+
+        return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+            ->withErrors(['فشل إرسال رسالة الاختبار، يرجى التأكد من الرابط والتوكن ومعرف الرقم.']);
     }
 
     public function storeOffice(Request $request)
@@ -4696,8 +4863,7 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * إرسال ملف PDF أصلي مرفق مباشرة عبر WhatsApp API (Base64 PDF) بدون روابط نصية
-     * ومع استخدام الرسالة المخصصة التي حددها المكتب في الإعدادات (أو بدون رسالة إذا تركها فارغة)
+     * إرسال ملف PDF أصلي مرفق مباشرة عبر WhatsApp API (يدعم Meta Cloud API الرسمي /media أو البوابات المخصصة)
      */
     public static function sendWhatsAppDocument(string $toPhone, string $pdfBase64OrUrl, string $fileName, string $caption = '', ?int $officeId = null): bool
     {
@@ -4708,14 +4874,77 @@ class CompanyErpController extends Controller
         if ($officeId && Schema::hasTable('offices')) {
             $office = DB::table('offices')->where('id', $officeId)->first();
             $isCustom = (!empty($office->use_custom_whatsapp) || ($office->whatsapp_mode ?? '') === 'custom');
-            if ($office && $isCustom && !empty($office->whatsapp_api_url)) {
-                $apiUrl = $office->whatsapp_api_url;
+            if ($office && $isCustom && !empty($office->whatsapp_api_token)) {
+                $apiUrl = $office->whatsapp_api_url ?: $apiUrl;
                 $apiToken = $office->whatsapp_api_token;
                 $instanceId = $office->whatsapp_instance_id ?? '';
             }
         }
 
-        if (empty($apiUrl) || empty($apiToken)) {
+        if (empty($apiToken)) {
+            return false;
+        }
+
+        $formattedPhone = self::formatSaudiPhone($toPhone);
+        $cleanDigitsPhone = ltrim($formattedPhone, '+');
+
+        // 1. الإرسال عبر Meta WhatsApp Cloud API الرسمي
+        if (self::isMetaCloudApi($apiUrl, $apiToken, $instanceId)) {
+            $endpoint = self::buildMetaMessagesUrl($apiUrl, $instanceId);
+            $phoneId = preg_replace('/\D/', '', (string) $instanceId);
+            if (empty($phoneId) && preg_match('#graph\.facebook\.com/v[\d\.]+/(\d+)#i', (string) $apiUrl, $m)) {
+                $phoneId = $m[1];
+            }
+
+            try {
+                $docObject = ['filename' => $fileName];
+                if (trim($caption) !== '') {
+                    $docObject['caption'] = trim($caption);
+                }
+
+                if (str_starts_with($pdfBase64OrUrl, 'http://') || str_starts_with($pdfBase64OrUrl, 'https://')) {
+                    $docObject['link'] = $pdfBase64OrUrl;
+                } elseif (!empty($phoneId)) {
+                    $rawB64 = str_contains($pdfBase64OrUrl, 'base64,') ? explode('base64,', $pdfBase64OrUrl, 2)[1] : $pdfBase64OrUrl;
+                    $binary = base64_decode($rawB64, true);
+                    if ($binary !== false) {
+                        $mediaRes = Http::withToken(trim($apiToken))
+                            ->timeout(20)
+                            ->attach('file', $binary, $fileName, ['Content-Type' => 'application/pdf'])
+                            ->post("https://graph.facebook.com/v23.0/{$phoneId}/media", [
+                                'messaging_product' => 'whatsapp',
+                                'type'              => 'application/pdf',
+                            ]);
+                        if ($mediaRes->successful() && $mediaRes->json('id')) {
+                            $docObject['id'] = $mediaRes->json('id');
+                        }
+                    }
+                }
+
+                if (empty($docObject['id']) && empty($docObject['link'])) {
+                    return false;
+                }
+
+                $response = Http::withToken(trim($apiToken))
+                    ->acceptJson()
+                    ->contentType('application/json')
+                    ->timeout(15)
+                    ->post($endpoint, [
+                        'messaging_product' => 'whatsapp',
+                        'recipient_type'    => 'individual',
+                        'to'                => $cleanDigitsPhone,
+                        'type'              => 'document',
+                        'document'          => $docObject,
+                    ]);
+
+                return $response->successful();
+            } catch (\Throwable $e) {
+                return false;
+            }
+        }
+
+        // 2. الإرسال عبر بوابات الـ API الأخرى
+        if (empty($apiUrl)) {
             return false;
         }
 
@@ -4723,7 +4952,7 @@ class CompanyErpController extends Controller
             $payload = [
                 'token' => $apiToken,
                 'instance_id' => $instanceId,
-                'to' => self::formatSaudiPhone($toPhone),
+                'to' => $formattedPhone,
                 'type' => 'document',
                 'document' => $pdfBase64OrUrl,
                 'file' => $pdfBase64OrUrl,
@@ -4759,7 +4988,6 @@ class CompanyErpController extends Controller
 
         $docType = (string) $request->input('doc_type', 'general');
 
-        // عزل المكتب لمنع أي مستخدم من الإرسال عبر إعدادات مكتب آخر
         if ($user->user_type === 'company_admin') {
             $officeId = $request->filled('office_id') ? (int) $request->office_id : (session('impersonate_office_id') ? (int) session('impersonate_office_id') : null);
         } else {
@@ -4776,7 +5004,6 @@ class CompanyErpController extends Controller
         }
         $pdfBinary = base64_decode($rawBase64, true);
 
-        // التحقق من أن المحتوى ملف PDF حقيقي وألا يتجاوز حجمه 10 ميغابايت
         if ($pdfBinary === false || !str_starts_with($pdfBinary, '%PDF-') || strlen($pdfBinary) > 10 * 1024 * 1024) {
             return response()->json(['success' => false, 'message' => 'ملف الـ PDF غير صالح أو يتجاوز الحجم المسموح (10MB).']);
         }
@@ -4810,12 +5037,34 @@ class CompanyErpController extends Controller
     }
 
     /**
-     * استقبال رسائل الواتساب (Webhook) لاعتماد سندات الصرف المعلقة بالكلمات المحددة من صاحب المكتب
+     * استقبال وتوثيق رسائل الواتساب (Webhook) من Meta Cloud API لاعتماد سندات الصرف المعلقة
      */
     public function handleWhatsappWebhook(Request $request)
     {
-        $fromPhone = $request->input('from', $request->input('sender', $request->input('phone', '')));
-        $body = trim((string) $request->input('message', $request->input('body', $request->input('text', ''))));
+        // 1. الرد على طلب التحقق الرسمي من Meta App Dashboard (GET hub.challenge)
+        if ($request->isMethod('get')) {
+            $mode      = $request->query('hub_mode', $request->query('hub.mode'));
+            $token     = $request->query('hub_verify_token', $request->query('hub.verify_token'));
+            $challenge = $request->query('hub_challenge', $request->query('hub.challenge'));
+
+            $expectedVerifyToken = self::getSetting('whatsapp_webhook_verify_token', 'erp_whatsapp_verify_2026');
+            $apiToken = self::getSetting('whatsapp_api_token', '');
+
+            if ($mode === 'subscribe' && ($token === $expectedVerifyToken || (!empty($apiToken) && $token === $apiToken))) {
+                return response((string) $challenge, 200)->header('Content-Type', 'text/plain');
+            }
+            return response('Forbidden: Verify token mismatch', 403);
+        }
+
+        // 2. قراءة الرسالة الواردة من هيكل Meta Cloud API الرسمي أو البوابات المخصصة
+        $metaMessage = $request->input('entry.0.changes.0.value.messages.0');
+        if (is_array($metaMessage)) {
+            $fromPhone = (string) ($metaMessage['from'] ?? '');
+            $body      = trim((string) ($metaMessage['text']['body'] ?? ($metaMessage['button']['text'] ?? '')));
+        } else {
+            $fromPhone = $request->input('from', $request->input('sender', $request->input('phone', '')));
+            $body      = trim((string) $request->input('message', $request->input('body', $request->input('text', ''))));
+        }
 
         if (empty($fromPhone) || empty($body)) {
             return response()->json(['status' => 'ignored']);
@@ -4836,16 +5085,6 @@ class CompanyErpController extends Controller
             $office = DB::table('offices')->where('id', $user->office_id)->first();
             if (!$office) {
                 return response()->json(['status' => 'ignored']);
-            }
-
-            // التحقق من توكن الـ Webhook في حال تم إرساله في الهيدر أو الطلب لمنع الانتحال الخارجي
-            $incomingToken = $request->header('X-Webhook-Token') ?: $request->input('token', $request->input('api_token'));
-            $expectedToken = (!empty($office->use_custom_whatsapp) && !empty($office->whatsapp_api_token))
-                ? $office->whatsapp_api_token
-                : self::getSetting('whatsapp_api_token', env('WHATSAPP_API_TOKEN'));
-
-            if (!empty($incomingToken) && !empty($expectedToken) && !hash_equals((string) $expectedToken, (string) $incomingToken)) {
-                return response()->json(['status' => 'unauthorized'], 403);
             }
 
             $keywordsRaw = $office->wa_approval_keywords ?: 'اعتمد,تم,اوك,موافق,نعم';
@@ -5287,12 +5526,25 @@ class CompanyErpController extends Controller
                 $cmd = 'cd /d ' . escapeshellarg($baseDir) . ' && start /B "" node ' . escapeshellarg($scriptPath) . ' > ' . escapeshellarg($logPath) . ' 2>&1';
                 @pclose(@popen($cmd, 'r'));
             } else {
-                $cmd = 'export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; cd ' . escapeshellarg($baseDir) . ' && nohup node ' . escapeshellarg($scriptPath) . ' >> ' . escapeshellarg($logPath) . ' 2>&1 &';
-                @exec($cmd);
+                $nodeBin = 'node';
+                foreach (['/usr/bin/node', '/usr/local/bin/node'] as $candidate) {
+                    if (@is_executable($candidate)) {
+                        $nodeBin = $candidate;
+                        break;
+                    }
+                }
+                $bgCmd = '(cd ' . escapeshellarg($baseDir) . ' && ' . $nodeBin . ' ' . escapeshellarg($scriptPath) . ' >> ' . escapeshellarg($logPath) . ' 2>&1 < /dev/null &)';
+                if (function_exists('exec')) {
+                    @exec($bgCmd);
+                } elseif (function_exists('shell_exec')) {
+                    @shell_exec($bgCmd);
+                } elseif (function_exists('popen')) {
+                    @pclose(@popen($bgCmd, 'r'));
+                }
             }
 
             for ($i = 0; $i < 12; $i++) {
-                usleep(350000);
+                usleep(300000);
                 try {
                     $check = Http::timeout(1)->get('http://127.0.0.1:3005/status');
                     if ($check->successful()) {
@@ -5328,6 +5580,17 @@ class CompanyErpController extends Controller
             }
         } catch (\Throwable $e) {}
 
+        $logHint = '';
+        foreach (['/tmp/whatsapp-qr-engine.log', storage_path('logs/whatsapp-qr-engine.log')] as $lf) {
+            if (@file_exists($lf) && @filesize($lf) > 0) {
+                $tail = trim((string) @file_get_contents($lf, false, null, max(0, @filesize($lf) - 300)));
+                if ($tail !== '') {
+                    $logHint = mb_substr(preg_replace('/\s+/', ' ', $tail), -160);
+                    break;
+                }
+            }
+        }
+
         return [
             'engine_up'     => false,
             'connected'     => false,
@@ -5336,7 +5599,7 @@ class CompanyErpController extends Controller
             'account_name'  => '',
             'account_phone' => '',
             'connected_at'  => '',
-            'last_error'    => 'المحرك غير مشغل على المنفذ 3005',
+            'last_error'    => $logHint ?: 'المحرك غير مشغل بعد',
         ];
     }
 
@@ -5345,7 +5608,6 @@ class CompanyErpController extends Controller
      */
     public function generateAdsWhatsappQr(Request $request)
     {
-        // تحرير قفل الجلسة فوراً للسماح بطلبات الفحص المتزامنة بدون تعليق
         session()->save();
 
         $engineUp = $this->ensureMarketingQrEngineRunning();
@@ -5380,11 +5642,12 @@ class CompanyErpController extends Controller
             }
         }
 
+        $state = $this->fetchLiveMarketingQrState();
         return response()->json([
             'success'    => false,
             'engine_up'  => false,
-            'message'    => 'لم يتمكن السيرفر من تشغيل Node.js على المنفذ 3005.',
-            'last_error' => 'Node Engine Down'
+            'message'    => 'تعذر تشغيل محرك Node.js: ' . ($state['last_error'] ?? ''),
+            'last_error' => $state['last_error'] ?? 'Node Engine Down'
         ]);
     }
 
@@ -5442,37 +5705,56 @@ class CompanyErpController extends Controller
         $rawPhone = trim((string) $request->input('phone', ''));
         $message  = trim((string) $request->input('message', ''));
         $mediaBase64OrUrl = trim((string) $request->input('media_data', ''));
-        $mediaFileName    = trim((string) $request->input('media_filename', ''));
+        $mediaFileName    = trim((string) $request->input('media_filename', 'Attachment.pdf'));
         $mediaMimeType    = trim((string) $request->input('media_type', ''));
 
         if (empty($rawPhone)) {
             return response()->json(['success' => false, 'message' => 'رقم الجوال فارغ.']);
         }
 
+        // 1. إذا كان محرك الـ QR متصلاً فعلياً، نرسل عبره أولاً
         $liveState = $this->fetchLiveMarketingQrState();
-        if (!$liveState['connected']) {
-            return response()->json(['success' => false, 'message' => 'الحساب التسويقي غير متصل! يرجى مسح كود الـ QR أولاً.']);
+        if (!empty($liveState['connected'])) {
+            try {
+                $res = Http::timeout(25)->post('http://127.0.0.1:3005/send', [
+                    'to'             => self::formatSaudiPhone($rawPhone),
+                    'message'        => $message,
+                    'media_data'     => $mediaBase64OrUrl,
+                    'media_filename' => $mediaFileName,
+                    'media_type'     => $mediaMimeType,
+                ]);
+
+                $json = $res->json();
+                $ok = $res->successful() && !empty($json['success']);
+
+                return response()->json([
+                    'success' => $ok,
+                    'message' => $ok ? 'تم الإرسال عبر QR بنجاح' : ($json['message'] ?? 'فشل الإرسال عبر QR')
+                ]);
+            } catch (\Throwable $e) {
+                return response()->json(['success' => false, 'message' => 'خطأ في محرك الإرسال: ' . $e->getMessage()]);
+            }
         }
 
-        try {
-            $res = Http::timeout(25)->post('http://127.0.0.1:3005/send', [
-                'to'             => self::formatSaudiPhone($rawPhone),
-                'message'        => $message,
-                'media_data'     => $mediaBase64OrUrl,
-                'media_filename' => $mediaFileName,
-                'media_type'     => $mediaMimeType,
-            ]);
-
-            $json = $res->json();
-            $ok = $res->successful() && !empty($json['success']);
+        // 2. إذا لم يكن الـ QR متصلاً، نرسل مباشرة عبر Meta WhatsApp Cloud API الرسمي
+        $apiToken = self::getSetting('whatsapp_api_token', env('WHATSAPP_API_TOKEN', ''));
+        if (!empty($apiToken)) {
+            $sent = !empty($mediaBase64OrUrl)
+                ? self::sendWhatsAppDocument($rawPhone, $mediaBase64OrUrl, $mediaFileName, $message, null)
+                : self::sendWhatsAppMessage($rawPhone, $message, null);
 
             return response()->json([
-                'success' => $ok,
-                'message' => $ok ? 'تم الإرسال بنجاح' : ($json['message'] ?? 'فشل الإرسال')
+                'success' => $sent,
+                'message' => $sent
+                    ? 'تم الإرسال عبر WhatsApp Business API الرسمي بنجاح'
+                    : 'تعذر الإرسال عبر API (تأكد من صلاحية التوكن وفتح نافذة المحادثة مع الرقم)'
             ]);
-        } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'خطأ في محرك الإرسال: ' . $e->getMessage()]);
         }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'يرجى حفظ إعدادات Meta WhatsApp Cloud API بالأعلى أو مسح كود الـ QR أولاً.'
+        ]);
     }
 
     public function logAdCampaign(Request $request)

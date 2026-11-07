@@ -1,6 +1,6 @@
 FROM php:8.5-apache
 
-# تثبيت الحزم والأدوات اللازمة لنظام PHP وقواعد البيانات + تثبيت Node.js 20 لمحرك واتساب QR
+# تثبيت الحزم اللازمة لنظام PHP وقواعد البيانات + Node.js 20
 RUN apt-get update && apt-get install -y \
     git \
     curl \
@@ -28,7 +28,7 @@ ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf \
     && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
-# تعديل ملف إعدادات أباتشي الافتراضي لضمان قبول الروابط اللطيفة (AllowOverride All)
+# تعديل إعدادات أباتشي لقبول الروابط اللطيفة (AllowOverride All)
 RUN echo '<Directory /var/www/html/public/>\n\
     Options Indexes FollowSymLinks\n\
     AllowOverride All\n\
@@ -39,24 +39,22 @@ RUN echo '<Directory /var/www/html/public/>\n\
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # نسخ ملفات المشروع إلى السيرفر
+WORKDIR /var/www/html
 COPY . /var/www/html
 
-# العمل داخل مجلد المشروع وتثبيت حزم PHP وحزم Node.js الضرورية لمحرك الواتساب
-WORKDIR /var/www/html
-RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
-    && npm install --no-audit --no-fund \
-    && npm install express qrcode pino @whiskeysockets/baileys@6.7.9 --no-audit --no-fund
+# إجبار Git على استخدام HTTPS بدلاً من SSH لتفادي فشل تثبيت libsignal في Baileys داخل Docker
+RUN git config --global url."https://github.com/".insteadOf ssh://git@github.com/ \
+    && git config --global url."https://github.com/".insteadOf git@github.com: \
+    && composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
+    && npm install qrcode pino @whiskeysockets/baileys@6.7.9 --legacy-peer-deps --no-audit --no-fund
 
-# إنشاء مجلد قاعدة البيانات ومجلدات التخزين ومجلد جلسة واتساب والتأكد من الصلاحيات الكاملة
-RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache \
-    && touch database/database.sqlite storage/logs/whatsapp-qr-engine.log \
-    && find /var/www/html -type d -exec chmod 755 {} \; \
-    && find /var/www/html -type f -exec chmod 644 {} \; \
-    && chown -R www-data:www-data /var/www/html \
-    && chmod -R 777 storage bootstrap/cache database
+# تجهيز مجلدات التخزين وقاعدة البيانات وصلاحياتها بسرعة فائقة دون تعطيل node_modules
+RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache public/uploads/properties public/uploads/whatsapp_pdfs \
+    && touch database/database.sqlite storage/logs/whatsapp-qr-engine.log /tmp/whatsapp-qr-engine.log \
+    && chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache /var/www/html/database /var/www/html/public \
+    && chmod -R 777 /var/www/html/storage /var/www/html/bootstrap/cache /var/www/html/database /tmp/whatsapp-qr-engine.log
 
-# ضبط منفذ العمل
 EXPOSE 80
 
-# تشغيل محرك واتساب QR تلقائياً في الخلفية بشكل مستمر + تشغيل Apache
-CMD ["sh", "-c", "(while true; do node /var/www/html/whatsapp-qr-engine.js >> /tmp/whatsapp-qr-engine.log 2>&1; sleep 2; done) & apache2-foreground"]
+# مسح كاش الواجهات القديمة وتشغيل محرك واتساب QR في الخلفية ثم تشغيل أباتشي
+CMD ["sh", "-c", "php artisan view:clear && php artisan config:clear && (while true; do node /var/www/html/whatsapp-qr-engine.js >> /tmp/whatsapp-qr-engine.log 2>&1; sleep 2; done) & apache2-foreground"]
