@@ -4982,4 +4982,381 @@ class CompanyErpController extends Controller
 
         return response($html);
     }
+
+    public static function ensureSiteAnalyticsAndAdsTables(): void
+    {
+        if (!Schema::hasTable('site_visits')) {
+            Schema::create('site_visits', function (Blueprint $table) {
+                $table->id();
+                $table->string('ip_address', 64)->index();
+                $table->string('session_hash', 64)->index();
+                $table->string('country_code', 10)->default('SA')->index();
+                $table->string('country_name', 100)->default('المملكة العربية السعودية');
+                $table->string('city', 100)->default('الرياض');
+                $table->string('isp', 150)->nullable();
+                $table->string('device_type', 40)->default('كمبيوتر (Desktop)');
+                $table->string('os', 50)->default('Windows');
+                $table->string('browser', 50)->default('Chrome');
+                $table->string('page_visited', 180)->default('/');
+                $table->string('referrer_source', 100)->default('دخول مباشر');
+                $table->string('referrer_url', 255)->nullable();
+                $table->date('visit_date')->index();
+                $table->timestamp('last_seen_at')->nullable()->index();
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('whatsapp_ad_campaigns')) {
+            Schema::create('whatsapp_ad_campaigns', function (Blueprint $table) {
+                $table->id();
+                $table->string('campaign_name');
+                $table->text('message_template')->nullable();
+                $table->string('attachment_type', 40)->nullable();
+                $table->integer('total_targets')->default(0);
+                $table->integer('sent_count')->default(0);
+                $table->integer('failed_count')->default(0);
+                $table->integer('min_delay_sec')->default(5);
+                $table->integer('max_delay_sec')->default(15);
+                $table->timestamps();
+            });
+        }
+    }
+
+    public static function countryCodeToFlagEmoji(string $code): string
+    {
+        $code = strtoupper(trim($code ?: 'SA'));
+        if (strlen($code) !== 2) return '🌍';
+        return mb_chr(ord($code[0]) + 127397, 'UTF-8') . mb_chr(ord($code[1]) + 127397, 'UTF-8');
+    }
+
+    public static function recordSiteVisit(Request $request, string $methodName = 'showLandingPage'): void
+    {
+        try {
+            if (!$request->isMethod('get')) return;
+            self::ensureSiteAnalyticsAndAdsTables();
+
+            $ua = (string) $request->userAgent();
+            if (preg_match('/bot|crawl|slurp|spider|mediapartners/i', $ua)) return;
+
+            $pageLabel = match ($methodName) {
+                'showLandingPage' => 'الواجهة الرئيسية للمنصة (/)',
+                'showLogin'       => 'بوابة تسجيل الدخول (/login)',
+                'dashboard'       => 'لوحة التحكم المركزية',
+                default           => $request->path(),
+            };
+
+            $ip = $request->header('CF-Connecting-IP')
+               ?: $request->header('X-Real-IP')
+               ?: $request->header('X-Forwarded-For')
+               ?: $request->ip()
+               ?: '127.0.0.1';
+            if (str_contains($ip, ',')) {
+                $ip = trim(explode(',', $ip)[0]);
+            }
+
+            $today = date('Y-m-d');
+            $sessionHash = md5($ip . '|' . substr($ua, 0, 120) . '|' . $today);
+
+            $recentVisit = DB::table('site_visits')
+                ->where('session_hash', $sessionHash)
+                ->where('page_visited', $pageLabel)
+                ->where('created_at', '>=', now()->subMinutes(3))
+                ->first();
+
+            if ($recentVisit) {
+                DB::table('site_visits')->where('id', $recentVisit->id)->update([
+                    'last_seen_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                return;
+            }
+
+            $deviceType = 'كمبيوتر (Desktop)';
+            if (preg_match('/ipad|tablet|playbook|silk/i', $ua)) $deviceType = 'جهاز لوحي (Tablet)';
+            elseif (preg_match('/mobile|iphone|ipod|android.*mobile|windows phone/i', $ua)) $deviceType = 'جوال (Mobile)';
+
+            $os = 'نظام آخر';
+            if (preg_match('/iphone|ipad|ipod/i', $ua)) $os = 'iOS (آيفون)';
+            elseif (preg_match('/android/i', $ua)) $os = 'Android (أندرويد)';
+            elseif (preg_match('/windows nt/i', $ua)) $os = 'Windows';
+            elseif (preg_match('/macintosh|mac os x/i', $ua)) $os = 'Mac OS';
+            elseif (preg_match('/linux/i', $ua)) $os = 'Linux';
+
+            $browser = 'متصفح آخر';
+            if (preg_match('/edg/i', $ua)) $browser = 'Microsoft Edge';
+            elseif (preg_match('/opr|opera/i', $ua)) $browser = 'Opera';
+            elseif (preg_match('/chrome|crios/i', $ua)) $browser = 'Google Chrome';
+            elseif (preg_match('/firefox|fxios/i', $ua)) $browser = 'Mozilla Firefox';
+            elseif (preg_match('/safari/i', $ua)) $browser = 'Apple Safari';
+
+            $refererRaw = (string) $request->headers->get('referer', '');
+            $refererSource = 'دخول مباشر (Direct)';
+            if (!empty($refererRaw)) {
+                $refLower = strtolower($refererRaw);
+                $host = strtolower($request->getHost());
+                if (str_contains($refLower, $host)) $refererSource = 'تنقل داخلي بالمنصة';
+                elseif (str_contains($refLower, 'google.')) $refererSource = 'محرك بحث جوجل (Google)';
+                elseif (str_contains($refLower, 'bing.')) $refererSource = 'محرك بحث Bing';
+                elseif (str_contains($refLower, 'wa.me') || str_contains($refLower, 'whatsapp')) $refererSource = 'واتساب (WhatsApp)';
+                elseif (str_contains($refLower, 't.co') || str_contains($refLower, 'twitter') || str_contains($refLower, 'x.com')) $refererSource = 'منصة إكس (X)';
+                elseif (str_contains($refLower, 'instagram')) $refererSource = 'إنستغرام (Instagram)';
+                elseif (str_contains($refLower, 'snapchat')) $refererSource = 'سناب شات (Snapchat)';
+                else $refererSource = parse_url($refererRaw, PHP_URL_HOST) ?: 'رابط خارجي';
+            }
+
+            $countryNamesAr = [
+                'SA' => 'المملكة العربية السعودية', 'AE' => 'الإمارات العربية المتحدة', 'KW' => 'الكويت',
+                'QA' => 'قطر', 'BH' => 'البحرين', 'OM' => 'سلطنة عُمان', 'YE' => 'اليمن',
+                'EG' => 'مصر', 'JO' => 'الأردن', 'IQ' => 'العراق', 'SY' => 'سوريا',
+                'LB' => 'لبنان', 'PS' => 'فلسطين', 'SD' => 'السودان', 'MA' => 'المغرب',
+                'DZ' => 'الجزائر', 'TN' => 'تونس', 'LY' => 'ليبيا', 'TR' => 'تركيا',
+                'US' => 'الولايات المتحدة', 'GB' => 'المملكة المتحدة', 'DE' => 'ألمانيا',
+                'FR' => 'فرنسا', 'IN' => 'الهند', 'PK' => 'باكستان',
+            ];
+
+            $countryCode = strtoupper((string) $request->header('CF-IPCountry', ''));
+            $countryName = 'المملكة العربية السعودية';
+            $city = 'الرياض';
+            $isp = 'شبكة اتصال محلية';
+
+            $cachedGeo = DB::table('site_visits')->where('ip_address', $ip)->whereNotNull('country_code')->orderByDesc('id')->first();
+            if ($cachedGeo) {
+                $countryCode = $cachedGeo->country_code;
+                $countryName = $cachedGeo->country_name;
+                $city = $cachedGeo->city;
+                $isp = $cachedGeo->isp;
+            } elseif (!in_array($ip, ['127.0.0.1', '::1']) && !str_starts_with($ip, '192.168.') && !str_starts_with($ip, '10.')) {
+                try {
+                    $geoRes = Http::timeout(2)->get("http://ip-api.com/json/{$ip}?fields=status,country,countryCode,city,isp&lang=ar");
+                    if ($geoRes->successful() && ($geoRes->json('status') === 'success')) {
+                        $countryCode = strtoupper((string) $geoRes->json('countryCode', 'SA'));
+                        $countryName = $countryNamesAr[$countryCode] ?? (string) $geoRes->json('country', 'المملكة العربية السعودية');
+                        $city = (string) $geoRes->json('city', 'الرياض');
+                        $isp = (string) $geoRes->json('isp', '');
+                    }
+                } catch (\Throwable $e) {
+                    $countryCode = $countryCode ?: 'SA';
+                }
+            } else {
+                $countryCode = 'SA';
+                $countryName = 'المملكة العربية السعودية';
+                $city = 'الرياض';
+                $isp = 'Local Network';
+            }
+
+            if (empty($countryCode)) $countryCode = 'SA';
+            if (isset($countryNamesAr[$countryCode])) $countryName = $countryNamesAr[$countryCode];
+
+            DB::table('site_visits')->insert([
+                'ip_address'      => $ip,
+                'session_hash'    => $sessionHash,
+                'country_code'    => $countryCode,
+                'country_name'    => $countryName,
+                'city'            => $city ?: 'غير محدد',
+                'isp'             => $isp,
+                'device_type'     => $deviceType,
+                'os'              => $os,
+                'browser'         => $browser,
+                'page_visited'    => $pageLabel,
+                'referrer_source' => $refererSource,
+                'referrer_url'    => mb_substr($refererRaw, 0, 250),
+                'visit_date'      => $today,
+                'last_seen_at'    => now(),
+                'created_at'      => now(),
+                'updated_at'      => now(),
+            ]);
+        } catch (\Throwable $e) {}
+    }
+
+    public function getSiteAnalyticsData(): array
+    {
+        self::ensureSiteAnalyticsAndAdsTables();
+
+        $today = date('Y-m-d');
+        $totalPageViews = DB::table('site_visits')->count();
+        $uniqueVisitors = DB::table('site_visits')->distinct('session_hash')->count('session_hash');
+        $todayViews = DB::table('site_visits')->where('visit_date', $today)->count();
+        $todayUnique = DB::table('site_visits')->where('visit_date', $today)->distinct('session_hash')->count('session_hash');
+        $onlineNow = DB::table('site_visits')->where('last_seen_at', '>=', now()->subMinutes(10))->distinct('session_hash')->count('session_hash');
+
+        $countries = DB::table('site_visits')
+            ->select('country_code', 'country_name', DB::raw('COUNT(*) as visits_count'), DB::raw('COUNT(DISTINCT session_hash) as unique_count'))
+            ->groupBy('country_code', 'country_name')
+            ->orderByDesc('visits_count')
+            ->limit(10)
+            ->get()
+            ->map(function ($row) use ($totalPageViews) {
+                $row->flag = self::countryCodeToFlagEmoji($row->country_code);
+                $row->percentage = $totalPageViews > 0 ? round(($row->visits_count / $totalPageViews) * 100, 1) : 0;
+                return $row;
+            });
+
+        $cities = DB::table('site_visits')
+            ->select('city', 'country_code', DB::raw('COUNT(*) as visits_count'))
+            ->groupBy('city', 'country_code')
+            ->orderByDesc('visits_count')
+            ->limit(8)
+            ->get();
+
+        $devices = DB::table('site_visits')
+            ->select('device_type', DB::raw('COUNT(*) as visits_count'))
+            ->groupBy('device_type')
+            ->orderByDesc('visits_count')
+            ->get()
+            ->map(function ($d) use ($totalPageViews) {
+                $d->percentage = $totalPageViews > 0 ? round(($d->visits_count / $totalPageViews) * 100, 1) : 0;
+                return $d;
+            });
+
+        $referrers = DB::table('site_visits')
+            ->select('referrer_source', DB::raw('COUNT(*) as visits_count'))
+            ->groupBy('referrer_source')
+            ->orderByDesc('visits_count')
+            ->limit(6)
+            ->get();
+
+        $dailyTrend = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $d = now()->subDays($i)->toDateString();
+            $dailyTrend[] = [
+                'date'  => $d,
+                'label' => now()->subDays($i)->format('m/d'),
+                'views' => DB::table('site_visits')->where('visit_date', $d)->count(),
+            ];
+        }
+
+        $recentVisitors = DB::table('site_visits')->orderByDesc('id')->limit(150)->get()->map(function ($v) {
+            $v->flag = self::countryCodeToFlagEmoji($v->country_code);
+            return $v;
+        });
+
+        return [
+            'total_views'     => $totalPageViews,
+            'unique_visitors' => $uniqueVisitors,
+            'today_views'     => $todayViews,
+            'today_unique'    => $todayUnique,
+            'online_now'      => max(1, $onlineNow),
+            'countries_count' => $countries->count(),
+            'countries'       => $countries,
+            'cities'          => $cities,
+            'devices'         => $devices,
+            'referrers'       => $referrers,
+            'daily_trend'     => $dailyTrend,
+            'recent_visitors' => $recentVisitors,
+        ];
+    }
+
+    public function clearSiteVisits()
+    {
+        self::ensureSiteAnalyticsAndAdsTables();
+        DB::table('site_visits')->truncate();
+        return back()->with('success', 'تم تصفير سجل إحصائيات الزيارات بنجاح.');
+    }
+
+    public function saveAdsWhatsappSettings(Request $request)
+    {
+        self::setSetting('ads_whatsapp_sender_phone', self::formatSaudiPhone(trim((string) $request->input('ads_sender_phone', '0500000000'))));
+        self::setSetting('ads_whatsapp_api_url', trim((string) $request->input('ads_api_url', '')));
+        self::setSetting('ads_whatsapp_api_token', trim((string) $request->input('ads_api_token', '')));
+        self::setSetting('ads_whatsapp_instance_id', trim((string) $request->input('ads_instance_id', '')));
+
+        return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
+            ->with('success', 'تم حفظ إعدادات ربط WhatsApp API المستقل الخاص بالحملات الإعلانية بنجاح.');
+    }
+
+    private function getSystemContactsForAds(): array
+    {
+        $contacts = [];
+        if (Schema::hasTable('offices')) {
+            foreach (DB::table('offices')->select('name', 'phone')->get() as $o) {
+                if (!empty($o->phone)) $contacts[] = ['name' => $o->name, 'phone' => self::toLocalPhone($o->phone)];
+            }
+        }
+        if (Schema::hasTable('owners')) {
+            foreach (DB::table('owners')->select('name', 'phone')->get() as $ow) {
+                if (!empty($ow->phone)) $contacts[] = ['name' => $ow->name, 'phone' => self::toLocalPhone($ow->phone)];
+            }
+        }
+        if (Schema::hasTable('tenants')) {
+            foreach (DB::table('tenants')->select('name', 'phone')->get() as $t) {
+                if (!empty($t->phone)) $contacts[] = ['name' => $t->name, 'phone' => self::toLocalPhone($t->phone)];
+            }
+        }
+        return $contacts;
+    }
+
+    public function sendSingleAdWhatsapp(Request $request)
+    {
+        $apiUrl     = self::getSetting('ads_whatsapp_api_url', '');
+        $apiToken   = self::getSetting('ads_whatsapp_api_token', '');
+        $instanceId = self::getSetting('ads_whatsapp_instance_id', '');
+
+        $rawPhone = trim((string) $request->input('phone', ''));
+        $message  = trim((string) $request->input('message', ''));
+        $mediaBase64OrUrl = trim((string) $request->input('media_data', ''));
+        $mediaFileName    = trim((string) $request->input('media_filename', ''));
+        $mediaMimeType    = trim((string) $request->input('media_type', ''));
+
+        if (empty($rawPhone)) {
+            return response()->json(['success' => false, 'message' => 'رقم الجوال فارغ.']);
+        }
+        if (empty($apiUrl) || empty($apiToken)) {
+            return response()->json(['success' => false, 'message' => 'يرجى حفظ رابط وتوكن API الإعلانات المستقل أولاً.']);
+        }
+
+        $formattedPhone = self::formatSaudiPhone($rawPhone);
+
+        try {
+            $payload = [
+                'token'       => $apiToken,
+                'instance_id' => $instanceId,
+                'to'          => $formattedPhone,
+                'message'     => $message,
+            ];
+
+            if (!empty($mediaBase64OrUrl)) {
+                $docType = 'document';
+                if (str_contains($mediaMimeType, 'image')) $docType = 'image';
+                elseif (str_contains($mediaMimeType, 'video')) $docType = 'video';
+                elseif (str_contains($mediaMimeType, 'audio')) $docType = 'audio';
+
+                $payload['type']     = $docType;
+                $payload['document'] = $mediaBase64OrUrl;
+                $payload['file']     = $mediaBase64OrUrl;
+                $payload['image']    = $mediaBase64OrUrl;
+                $payload['filename'] = $mediaFileName ?: ('Ad_' . time());
+                $payload['caption']  = $message;
+            }
+
+            $response = Http::timeout(20)->post($apiUrl, $payload);
+            $ok = $response->successful();
+
+            return response()->json([
+                'success' => $ok,
+                'phone'   => $formattedPhone,
+                'message' => $ok ? 'تم الإرسال بنجاح' : ('رفض من المزود: HTTP ' . $response->status())
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'phone' => $formattedPhone, 'message' => 'خطأ اتصال: ' . $e->getMessage()]);
+        }
+    }
+
+    public function logAdCampaign(Request $request)
+    {
+        self::ensureSiteAnalyticsAndAdsTables();
+        DB::table('whatsapp_ad_campaigns')->insert([
+            'campaign_name'    => trim((string) $request->input('campaign_name', 'حملة إعلانية ' . date('Y-m-d H:i'))),
+            'message_template' => mb_substr((string) $request->input('message_template', ''), 0, 1000),
+            'attachment_type'  => (string) $request->input('attachment_type', 'نص فقط'),
+            'total_targets'    => (int) $request->input('total_targets', 0),
+            'sent_count'       => (int) $request->input('sent_count', 0),
+            'failed_count'     => (int) $request->input('failed_count', 0),
+            'min_delay_sec'    => (int) $request->input('min_delay_sec', 5),
+            'max_delay_sec'    => (int) $request->input('max_delay_sec', 15),
+            'created_at'       => now(),
+            'updated_at'       => now(),
+        ]);
+
+        return response()->json(['success' => true]);
+    }
 }
