@@ -1035,14 +1035,12 @@ class CompanyErpController extends Controller
 
         self::ensureSiteAnalyticsAndAdsTables();
         $siteAnalytics = $this->getSiteAnalyticsData();
+        $liveQrState = $this->fetchLiveMarketingQrState();
         $adsWhatsappSettings = [
-            'sender_phone'    => self::toLocalPhone(self::getSetting('ads_whatsapp_sender_phone', '0500000000')),
-            'api_url'         => self::getSetting('ads_whatsapp_api_url', 'https://api.greatwhats.com/v1/messages'),
-            'api_token'       => self::getSetting('ads_whatsapp_api_token', ''),
-            'instance_id'     => self::getSetting('ads_whatsapp_instance_id', ''),
-            'qr_status'       => self::getSetting('ads_whatsapp_qr_status', 'disconnected'),
-            'qr_connected_at' => self::getSetting('ads_whatsapp_qr_connected_at', ''),
-            'qr_session_id'   => self::getSetting('ads_whatsapp_qr_session', ''),
+            'qr_status'       => $liveQrState['connected'] ? 'connected' : 'disconnected',
+            'account_name'    => $liveQrState['account_name'] ?? '',
+            'account_phone'   => $liveQrState['account_phone'] ?? '',
+            'qr_connected_at' => $liveQrState['connected_at'] ?? '',
         ];
         $adCampaigns = DB::table('whatsapp_ad_campaigns')->orderBy('id', 'desc')->limit(30)->get();
         $crmContactsForAds = $this->getSystemContactsForAds();
@@ -5256,109 +5254,114 @@ class CompanyErpController extends Controller
         return back()->with('success', 'تم تصفير سجل إحصائيات الزيارات بنجاح.');
     }
 
-    public function saveAdsWhatsappSettings(Request $request)
+    /**
+     * تشغيل محرك واتساب QR المحلي في الخلفية تلقائياً إذا لم يكن قيد التشغيل
+     */
+    private function ensureMarketingQrEngineRunning(): void
     {
-        if ($request->filled('ads_sender_phone')) {
-            self::setSetting('ads_whatsapp_sender_phone', self::formatSaudiPhone(trim((string) $request->input('ads_sender_phone'))));
-        }
-        self::setSetting('ads_whatsapp_api_url', trim((string) $request->input('ads_api_url', '')));
-        self::setSetting('ads_whatsapp_api_token', trim((string) $request->input('ads_api_token', '')));
-        self::setSetting('ads_whatsapp_instance_id', trim((string) $request->input('ads_instance_id', '')));
+        try {
+            $ping = Http::timeout(1)->get('http://127.0.0.1:3005/status');
+            if ($ping->successful()) {
+                return;
+            }
+        } catch (\Throwable $e) {}
 
-        return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
-            ->with('success', 'تم حفظ إعدادات بوابة الرقم التسويقي بنجاح.');
+        $scriptPath = base_path('whatsapp-qr-engine.js');
+        if (!file_exists($scriptPath)) {
+            return;
+        }
+
+        try {
+            if (PHP_OS_FAMILY === 'Windows') {
+                @pclose(@popen('start /B node ' . escapeshellarg($scriptPath) . ' > NUL 2>&1', 'r'));
+            } else {
+                @exec('nohup node ' . escapeshellarg($scriptPath) . ' > /dev/null 2>&1 &');
+            }
+            usleep(800000);
+        } catch (\Throwable $e) {}
     }
 
     /**
-     * توليد كود QR خاص بربط رقم الواتساب التسويقي فقط
+     * فحص حالة الاتصال الفعلية من محرك واتساب (لا يرجع متصلاً أبداً إلا إذا كان الجوال مرتبطاً فعلياً)
+     */
+    private function fetchLiveMarketingQrState(): array
+    {
+        try {
+            $res = Http::timeout(2)->get('http://127.0.0.1:3005/status');
+            if ($res->successful()) {
+                $data = $res->json();
+                $isConnected = !empty($data['connected']) && ($data['status'] ?? '') === 'connected';
+                return [
+                    'engine_up'     => true,
+                    'connected'     => $isConnected,
+                    'status'        => $data['status'] ?? 'disconnected',
+                    'qr_url'        => $data['qr_url'] ?? '',
+                    'account_name'  => $isConnected ? ($data['account_name'] ?? '') : '',
+                    'account_phone' => $isConnected ? ($data['account_phone'] ?? '') : '',
+                    'connected_at'  => $isConnected ? ($data['connected_at'] ?? '') : '',
+                ];
+            }
+        } catch (\Throwable $e) {}
+
+        return [
+            'engine_up'     => false,
+            'connected'     => false,
+            'status'        => 'disconnected',
+            'qr_url'        => '',
+            'account_name'  => '',
+            'account_phone' => '',
+            'connected_at'  => '',
+        ];
+    }
+
+    /**
+     * توليد كود QR حقيقي لواتساب ويب
      */
     public function generateAdsWhatsappQr(Request $request)
     {
-        $phone = trim((string) $request->input('ads_sender_phone', ''));
-        if (!empty($phone)) {
-            self::setSetting('ads_whatsapp_sender_phone', self::formatSaudiPhone($phone));
-        }
+        $this->ensureMarketingQrEngineRunning();
 
-        $apiUrl     = self::getSetting('ads_whatsapp_api_url', '');
-        $apiToken   = self::getSetting('ads_whatsapp_api_token', '');
-        $instanceId = self::getSetting('ads_whatsapp_instance_id', '');
-
-        $sessionId = 'WA-MKT-' . strtoupper(bin2hex(random_bytes(6))) . '-' . time();
-        self::setSetting('ads_whatsapp_qr_session', $sessionId);
-
-        // محاولة جلب صورة الـ QR من بوابة الواتساب إذا كان هناك رابط وتوكن مخصص لبوابة QR
-        if (!empty($apiUrl) && !empty($apiToken)) {
-            try {
-                $qrEndpoint = preg_replace('/\/messages$/i', '/qr', $apiUrl);
-                $res = Http::timeout(6)->get($qrEndpoint, [
-                    'token'       => $apiToken,
-                    'instance_id' => $instanceId,
+        try {
+            $res = Http::timeout(8)->post('http://127.0.0.1:3005/init-qr');
+            if ($res->successful()) {
+                $data = $res->json();
+                return response()->json([
+                    'success'       => true,
+                    'connected'     => !empty($data['connected']),
+                    'status'        => $data['status'] ?? 'qr_ready',
+                    'qr_url'        => $data['qr_url'] ?? '',
+                    'account_name'  => $data['account_name'] ?? '',
+                    'account_phone' => $data['account_phone'] ?? '',
                 ]);
-                if ($res->successful()) {
-                    $json = $res->json();
-                    $qrBase64 = $json['qr'] ?? ($json['qrCode'] ?? ($json['data']['qr'] ?? ($json['base64'] ?? null)));
-                    if (!empty($qrBase64)) {
-                        if (!str_starts_with($qrBase64, 'data:image') && !str_starts_with($qrBase64, 'http')) {
-                            $qrBase64 = 'data:image/png;base64,' . $qrBase64;
-                        }
-                        return response()->json([
-                            'success'    => true,
-                            'qr_url'     => $qrBase64,
-                            'session_id' => $sessionId,
-                            'source'     => 'gateway',
-                        ]);
-                    }
-                }
-            } catch (\Throwable $e) {}
-        }
-
-        // توليد باركود جلسة الربط الفوري للرقم التسويقي
-        $qrPayload = "WHATSAPP_MARKETING_LINK|SESSION:{$sessionId}|PHONE:" . ($phone ?: '0500000000') . "|TS:" . time();
-        $qrImageUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=10&data=' . urlencode($qrPayload);
+            }
+        } catch (\Throwable $e) {}
 
         return response()->json([
-            'success'    => true,
-            'qr_url'     => $qrImageUrl,
-            'session_id' => $sessionId,
-            'source'     => 'direct_qr',
+            'success' => false,
+            'message' => 'محرك واتساب QR غير مشغل حالياً. يرجى تشغيل (node whatsapp-qr-engine.js) في التيرمينال.'
         ]);
     }
 
     /**
-     * تأكيد وتفعيل ربط الرقم التسويقي بعد مسح كود الـ QR
+     * فحص مستمر تلقائي (Polling) لمعرفة هل تم مسح الـ QR وجلب اسم الحساب المرتبط تلقائياً
      */
-    public function confirmAdsWhatsappQr(Request $request)
+    public function checkAdsWhatsappQrStatus()
     {
-        $phone = trim((string) $request->input('ads_sender_phone', ''));
-        if (!empty($phone)) {
-            self::setSetting('ads_whatsapp_sender_phone', self::formatSaudiPhone($phone));
-        }
-
-        $sessionId = self::getSetting('ads_whatsapp_qr_session', 'WA-MKT-' . rand(10000, 99999));
-        self::setSetting('ads_whatsapp_qr_status', 'connected');
-        self::setSetting('ads_whatsapp_qr_connected_at', now()->toDateTimeString());
-        self::setSetting('ads_whatsapp_qr_session', $sessionId);
-
-        return response()->json([
-            'success'      => true,
-            'status'       => 'connected',
-            'phone'        => self::toLocalPhone(self::getSetting('ads_whatsapp_sender_phone', $phone)),
-            'connected_at' => now()->toDateTimeString(),
-            'session_id'   => $sessionId,
-        ]);
+        $state = $this->fetchLiveMarketingQrState();
+        return response()->json($state);
     }
 
     /**
-     * إلغاء ربط الرقم التسويقي وفصل جلسة الـ QR
+     * فصل الحساب التسويقي المرتبط وإلغاء جلسة الـ QR
      */
     public function disconnectAdsWhatsappQr()
     {
-        self::setSetting('ads_whatsapp_qr_status', 'disconnected');
-        self::setSetting('ads_whatsapp_qr_connected_at', '');
-        self::setSetting('ads_whatsapp_qr_session', '');
+        try {
+            Http::timeout(4)->post('http://127.0.0.1:3005/logout');
+        } catch (\Throwable $e) {}
 
         return redirect()->route('erp.dashboard', ['tab' => 'whatsapp'])
-            ->with('success', 'تم فصل جلسة الـ QR للرقم التسويقي بنجاح، يمكنك مسح كود جديد لربط رقم آخر.');
+            ->with('success', 'تم فصل حساب الواتساب التسويقي بنجاح.');
     }
 
     private function getSystemContactsForAds(): array
@@ -5384,11 +5387,6 @@ class CompanyErpController extends Controller
 
     public function sendSingleAdWhatsapp(Request $request)
     {
-        $qrStatus   = self::getSetting('ads_whatsapp_qr_status', 'disconnected');
-        $apiUrl     = self::getSetting('ads_whatsapp_api_url', '');
-        $apiToken   = self::getSetting('ads_whatsapp_api_token', '');
-        $instanceId = self::getSetting('ads_whatsapp_instance_id', '');
-
         $rawPhone = trim((string) $request->input('phone', ''));
         $message  = trim((string) $request->input('message', ''));
         $mediaBase64OrUrl = trim((string) $request->input('media_data', ''));
@@ -5399,54 +5397,30 @@ class CompanyErpController extends Controller
             return response()->json(['success' => false, 'message' => 'رقم الجوال فارغ.']);
         }
 
-        if ($qrStatus !== 'connected' && empty($apiToken)) {
-            return response()->json(['success' => false, 'message' => 'يرجى ربط الرقم التسويقي عبر مسح كود الـ QR أولاً.']);
+        $liveState = $this->fetchLiveMarketingQrState();
+        if (!$liveState['connected']) {
+            return response()->json(['success' => false, 'message' => 'الحساب التسويقي غير متصل! يرجى مسح كود الـ QR أولاً.']);
         }
 
-        $formattedPhone = self::formatSaudiPhone($rawPhone);
+        try {
+            $res = Http::timeout(25)->post('http://127.0.0.1:3005/send', [
+                'to'             => self::formatSaudiPhone($rawPhone),
+                'message'        => $message,
+                'media_data'     => $mediaBase64OrUrl,
+                'media_filename' => $mediaFileName,
+                'media_type'     => $mediaMimeType,
+            ]);
 
-        // إذا كان هناك خادم بوابة مربوط مع جلسة الـ QR، نرسل عبره، وإلا نرسل عبر جلسة الـ QR المباشرة
-        if (!empty($apiUrl) && !empty($apiToken)) {
-            try {
-                $payload = [
-                    'token'       => $apiToken,
-                    'instance_id' => $instanceId ?: self::getSetting('ads_whatsapp_qr_session', ''),
-                    'to'          => $formattedPhone,
-                    'message'     => $message,
-                ];
+            $json = $res->json();
+            $ok = $res->successful() && !empty($json['success']);
 
-                if (!empty($mediaBase64OrUrl)) {
-                    $docType = 'document';
-                    if (str_contains($mediaMimeType, 'image')) $docType = 'image';
-                    elseif (str_contains($mediaMimeType, 'video')) $docType = 'video';
-                    elseif (str_contains($mediaMimeType, 'audio')) $docType = 'audio';
-
-                    $payload['type']     = $docType;
-                    $payload['document'] = $mediaBase64OrUrl;
-                    $payload['file']     = $mediaBase64OrUrl;
-                    $payload['image']    = $mediaBase64OrUrl;
-                    $payload['filename'] = $mediaFileName ?: ('Ad_' . time());
-                    $payload['caption']  = $message;
-                }
-
-                $response = Http::timeout(20)->post($apiUrl, $payload);
-                $ok = $response->successful();
-
-                return response()->json([
-                    'success' => $ok,
-                    'phone'   => $formattedPhone,
-                    'message' => $ok ? 'تم الإرسال عبر جلسة الـ QR بنجاح' : ('رفض من المزود: HTTP ' . $response->status())
-                ]);
-            } catch (\Throwable $e) {
-                return response()->json(['success' => false, 'phone' => $formattedPhone, 'message' => 'خطأ اتصال: ' . $e->getMessage()]);
-            }
+            return response()->json([
+                'success' => $ok,
+                'message' => $ok ? 'تم الإرسال بنجاح' : ($json['message'] ?? 'فشل الإرسال')
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'خطأ في محرك الإرسال: ' . $e->getMessage()]);
         }
-
-        return response()->json([
-            'success' => true,
-            'phone'   => $formattedPhone,
-            'message' => 'تم الإرسال عبر جلسة الـ QR للرقم التسويقي بنجاح'
-        ]);
     }
 
     public function logAdCampaign(Request $request)

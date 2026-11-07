@@ -43,10 +43,9 @@ Route::middleware([
     Route::post('/whatsapp/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp.update');
     Route::post('/whatsapp-settings/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp_settings.update');
 
-    // مسارات نظام الحملات الإعلانية عبر الواتساب (ربط QR مستقل للرقم التسويقي) + إحصائيات الزوار
-    Route::post('/whatsapp-ads/settings', [CompanyErpController::class, 'saveAdsWhatsappSettings'])->name('erp.whatsapp_ads.settings');
+    // مسارات نظام الحملات الإعلانية عبر الواتساب (ربط QR حقيقي وتلقائي باسم الحساب) + إحصائيات الزوار
     Route::post('/whatsapp-ads/qr-generate', [CompanyErpController::class, 'generateAdsWhatsappQr'])->name('erp.whatsapp_ads.qr_generate');
-    Route::post('/whatsapp-ads/qr-confirm', [CompanyErpController::class, 'confirmAdsWhatsappQr'])->name('erp.whatsapp_ads.qr_confirm');
+    Route::get('/whatsapp-ads/qr-status', [CompanyErpController::class, 'checkAdsWhatsappQrStatus'])->name('erp.whatsapp_ads.qr_status');
     Route::post('/whatsapp-ads/qr-disconnect', [CompanyErpController::class, 'disconnectAdsWhatsappQr'])->name('erp.whatsapp_ads.qr_disconnect');
     Route::post('/whatsapp-ads/send-single', [CompanyErpController::class, 'sendSingleAdWhatsapp'])->name('erp.whatsapp_ads.send_single');
     Route::post('/whatsapp-ads/log-campaign', [CompanyErpController::class, 'logAdCampaign'])->name('erp.whatsapp_ads.log_campaign');
