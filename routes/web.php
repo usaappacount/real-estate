@@ -43,6 +43,12 @@ Route::middleware([
     Route::post('/whatsapp/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp.update');
     Route::post('/whatsapp-settings/update', [CompanyErpController::class, 'updateWhatsappSettings'])->name('erp.whatsapp_settings.update');
 
+    // مسارات نظام الحملات الإعلانية عبر الواتساب (API مستقل) + إحصائيات الزوار
+    Route::post('/whatsapp-ads/settings', [CompanyErpController::class, 'saveAdsWhatsappSettings'])->name('erp.whatsapp_ads.settings');
+    Route::post('/whatsapp-ads/send-single', [CompanyErpController::class, 'sendSingleAdWhatsapp'])->name('erp.whatsapp_ads.send_single');
+    Route::post('/whatsapp-ads/log-campaign', [CompanyErpController::class, 'logAdCampaign'])->name('erp.whatsapp_ads.log_campaign');
+    Route::post('/admin/analytics/clear', [CompanyErpController::class, 'clearSiteVisits'])->name('erp.analytics.clear');
+
     // إدارة وتعديل مكاتب العقار والاتفاقيات المالية والباقات
     Route::post('/offices/store', [CompanyErpController::class, 'storeOffice'])->name('erp.offices.store');
     Route::post('/offices/{id}/update', [CompanyErpController::class, 'updateOffice'])->name('erp.offices.update');
