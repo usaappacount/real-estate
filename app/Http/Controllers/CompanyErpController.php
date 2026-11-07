@@ -1030,7 +1030,19 @@ class CompanyErpController extends Controller
         $this->ensureOfficePlansTable();
         $officePlans = DB::table('office_plans')->orderBy('id', 'asc')->get();$availableOfficeTabs = self::getAvailableOfficeTabs();
 
-        $landingSettings = self::getLandingSettings();$activityLogs = self::getFilteredActivityLogs();
+        $landingSettings = self::getLandingSettings();
+        $activityLogs = self::getFilteredActivityLogs();
+
+        self::ensureSiteAnalyticsAndAdsTables();
+        $siteAnalytics = $this->getSiteAnalyticsData();
+        $adsWhatsappSettings = [
+            'sender_phone' => self::toLocalPhone(self::getSetting('ads_whatsapp_sender_phone', '0500000000')),
+            'api_url'      => self::getSetting('ads_whatsapp_api_url', 'https://api.greatwhats.com/v1/messages'),
+            'api_token'    => self::getSetting('ads_whatsapp_api_token', ''),
+            'instance_id'  => self::getSetting('ads_whatsapp_instance_id', ''),
+        ];
+        $adCampaigns = DB::table('whatsapp_ad_campaigns')->orderBy('id', 'desc')->limit(30)->get();
+        $crmContactsForAds = $this->getSystemContactsForAds();
 
         $stats = [
             'offices_count' => $offices->count(),
@@ -1059,6 +1071,10 @@ class CompanyErpController extends Controller
             'journalItems',
             'journalItemsByEntry',
             'whatsappSettings',
+            'adsWhatsappSettings',
+            'adCampaigns',
+            'crmContactsForAds',
+            'siteAnalytics',
             'stats',
             'paymentMethods',
             'systemLogs',
