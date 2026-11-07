@@ -1545,6 +1545,7 @@
 
                     <script>
                         window.adsQrPollingTimer = null;
+                        window.adsQrWaitTicks = 0;
 
                         async function generateMarketingQrCode() {
                             const placeholder = document.getElementById('adsQrPlaceholderView');
@@ -1554,16 +1555,20 @@
                             const imgWrap = document.getElementById('adsQrImgWrapper');
                             const imgEl = document.getElementById('adsQrImageEl');
 
+                            window.adsQrWaitTicks = 0;
+
                             if (placeholder) placeholder.classList.add('hidden');
                             if (connectedView) connectedView.classList.add('hidden');
                             if (scannerBox) {
                                 scannerBox.classList.remove('hidden');
                                 scannerBox.classList.add('flex');
                             }
-                            if (spinner) spinner.classList.remove('hidden');
+                            if (spinner) {
+                                spinner.classList.remove('hidden');
+                                spinner.innerText = '⏳ جاري الاتصال بخوادم واتساب ويب لتوليد كود QR مشفر...';
+                            }
                             if (imgWrap) imgWrap.classList.add('hidden');
 
-                            // تشغيل الفحص التلقائي فوراً لالتقاط الباركود بمجرد توليده دون إيقاف الشاشة
                             startLiveQrStatusPolling();
 
                             try {
@@ -1578,10 +1583,10 @@
                                     spinner.classList.add('hidden');
                                     imgWrap.classList.remove('hidden');
                                 } else {
-                                    setTimeout(pollLiveMarketingQrStatus, 1000);
+                                    pollLiveMarketingQrStatus();
                                 }
                             } catch (e) {
-                                setTimeout(pollLiveMarketingQrStatus, 1500);
+                                pollLiveMarketingQrStatus();
                             }
                         }
 
@@ -1604,6 +1609,7 @@
                                 const imgWrap = document.getElementById('adsQrImgWrapper');
 
                                 if (data.connected) {
+                                    window.adsQrWaitTicks = 0;
                                     topBadge.className = 'px-3 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-400/40';
                                     topBadge.innerText = '🟢 متصل فعلياً عبر QR';
                                     accNameEl.className = 'text-base font-extrabold text-emerald-800';
@@ -1627,11 +1633,29 @@
                                     if (disconnectForm) disconnectForm.classList.add('hidden');
                                     if (connectedView) connectedView.classList.add('hidden');
 
-                                    if (data.qr_url && !scannerBox.classList.contains('hidden')) {
+                                    if (data.qr_url) {
+                                        window.adsQrWaitTicks = 0;
+                                        if (placeholder) placeholder.classList.add('hidden');
+                                        if (scannerBox) {
+                                            scannerBox.classList.remove('hidden');
+                                            scannerBox.classList.add('flex');
+                                        }
                                         imgEl.src = data.qr_url;
                                         if (spinner) spinner.classList.add('hidden');
                                         if (imgWrap) imgWrap.classList.remove('hidden');
-                                    } else if (scannerBox.classList.contains('hidden')) {
+                                    } else if (scannerBox && !scannerBox.classList.contains('hidden')) {
+                                        window.adsQrWaitTicks++;
+                                        if (!data.engine_up) {
+                                            spinner.innerText = '⚠️ محرك Node.js قيد التشغيل في السيرفر... جاري المحاولة تلقائياً';
+                                        } else if (window.adsQrWaitTicks >= 6) {
+                                            // إذا مرت 12 ثانية دون صدور الباركود، نرسل طلب تحفيز تلقائي للمحرك
+                                            window.adsQrWaitTicks = 0;
+                                            fetch("{{ route('erp.whatsapp_ads.qr_generate') }}", {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' }
+                                            }).catch(() => {});
+                                        }
+                                    } else {
                                         if (placeholder) placeholder.classList.remove('hidden');
                                     }
                                 }

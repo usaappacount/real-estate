@@ -3,21 +3,28 @@ const QRCode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+if (!globalThis.crypto) {
+    globalThis.crypto = crypto.webcrypto;
+}
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 
 const PORT = 3005;
-const AUTH_DIR = path.join(__dirname, 'storage', 'app', 'wa_marketing_qr_auth');
+const AUTH_DIR = path.join(process.cwd(), 'storage', 'app', 'wa_marketing_qr_auth');
 
 let baileysModule = null;
 let sock = null;
+let activeSocketId = 0;
+let lastStartTimestamp = 0;
 let connectionStatus = 'disconnected'; // disconnected | qr_ready | connecting | connected
 let currentQrBase64 = '';
 let accountName = '';
 let accountPhone = '';
 let connectedAt = '';
-let isInitializing = false;
+let lastErrorMsg = '';
 let reconnectTimer = null;
 let versionAttempt = 0;
 
@@ -33,10 +40,18 @@ function clearAuthFolder() {
         if (fs.existsSync(AUTH_DIR)) {
             fs.rmSync(AUTH_DIR, { recursive: true, force: true });
         }
+        fs.mkdirSync(AUTH_DIR, { recursive: true });
     } catch (e) {}
 }
 
-// تحميل مكتبة Baileys بدعم كامل لنظامي CommonJS و ESM في Node 20
+function safelyCloseCurrentSocket() {
+    if (!sock) return;
+    const oldSock = sock;
+    sock = null;
+    try { oldSock.end(undefined); } catch (e) {}
+    try { oldSock.ws?.close(); } catch (e) {}
+}
+
 async function loadBaileys() {
     if (baileysModule) return baileysModule;
     try {
@@ -47,66 +62,71 @@ async function loadBaileys() {
     return baileysModule;
 }
 
-// جلب أحدث رقم إصدار رسمي لواتساب ويب مع فحص رقم المراجعة الفعلي (Index 2)
+// جلب أحدث إصدار رسمي معتمد لواتساب ويب مع بدائل تلقائية
 async function getLatestWaWebVersion(baileys) {
     const fallbackVersions = [
-        [2, 3000, 1025190524],
-        [2, 3000, 1024180211],
-        [2, 3000, 1023202255]
+        [2, 3000, 1023202255],
+        [2, 3000, 1021584919],
+        [2, 3000, 1019707846]
     ];
 
     if (versionAttempt > 0) {
         return fallbackVersions[versionAttempt % fallbackVersions.length];
     }
 
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Sec-Fetch-Dest': 'script',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'same-origin'
-    };
+    // 1. المحاولة عبر sw.js الرسمي لواتساب
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch('https://web.whatsapp.com/sw.js', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Sec-Fetch-Dest': 'script',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Accept': '*/*'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+            const text = await res.text();
+            const match = text.match(/"client_revision"\s*:\s*(\d+)/) || text.match(/2\.3000\.(\d+)/);
+            if (match && match[1]) {
+                return [2, 3000, parseInt(match[1], 10)];
+            }
+        }
+    } catch (e) {}
 
+    // 2. المحاولة عبر دالة Baileys المدمجة
     try {
         if (typeof baileys.fetchLatestWaWebVersion === 'function') {
             const waVer = await Promise.race([
-                baileys.fetchLatestWaWebVersion({ headers }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+                baileys.fetchLatestWaWebVersion({}),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
             ]);
-            if (Array.isArray(waVer?.version) && waVer.version[2] >= 1020000000) {
+            if (Array.isArray(waVer?.version) && waVer.version[2] > 1018000000) {
                 return waVer.version;
             }
         }
     } catch (e) {}
 
-    for (const url of ['https://web.whatsapp.com/sw.js', 'https://web.whatsapp.com/']) {
-        try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 3500);
-            const res = await fetch(url, { headers, signal: controller.signal });
-            clearTimeout(timer);
-            if (res.ok) {
-                const text = await res.text();
-                const match = text.match(/(?:client_revision["']?\s*:\s*|2\.3000\.)(\d{9,11})/);
-                if (match && match[1]) {
-                    const rev = parseInt(match[1], 10);
-                    if (rev >= 1020000000) {
-                        return [2, 3000, rev];
-                    }
-                }
-            }
-        } catch (e) {}
-    }
-
+    // 3. المحاولة عبر مستودع تحديثات واتساب المباشر
     try {
-        if (typeof baileys.fetchLatestBaileysVersion === 'function') {
-            const vRes = await Promise.race([
-                baileys.fetchLatestBaileysVersion(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
-            ]);
-            // فحص الخانة الثالثة [2] وليس الثانية [1] لتجنب الإصدارات القديمة المرفوضة
-            if (Array.isArray(vRes?.version) && vRes.version[2] >= 1023000000) {
-                return vRes.version;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2500);
+        const res = await fetch('https://raw.githubusercontent.com/wppconnect-team/wa-version/main/versions.json', {
+            signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+            const text = await res.text();
+            const matches = [...text.matchAll(/2\.3000\.(\d+)/g)];
+            if (matches.length > 0) {
+                const lastRev = parseInt(matches[matches.length - 1][1], 10);
+                if (lastRev > 1018000000) {
+                    return [2, 3000, lastRev];
+                }
             }
         }
     } catch (e) {}
@@ -115,9 +135,15 @@ async function getLatestWaWebVersion(baileys) {
 }
 
 async function startWhatsAppSocket(forceNewQr = false) {
-    if (isInitializing && !forceNewQr) return;
-    isInitializing = true;
     clearReconnectTimer();
+
+    // إذا كان هناك باركود جاهز أو اتصال جاري حديثاً، لا نقطعه
+    if (!forceNewQr && (connectionStatus === 'qr_ready' || connectionStatus === 'connected')) {
+        return;
+    }
+
+    const mySocketId = ++activeSocketId;
+    lastStartTimestamp = Date.now();
 
     try {
         const baileys = await loadBaileys();
@@ -126,13 +152,10 @@ async function startWhatsAppSocket(forceNewQr = false) {
         const DisconnectReason = baileys.DisconnectReason || baileys.default?.DisconnectReason || {};
         const Browsers = baileys.Browsers || baileys.default?.Browsers;
 
+        safelyCloseCurrentSocket();
+
         if (forceNewQr) {
-            if (sock) {
-                try { sock.ev.removeAllListeners(); sock.end(); } catch (e) {}
-                sock = null;
-            }
             clearAuthFolder();
-            connectionStatus = 'connecting';
             currentQrBase64 = '';
             accountName = '';
             accountPhone = '';
@@ -142,10 +165,15 @@ async function startWhatsAppSocket(forceNewQr = false) {
             fs.mkdirSync(AUTH_DIR, { recursive: true });
         }
 
+        connectionStatus = 'connecting';
+        lastErrorMsg = '';
+
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
         const version = await getLatestWaWebVersion(baileys);
 
-        sock = makeWASocket({
+        if (mySocketId !== activeSocketId) return;
+
+        const mySock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
@@ -153,51 +181,64 @@ async function startWhatsAppSocket(forceNewQr = false) {
             browser: Browsers ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '20.0.04'],
             syncFullHistory: false,
             markOnlineOnConnect: true,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
+            connectTimeoutMs: 45000,
+            defaultQueryTimeoutMs: 45000,
             keepAliveIntervalMs: 25000
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock = mySock;
 
-        sock.ev.on('connection.update', async (update) => {
+        mySock.ev.on('creds.update', () => {
+            if (mySocketId !== activeSocketId) return;
+            saveCreds();
+        });
+
+        mySock.ev.on('connection.update', async (update) => {
+            // تجاهل أي إشعارات قادمة من جلسة قديمة مغلقة
+            if (mySocketId !== activeSocketId) return;
+
             const { connection, lastDisconnect, qr } = update;
 
             if (qr) {
                 try {
                     currentQrBase64 = await QRCode.toDataURL(qr, { margin: 2, width: 280 });
                     connectionStatus = 'qr_ready';
-                } catch (e) {}
+                    lastErrorMsg = '';
+                } catch (e) {
+                    lastErrorMsg = e.message;
+                }
             }
 
             if (connection === 'open') {
                 versionAttempt = 0;
                 connectionStatus = 'connected';
                 currentQrBase64 = '';
-                const rawId = sock.user?.id || '';
+                lastErrorMsg = '';
+                const rawId = mySock.user?.id || '';
                 accountPhone = rawId.split(':')[0].split('@')[0] || '';
-                accountName = sock.user?.name || sock.user?.verifiedName || sock.user?.notify || ('حساب واتساب (' + accountPhone + ')');
+                accountName = mySock.user?.name || mySock.user?.verifiedName || mySock.user?.notify || ('حساب واتساب (' + accountPhone + ')');
                 connectedAt = new Date().toLocaleString('sv-SE');
             }
 
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const errReason = lastDisconnect?.error?.message || '';
+                lastErrorMsg = `Code: ${statusCode || 'unknown'} ${errReason}`;
 
+                // الكود 515 يعني نجاح مسح الباركود وطلب إعادة تشغيل الجلسة فوراً
                 if (statusCode === DisconnectReason.restartRequired || statusCode === 515) {
                     connectionStatus = 'connecting';
                     currentQrBase64 = '';
-                    clearReconnectTimer();
                     reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 200);
                     return;
                 }
 
-                // في حال رفض الإصدار بكود 405 نجرب الإصدار البديل فوراً لتوليد الباركود
+                // الكود 405 يعني رفض رقم الإصدار؛ ننتقل للإصدار البديل ونمسح المجلد فوراً
                 if (statusCode === 405) {
                     versionAttempt++;
                     clearAuthFolder();
                     connectionStatus = 'connecting';
                     currentQrBase64 = '';
-                    clearReconnectTimer();
                     reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 300);
                     return;
                 }
@@ -210,21 +251,18 @@ async function startWhatsAppSocket(forceNewQr = false) {
                 accountPhone = '';
                 connectedAt = '';
 
-                clearReconnectTimer();
                 if (isLoggedOut) {
                     clearAuthFolder();
-                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1200);
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 800);
                 } else {
-                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1800);
+                    reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1500);
                 }
             }
         });
     } catch (err) {
+        lastErrorMsg = err.message || String(err);
         connectionStatus = 'disconnected';
-        clearReconnectTimer();
-        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 2500);
-    } finally {
-        isInitializing = false;
+        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 2000);
     }
 }
 
@@ -235,7 +273,8 @@ app.get('/status', (req, res) => {
         qr_url: currentQrBase64,
         account_name: connectionStatus === 'connected' ? accountName : '',
         account_phone: connectionStatus === 'connected' ? accountPhone : '',
-        connected_at: connectionStatus === 'connected' ? connectedAt : ''
+        connected_at: connectionStatus === 'connected' ? connectedAt : '',
+        last_error: lastErrorMsg
     });
 });
 
@@ -251,7 +290,7 @@ app.post('/init-qr', async (req, res) => {
         });
     }
 
-    if (currentQrBase64 && connectionStatus === 'qr_ready') {
+    if (currentQrBase64) {
         return res.json({
             success: true,
             connected: false,
@@ -262,9 +301,14 @@ app.post('/init-qr', async (req, res) => {
         });
     }
 
-    await startWhatsAppSocket(true);
+    // إذا لم يكن في حالة اتصال نشطة بدأت قبل أقل من 8 ثوانٍ، نبدأ جلسة جديدة
+    const isRecentlyConnecting = (connectionStatus === 'connecting') && ((Date.now() - lastStartTimestamp) < 8000);
+    if (!isRecentlyConnecting) {
+        await startWhatsAppSocket(true);
+    }
 
-    for (let i = 0; i < 65; i++) {
+    // انتظار حتى 4 ثوانٍ فقط لعدم تعليق طلب PHP، والفحص التلقائي سيتكفل بالباقي
+    for (let i = 0; i < 20; i++) {
         if (currentQrBase64 || connectionStatus === 'connected') break;
         await new Promise(r => setTimeout(r, 200));
     }
@@ -272,22 +316,23 @@ app.post('/init-qr', async (req, res) => {
     res.json({
         success: true,
         connected: connectionStatus === 'connected',
-        status: currentQrBase64 ? 'qr_ready' : (connectionStatus === 'connected' ? 'connected' : 'connecting'),
+        status: currentQrBase64 ? 'qr_ready' : connectionStatus,
         qr_url: currentQrBase64,
         account_name: accountName,
-        account_phone: accountPhone
+        account_phone: accountPhone,
+        last_error: lastErrorMsg
     });
 });
 
 app.post('/logout', async (req, res) => {
     clearReconnectTimer();
+    activeSocketId++;
     try {
         if (sock) {
             await sock.logout();
-            sock.end();
         }
     } catch (e) {}
-    sock = null;
+    safelyCloseCurrentSocket();
     clearAuthFolder();
     connectionStatus = 'disconnected';
     currentQrBase64 = '';
@@ -342,7 +387,6 @@ app.post('/send', async (req, res) => {
     }
 });
 
-// فتح المنفذ فوراً قبل بدء اتصال السوكيت لضمان استجابة المحرك دائماً
 app.listen(PORT, '127.0.0.1', () => {
     startWhatsAppSocket(false);
 });
