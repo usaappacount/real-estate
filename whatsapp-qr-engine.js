@@ -3,12 +3,14 @@ const QRCode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
+const baileys = require('@whiskeysockets/baileys');
+
+const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
 const {
-    default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
+} = baileys;
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -33,7 +35,7 @@ function clearAuthFolder() {
 }
 
 async function startWhatsAppSocket(forceNewQr = false) {
-    if (isInitializing) return;
+    if (isInitializing && !forceNewQr) return;
     isInitializing = true;
 
     try {
@@ -54,15 +56,27 @@ async function startWhatsAppSocket(forceNewQr = false) {
         }
 
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-        const { version } = await fetchLatestBaileysVersion();
 
-        sock = makeWASocket({
-            version,
+        let version = undefined;
+        try {
+            const vRes = await Promise.race([
+                fetchLatestBaileysVersion(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
+            ]);
+            version = vRes?.version;
+        } catch (e) {}
+
+        const socketConfig = {
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
             auth: state,
             browser: ['RealEstate ERP Marketing', 'Chrome', '120.0.0']
-        });
+        };
+        if (version) {
+            socketConfig.version = version;
+        }
+
+        sock = makeWASocket(socketConfig);
 
         sock.ev.on('creds.update', saveCreds);
 
@@ -107,7 +121,7 @@ async function startWhatsAppSocket(forceNewQr = false) {
     }
 }
 
-// فحص الحالة الحقيقية (لا يرجع connected إلا إذا كان الجوال متصلاً فعلياً)
+// فحص الحالة الحقيقية
 app.get('/status', (req, res) => {
     res.json({
         connected: connectionStatus === 'connected',
@@ -121,14 +135,47 @@ app.get('/status', (req, res) => {
 
 // طلب توليد كود QR حقيقي جديد
 app.post('/init-qr', async (req, res) => {
-    if (connectionStatus !== 'connected') {
+    if (connectionStatus === 'connected') {
+        return res.json({
+            success: true,
+            connected: true,
+            status: 'connected',
+            qr_url: '',
+            account_name: accountName,
+            account_phone: accountPhone
+        });
+    }
+
+    if (currentQrBase64) {
+        return res.json({
+            success: true,
+            connected: false,
+            status: 'qr_ready',
+            qr_url: currentQrBase64,
+            account_name: '',
+            account_phone: ''
+        });
+    }
+
+    if (!sock && !isInitializing) {
         await startWhatsAppSocket(true);
-        // انتظار توليد أول QR من خوادم واتساب (حتى 5 ثوانٍ)
-        for (let i = 0; i < 25; i++) {
+    }
+
+    // انتظار توليد الـ QR (حتى 10 ثوانٍ)
+    for (let i = 0; i < 50; i++) {
+        if (currentQrBase64 || connectionStatus === 'connected') break;
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    // إذا لم يتولد بسبب جلسة قديمة معلقة، نعيد تهيئته من الصفر
+    if (!currentQrBase64 && connectionStatus !== 'connected') {
+        await startWhatsAppSocket(true);
+        for (let i = 0; i < 40; i++) {
             if (currentQrBase64 || connectionStatus === 'connected') break;
             await new Promise(r => setTimeout(r, 200));
         }
     }
+
     res.json({
         success: true,
         connected: connectionStatus === 'connected',
