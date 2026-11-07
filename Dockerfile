@@ -46,7 +46,7 @@ COPY . /var/www/html
 RUN git config --global url."https://github.com/".insteadOf ssh://git@github.com/ \
     && git config --global url."https://github.com/".insteadOf git@github.com: \
     && composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
-    && npm install qrcode pino @whiskeysockets/baileys@6.7.9 --legacy-peer-deps --no-audit --no-fund
+    && npm install qrcode pino @whiskeysockets/baileys@latest --legacy-peer-deps --no-audit --no-fund
 
 # تجهيز مجلدات التخزين وقاعدة البيانات وصلاحياتها بسرعة فائقة دون تعطيل node_modules
 RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache public/uploads/properties public/uploads/whatsapp_pdfs \

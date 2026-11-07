@@ -43,7 +43,7 @@ process.on('unhandledRejection', (err) => {
     let connectedAt = '';
     let lastErrorMsg = '';
     let reconnectTimer = null;
-    let versionAttempt = 0;
+    let cachedWaVersion = null;
 
     function createSilentLogger() {
         if (pinoModule && typeof pinoModule === 'function') {
@@ -94,7 +94,7 @@ process.on('unhandledRejection', (err) => {
         } catch (err) {
             lastErrorMsg = 'جاري تجهيز مكتبة واتساب لأول مرة...';
             try {
-                execSync('npm install @whiskeysockets/baileys@6.7.9 qrcode pino --no-save --no-audit --no-fund', {
+                execSync('npm install @whiskeysockets/baileys@latest qrcode pino --no-save --legacy-peer-deps --no-audit --no-fund', {
                     cwd: process.cwd(),
                     stdio: 'ignore',
                     timeout: 120000
@@ -141,43 +141,99 @@ process.on('unhandledRejection', (err) => {
         return 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&margin=10&data=' + encodeURIComponent(qrText);
     }
 
-    async function resolveWaWebVersion(b) {
-        const mode = versionAttempt % 3;
+    async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(timer);
+        }
+    }
 
-        if (mode === 0) {
-            try {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 3000);
-                const res = await fetch('https://web.whatsapp.com/sw.js', {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-                    },
-                    signal: controller.signal
-                });
-                clearTimeout(timer);
-                if (res.ok) {
-                    const text = await res.text();
-                    const match = text.match(/"client_revision"\s*:\s*(\d+)/) || text.match(/2\.3000\.(\d+)/);
-                    if (match && match[1]) {
-                        return [2, 3000, parseInt(match[1], 10)];
-                    }
-                }
-            } catch (e) {}
+    /**
+     * جلب أحدث رقم إصدار لواتساب ويب [2, 3000, revision] لمنع خطأ 405 نهائياً
+     */
+    async function resolveWaWebVersion(b, forceRefresh = false) {
+        if (cachedWaVersion && !forceRefresh) {
+            return cachedWaVersion;
         }
 
-        if (mode === 1) {
-            try {
-                if (typeof b.fetchLatestWaWebVersion === 'function') {
-                    const vRes = await Promise.race([
-                        b.fetchLatestWaWebVersion({}),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500))
-                    ]);
-                    if (Array.isArray(vRes?.version)) return vRes.version;
-                }
-            } catch (e) {}
-        }
+        const browserHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'same-origin',
+            'Sec-Fetch-Dest': 'serviceworker',
+            'Referer': 'https://web.whatsapp.com/'
+        };
 
-        return undefined; // استخدام الإصدار الافتراضي المدمج في Baileys
+        // 1. المحاولة الأولى: جلب client_revision المباشر من ملف Service Worker الرسمي لواتساب
+        try {
+            const res = await fetchWithTimeout('https://web.whatsapp.com/sw.js', { headers: browserHeaders }, 4500);
+            if (res.ok) {
+                const text = await res.text();
+                const match = text.match(/"client_revision"\s*:\s*(\d+)/)
+                           || text.match(/client_revision\s*:\s*(\d+)/)
+                           || text.match(/2\.3000\.(\d+)/);
+                if (match && match[1]) {
+                    cachedWaVersion = [2, 3000, parseInt(match[1], 10)];
+                    return cachedWaVersion;
+                }
+            }
+        } catch (e) {}
+
+        // 2. المحاولة الثانية: جلب رقم الإصدار من صفحة web.whatsapp.com الرئيسية
+        try {
+            const res = await fetchWithTimeout('https://web.whatsapp.com/', {
+                headers: {
+                    'User-Agent': browserHeaders['User-Agent'],
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                }
+            }, 4500);
+            if (res.ok) {
+                const text = await res.text();
+                const match = text.match(/"client_revision"\s*:\s*(\d+)/) || text.match(/2\.3000\.(\d+)/);
+                if (match && match[1]) {
+                    cachedWaVersion = [2, 3000, parseInt(match[1], 10)];
+                    return cachedWaVersion;
+                }
+            }
+        } catch (e) {}
+
+        // 3. المحاولة الثالثة: جلب أحدث إصدار من مستودع WPPConnect المحدث آلياً
+        try {
+            const res = await fetchWithTimeout('https://raw.githubusercontent.com/wppconnect-team/wa-version/main/versions.json', {}, 4000);
+            if (res.ok) {
+                const data = await res.json();
+                const currentVer = data?.currentVersion || '';
+                const match = currentVer.match(/2\.3000\.(\d+)/);
+                if (match && match[1]) {
+                    cachedWaVersion = [2, 3000, parseInt(match[1], 10)];
+                    return cachedWaVersion;
+                }
+            }
+        } catch (e) {}
+
+        // 4. المحاولة الرابعة: جلب الإصدار من مستودع Baileys الرسمي على GitHub
+        try {
+            if (typeof b?.fetchLatestBaileysVersion === 'function') {
+                const vRes = await Promise.race([
+                    b.fetchLatestBaileysVersion(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3500))
+                ]);
+                if (Array.isArray(vRes?.version) && vRes.version[0] === 2 && vRes.version[1] >= 3000) {
+                    cachedWaVersion = vRes.version;
+                    return cachedWaVersion;
+                }
+            }
+        } catch (e) {}
+
+        // 5. إصدار احتياطي حديث من سلسلة 2.3000 لمنع الرجوع للإصدار 2.2413.1 القديم نهائياً
+        cachedWaVersion = [2, 3000, 1023223821];
+        return cachedWaVersion;
     }
 
     async function startWhatsAppSocket(forceNewQr = false) {
@@ -215,24 +271,22 @@ process.on('unhandledRejection', (err) => {
             }
 
             const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-            const version = await resolveWaWebVersion(b);
+            const version = await resolveWaWebVersion(b, false);
 
             if (mySocketId !== activeSocketId) return;
 
             const socketConfig = {
+                version,
                 logger: createSilentLogger(),
                 printQRInTerminal: false,
                 auth: state,
-                browser: Browsers ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '20.0.04'],
+                browser: Browsers ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '131.0.0.0'],
                 syncFullHistory: false,
                 markOnlineOnConnect: true,
                 connectTimeoutMs: 45000,
                 defaultQueryTimeoutMs: 45000,
                 keepAliveIntervalMs: 25000
             };
-            if (Array.isArray(version)) {
-                socketConfig.version = version;
-            }
 
             const mySock = makeWASocket(socketConfig);
             sock = mySock;
@@ -254,7 +308,6 @@ process.on('unhandledRejection', (err) => {
                 }
 
                 if (connection === 'open') {
-                    versionAttempt = 0;
                     connectionStatus = 'connected';
                     currentQrBase64 = '';
                     lastErrorMsg = '';
@@ -272,16 +325,17 @@ process.on('unhandledRejection', (err) => {
                     if (statusCode === DisconnectReason.restartRequired || statusCode === 515) {
                         connectionStatus = 'connecting';
                         currentQrBase64 = '';
-                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 200);
+                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 300);
                         return;
                     }
 
                     if (statusCode === 405) {
-                        versionAttempt++;
+                        cachedWaVersion = null;
+                        await resolveWaWebVersion(b, true);
                         clearAuthFolder();
                         connectionStatus = 'connecting';
                         currentQrBase64 = '';
-                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 300);
+                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1200);
                         return;
                     }
 
@@ -295,16 +349,16 @@ process.on('unhandledRejection', (err) => {
 
                     if (isLoggedOut) {
                         clearAuthFolder();
-                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 800);
+                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1000);
                     } else {
-                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 1500);
+                        reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 2000);
                     }
                 }
             });
         } catch (err) {
             lastErrorMsg = err.message || String(err);
             connectionStatus = 'disconnected';
-            reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 2500);
+            reconnectTimer = setTimeout(() => startWhatsAppSocket(false), 3000);
         }
     }
 
@@ -329,7 +383,6 @@ process.on('unhandledRejection', (err) => {
         });
     }
 
-    // تشغيل خادم HTTP المدمج فوراً على المنفذ 3005 بدون أي اعتماد خارجي
     const server = http.createServer(async (req, res) => {
         const url = (req.url || '/').split('?')[0];
 
@@ -342,6 +395,7 @@ process.on('unhandledRejection', (err) => {
                 account_name: connectionStatus === 'connected' ? accountName : '',
                 account_phone: connectionStatus === 'connected' ? accountPhone : '',
                 connected_at: connectionStatus === 'connected' ? connectedAt : '',
+                version: cachedWaVersion,
                 last_error: lastErrorMsg
             });
         }
@@ -369,12 +423,12 @@ process.on('unhandledRejection', (err) => {
                 });
             }
 
-            const isRecentlyConnecting = (connectionStatus === 'connecting') && ((Date.now() - lastStartTimestamp) < 8000);
+            const isRecentlyConnecting = (connectionStatus === 'connecting') && ((Date.now() - lastStartTimestamp) < 15000);
             if (!isRecentlyConnecting) {
                 startWhatsAppSocket(true);
             }
 
-            for (let i = 0; i < 20; i++) {
+            for (let i = 0; i < 25; i++) {
                 if (currentQrBase64 || connectionStatus === 'connected') break;
                 await new Promise(r => setTimeout(r, 200));
             }
