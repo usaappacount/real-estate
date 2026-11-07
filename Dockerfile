@@ -24,11 +24,11 @@ RUN docker-php-ext-install pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd
 RUN a2enmod rewrite
 
 # توجيه أباتشي رسمياً إلى مجلد public الخاص بلارافيل
-ENV APACHE_DOCUMENT_ROOT /var/www/html/public
-RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
-RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf \
+    && sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
 
-# تعديل ملف إعدادات أباتشي الافتراضي بشكل مباشر لضمان قبول الروابط اللطيفة (AllowOverride All)
+# تعديل ملف إعدادات أباتشي الافتراضي لضمان قبول الروابط اللطيفة (AllowOverride All)
 RUN echo '<Directory /var/www/html/public/>\n\
     Options Indexes FollowSymLinks\n\
     AllowOverride All\n\
@@ -46,7 +46,7 @@ WORKDIR /var/www/html
 RUN composer install --no-dev --optimize-autoloader --ignore-platform-reqs --no-scripts \
     && npm install --no-audit --no-fund
 
-# إنشاء مجلد قاعدة البيانات وجلسات لارافيل ومجلد جلسة واتساب والتأكد من الصلاحيات المطلوبة
+# إنشاء مجلد قاعدة البيانات ومجلدات التخزين ومجلد جلسة واتساب والتأكد من الصلاحيات
 RUN mkdir -p database storage/framework/sessions storage/framework/views storage/framework/cache storage/logs storage/app/wa_marketing_qr_auth bootstrap/cache \
     && touch database/database.sqlite \
     && find /var/www/html -type d -exec chmod 755 {} \; \
@@ -55,3 +55,7 @@ RUN mkdir -p database storage/framework/sessions storage/framework/views storage
     && chmod -R 775 storage bootstrap/cache database
 
 # ضبط منفذ العمل
+EXPOSE 80
+
+# تشغيل محرك واتساب QR تلقائياً في الخلفية بشكل مستمر + تشغيل Apache
+CMD ["sh", "-c", "(while true; do node /var/www/html/whatsapp-qr-engine.js >> /var/www/html/storage/logs/whatsapp-qr-engine.log 2>&1; sleep 2; done) & apache2-foreground"]
