@@ -18,6 +18,10 @@ class CompanyErpController extends Controller
      */
     public function callAction($method,$parameters)
     {
+        if (in_array($method, ['showLandingPage', 'showLogin', 'dashboard'], true)) {
+            self::recordSiteVisit(request(), $method);
+        }
+
         $publicOrSharedMethods = [
             'showLandingPage',
             'showPublicInvoicePdf',
