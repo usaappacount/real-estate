@@ -10373,7 +10373,7 @@
     });
 })();
 </script>
-<!-- بداية البلوك الشامل المطور: إصلاح ملخص القيود اليومية + حذف إجمالي القيود المحفوظة + إصلاح طباعة القيد PDF وإظهار صافي الفرق -->
+<!-- بداية البلوك الشامل المطور: منع تشويش وتداخل الحروف والأكواد في الـ PDF + ترتيب القيود للأحدث بالأعلى -->
 <style id="arabic-pdf-and-journal-fixes">
     /* 1. ضبط الخطوط العربية على الشاشة وفي الـ PDF */
     body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
@@ -10384,7 +10384,7 @@
         font-variant-ligatures: normal !important;
     }
 
-    /* 2. تطابق العرض 100% لجميع الجداول والحاويات في صفحات النظام والأستاذ العام */
+    /* 2. تطابق العرض 100% لجميع الجداول والحاويات */
     main {
         width: 100% !important;
         max-width: 100% !important;
@@ -10446,7 +10446,7 @@
     thead { display: table-header-group !important; }
     tfoot { display: table-footer-group !important; }
 
-    /* 5. تنسيق نسخة الـ PDF لتحتوي جميع الأعمدة بالكامل بدون قص */
+    /* 5. تنسيق نسخة الـ PDF وعزل الكلمات العربية والأكواد الإنجليزية لمنع التشويش والتداخل نهائياً */
     .erp-pdf-clean-clone {
         direction: rtl !important;
         text-align: right !important;
@@ -10472,6 +10472,22 @@
         overflow: visible !important;
         box-sizing: border-box !important;
     }
+    .erp-pdf-clean-clone .pdf-word-token {
+        display: inline-block !important;
+        white-space: nowrap !important;
+        vertical-align: baseline !important;
+        unicode-bidi: isolate !important;
+        margin: 0 1px !important;
+    }
+    .erp-pdf-clean-clone .pdf-word-token[dir="ltr"] {
+        direction: ltr !important;
+        unicode-bidi: isolate !important;
+    }
+    .erp-pdf-clean-clone .pdf-word-token[dir="rtl"] {
+        direction: rtl !important;
+        unicode-bidi: isolate !important;
+    }
+
     .erp-pdf-clean-clone .max-w-2xl,
     .erp-pdf-clean-clone .max-w-3xl,
     .erp-pdf-clean-clone .max-w-4xl,
@@ -10557,7 +10573,23 @@
 
 <script id="erp-master-fixes-script">
 (function() {
-    // 1. تعريب طرق الدفع في جميع الجداول والنوافذ
+    // 1. ضبط اتجاه رسم النصوص العربية والإنجليزية داخل Canvas أثناء توليد الـ PDF لمنع انقلاب الأقواس والنقطتين
+    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
+        if (window.__erpPdfRenderingActive && typeof text === 'string') {
+            this.textAlign = 'left';
+            if (/[\u0600-\u06FF\u200F]/.test(text)) {
+                this.direction = 'rtl';
+            } else {
+                this.direction = 'ltr';
+            }
+        }
+        return maxWidth !== undefined
+            ? origFillText.call(this, text, x, y, maxWidth)
+            : origFillText.call(this, text, x, y);
+    };
+
+    // 2. تعريب طرق الدفع في جميع الجداول والنوافذ
     const PM_AR = {
         bank_transfer: 'حوالة بنكية', transfer: 'حوالة بنكية', bank: 'حوالة بنكية',
         sadad: 'نظام سداد', mada: 'شبكة مدى', pos: 'شبكة مدى', card: 'شبكة مدى',
@@ -10596,7 +10628,7 @@
     };
     window.previewOfficialVoucher = window.openOfficialVoucherPreview;
 
-    // 2. حساب إجمالي القيد اليومي المباشر في نوافذ الإضافة والتعديل فقط (مع استثناء نموذج الحذف نهائياً)
+    // 3. حساب إجمالي القيد اليومي المباشر في نوافذ الإضافة والتعديل فقط (مع استثناء نموذج الحذف)
     const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     window.recalculateJournalFormTotals = function(form) {
@@ -10668,11 +10700,25 @@
     };
 
     function initJournalAndLedgerFixes() {
-        // إزالة أي شريط إجمالي قديم ظهر بالخطأ داخل جدول القيود أو تذييل إجمالي القيود المحفوظة
         document.querySelectorAll('#journalEntriesTable .live-journal-summary-bar').forEach(el => el.remove());
         const jeTbl = document.getElementById('journalEntriesTable');
-        if (jeTbl && jeTbl.querySelector('tfoot')) {
-            jeTbl.querySelector('tfoot').remove();
+        if (jeTbl) {
+            if (jeTbl.querySelector('tfoot')) jeTbl.querySelector('tfoot').remove();
+            // ترتيب صفوف جدول القيود اليومية تنازلياً (الأحدث في الأعلى: 3 ثم 2 ثم 1)
+            const tbody = jeTbl.querySelector('tbody');
+            if (tbody) {
+                const rows = Array.from(tbody.querySelectorAll('tr.journal-row'));
+                if (rows.length > 1) {
+                    rows.sort((a, b) => {
+                        const numA = parseInt((a.querySelector('td')?.innerText || '0').replace(/\D/g, ''), 10) || 0;
+                        const numB = parseInt((b.querySelector('td')?.innerText || '0').replace(/\D/g, ''), 10) || 0;
+                        return numB - numA;
+                    });
+                    rows.forEach(r => tbody.appendChild(r));
+                    if (typeof window.refreshTablePagination === 'function') window.refreshTablePagination(jeTbl, true);
+                    else if (typeof window.refreshAdminTablePagination === 'function') window.refreshAdminTablePagination(jeTbl, true);
+                }
+            }
         }
 
         ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
@@ -10685,7 +10731,6 @@
             });
         });
 
-        // ربط حساب الإجمالي المباشر بنماذج الإضافة والتعديل فقط (بدون نموذج الحذف)
         document.querySelectorAll('form[action*="journal-entries/store"], form[action*="journal-entries/"][action*="/update"]').forEach(f => {
             if (f.dataset.bound !== '1') {
                 f.dataset.bound = '1';
@@ -10707,7 +10752,62 @@
         });
     }
 
-    // 3. تجهيز نسخة الـ PDF بدون تقطيع الحروف ومع دعم كامل لطباعة القيد اليومي وإظهار صافي الفرق
+    // 4. الدالة الذكية لعزل الكلمات العربية عن الأكواد الإنجليزية والأرقام لمنع التداخل والتشويش في الـ PDF
+    window.tokenizeCloneTextNodesForPdf = function(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        const textNodes = [];
+        let n;
+        while ((n = walker.nextNode())) {
+            const pTag = n.parentElement ? n.parentElement.tagName : '';
+            if (['SCRIPT', 'STYLE', 'SVG', 'TEXTAREA', 'OPTION', 'NOSCRIPT'].includes(pTag)) continue;
+            if (n.nodeValue && n.nodeValue.trim().length > 0) {
+                textNodes.push(n);
+            }
+        }
+
+        textNodes.forEach(node => {
+            let raw = node.nodeValue;
+            // فصل أي رقم أو كود ملتصق مباشرة بحرف عربي (مثل 2,600.00ر.س) بمسافة
+            raw = raw
+                .replace(/([\u0600-\u06FF])([A-Za-z0-9#])/g, '$1 $2')
+                .replace(/([A-Za-z0-9])([\u0600-\u06FF])/g, '$1 $2');
+
+            const hasArabicInNode = /[\u0600-\u06FF]/.test(raw);
+            // التقسيم بالمسافات فقط للحفاظ على الأقواس ملتصقة بكلماتها وعدم فصل الأكواد مثل (INV-CMP-2026-00001)
+            const parts = raw.split(/(\s+)/);
+
+            const frag = document.createDocumentFragment();
+            parts.forEach(part => {
+                if (!part) return;
+                if (/^\s+$/.test(part)) {
+                    frag.appendChild(document.createTextNode(' '));
+                    return;
+                }
+                const span = document.createElement('span');
+                span.className = 'pdf-word-token';
+                const hasAr = /[\u0600-\u06FF]/.test(part);
+                const hasLatinOrDigit = /[A-Za-z0-9]/.test(part);
+
+                if (hasAr) {
+                    span.dir = 'rtl';
+                    span.textContent = part;
+                } else if (hasLatinOrDigit) {
+                    span.dir = 'ltr';
+                    span.textContent = part;
+                } else {
+                    span.dir = hasArabicInNode ? 'rtl' : 'ltr';
+                    span.textContent = hasArabicInNode ? (part + '\u200F') : part;
+                }
+                frag.appendChild(span);
+            });
+
+            if (node.parentNode) {
+                node.parentNode.replaceChild(frag, node);
+            }
+        });
+    };
+
+    // 5. تجهيز نسخة الـ PDF بنفس الشكل الحالي مع تطبيق عزل الكلمات لمنع التشويش
     window.prepareSmartPdfClone = function(el) {
         const clone = el.cloneNode(true);
         clone.classList.add('erp-pdf-clean-clone');
@@ -10773,6 +10873,9 @@
         });
 
         clone.querySelectorAll('button').forEach(btn => btn.remove());
+
+        // تفعيل عزل الكلمات والأكواد لمنع التشويش والتداخل في الـ PDF
+        window.tokenizeCloneTextNodesForPdf(clone);
 
         const singlePortraitIds = [
             'printableVoucherArea',
@@ -10843,7 +10946,7 @@
         }
     };
 
-    // 4. الدالة الموحدة لتصدير الـ PDF (بما في ذلك طباعة القيد اليومي PDF)
+    // 6. الدالة الموحدة لتصدير الـ PDF
     window.exportElementToPDF = async function(elementId, filename) {
         const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
         if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
@@ -10852,6 +10955,7 @@
         const savedScrollX = window.scrollX;
         const savedScrollY = window.scrollY;
         window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
         const { worker } = window.createConfiguredPdfWorker(filename, isLandscape);
@@ -10862,6 +10966,7 @@
                 window.expandPdfContainerToFitTables(c, isLandscape);
             }).toCanvas().toPdf().save();
         } finally {
+            window.__erpPdfRenderingActive = false;
             window.scrollTo(savedScrollX, savedScrollY);
         }
     };
@@ -10909,6 +11014,7 @@
         const savedScrollX = window.scrollX;
         const savedScrollY = window.scrollY;
         window.scrollTo(0, 0);
+        window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
         const { worker } = window.createConfiguredPdfWorker(cleanFile, isLandscape);
@@ -10942,6 +11048,7 @@
         } catch (err) {
             await window.exportElementToPDF(el, cleanFile);
         } finally {
+            window.__erpPdfRenderingActive = false;
             window.scrollTo(savedScrollX, savedScrollY);
         }
     };

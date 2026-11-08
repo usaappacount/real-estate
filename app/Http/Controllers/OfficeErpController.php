@@ -187,7 +187,8 @@ class OfficeErpController extends Controller
 
         $journalEntries = DB::table('journal_entries')
             ->where('office_id', $officeId)
-            ->orderBy('entry_number', 'asc')
+            ->orderBy('entry_number', 'desc')
+            ->orderBy('id', 'desc')
             ->get();
 
         $journalItems = DB::table('journal_entry_items')

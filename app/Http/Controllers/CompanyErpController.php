@@ -1056,10 +1056,11 @@ class CompanyErpController extends Controller
 
         $officeVouchersByOffice = $vouchers->whereNotNull('office_id')->groupBy('office_id');
 
-        // جلب القيود اليومية وتفاصيلها
+        // جلب القيود اليومية وتفاصيلها (الأحدث في الأعلى: 3 ثم 2 ثم 1)
         $journalEntries = DB::table('journal_entries')
             ->whereNull('office_id')
-            ->orderBy('entry_number', 'asc')
+            ->orderBy('entry_number', 'desc')
+            ->orderBy('id', 'desc')
             ->get();
 
         $journalItems = DB::table('journal_entry_items')
