@@ -4330,7 +4330,8 @@
                 <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm overflow-hidden no-print">
                     <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
                         <div>
-                            <h3 class="font-bold text-lg text-slate-900"> سجل القيود اليومية </h3>
+                            <h3 class="font-bold text-lg text-slate-900">سجل القيود اليومية</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">عرض القيود اليومية المتوازنة مع تفاصيل الإجمالي الشامل وصافي الفرق</p>
                         </div>
 
                         <div class="flex flex-wrap items-center gap-2.5">
@@ -4350,13 +4351,12 @@
                         <table class="w-full text-sm text-right" id="journalEntriesTable">
                             <thead class="bg-slate-50 text-slate-600 text-xs border-b border-slate-200/80">
                                 <tr>
-                                    <th class="py-4 px-4 text-center">رقم القيد</th>
+                                    <th class="py-4 px-4 text-center w-16">رقم القيد</th>
                                     <th class="py-4 px-4">رقم الحساب (المدين)</th>
                                     <th class="py-4 px-4">حساب الدائن</th>
-                                    <th class="py-4 px-4">المبلغ</th>
-                                    <th class="py-4 px-4">الضريبة (إن وجدت)</th>
                                     <th class="py-4 px-4">البيان العام والتاريخ</th>
-                                    <th class="py-4 px-4 text-center">الإجراءات </th>
+                                    <th class="py-4 px-4 text-center">إجمالي القيد والتوازن (شامل الضريبة)</th>
+                                    <th class="py-4 px-4 text-center">الإجراءات</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100">
@@ -4365,37 +4365,98 @@
                                         $items = $journalItemsByEntry[$je->id] ?? collect();
                                         $debitAccountsList = $items->where('debit', '>', 0)->map(fn($i) => $i->account_code . ' - ' . $i->account_name)->implode(' ، ');
                                         $creditAccountsList = $items->where('credit', '>', 0)->map(fn($i) => $i->account_code . ' - ' . $i->account_name)->implode(' ، ');
-                                        $entryAmount = max($je->total_debit, $je->total_credit);
+
+                                        $totalDebit = (float) $je->total_debit;
+                                        $totalCredit = (float) $je->total_credit;
+                                        $totalTax = (float) $je->total_tax;
+                                        $entryAmount = max($totalDebit, $totalCredit);
+                                        $netDiff = round(abs($totalDebit - $totalCredit), 2);
+                                        $isBalanced = $netDiff <= 0.05;
+
+                                        $rawDebitSum = (float) $items->where('debit', '>', 0)->sum('debit');
+                                        $rawDebitTax = (float) $items->where('debit', '>', 0)->sum('tax');
+                                        if (abs($rawDebitSum - $totalDebit) <= 0.05 && $rawDebitTax > 0) {
+                                            $baseDebit = max(0, $totalDebit - $rawDebitTax);
+                                            $debitTax = $rawDebitTax;
+                                        } else {
+                                            $baseDebit = $rawDebitSum;
+                                            $debitTax = $rawDebitTax;
+                                        }
+
+                                        $rawCreditSum = (float) $items->where('credit', '>', 0)->sum('credit');
+                                        $rawCreditTax = (float) $items->where('credit', '>', 0)->sum('tax');
+                                        if (abs($rawCreditSum - $totalCredit) <= 0.05 && $rawCreditTax > 0) {
+                                            $baseCredit = max(0, $totalCredit - $rawCreditTax);
+                                            $creditTax = $rawCreditTax;
+                                        } else {
+                                            $baseCredit = $rawCreditSum;
+                                            $creditTax = $rawCreditTax;
+                                        }
                                     @endphp
                                     <tr class="hover:bg-slate-50/90 transition journal-row"
                                         data-search="{{ mb_strtolower($je->entry_number . ' ' . $debitAccountsList . ' ' . $creditAccountsList . ' ' . $je->general_notes) }}">
                                         <td class="py-4 px-4 text-center font-mono font-extrabold text-slate-900">{{ $je->entry_number }}</td>
                                         <td class="py-4 px-4 text-xs font-bold text-emerald-700">{{ $debitAccountsList ?: '-' }}</td>
                                         <td class="py-4 px-4 text-xs font-bold text-amber-700">{{ $creditAccountsList ?: '-' }}</td>
-                                        <td class="py-4 px-4 font-mono font-bold text-slate-900">{{ number_format($entryAmount, 2) }} ر.س</td>
-                                        <td class="py-4 px-4 font-mono text-xs text-slate-600">{{ $je->total_tax > 0 ? number_format($je->total_tax, 2) . ' ر.س' : '0.00' }}</td>
                                         <td class="py-4 px-4">
                                             <div class="text-xs font-bold text-slate-800">{{ $je->general_notes }}</div>
-                                            <div class="text-[11px] font-mono text-slate-400">{{ $je->entry_date }}</div>
+                                            <div class="text-[11px] font-mono text-slate-400 mt-0.5">{{ $je->entry_date }}</div>
+                                        </td>
+                                        <td class="py-3 px-4 min-w-[340px]">
+                                            <div class="p-3 rounded-2xl bg-slate-900 text-white space-y-2 shadow-sm text-right">
+                                                <div class="flex items-center justify-between gap-2 border-b border-slate-700 pb-1.5 text-[11px]">
+                                                    <span class="font-bold text-emerald-400">📊 إجمالي القيد (شامل الضريبة):</span>
+                                                    <span class="px-2 py-0.5 rounded font-bold {{ $isBalanced ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200' }}">
+                                                        {{ $isBalanced ? '✔ متوازن (الفرق: 0.00 ر.س)' : '⚠️ غير متوازن — الفرق: ' . number_format($netDiff, 2) . ' ر.س' }}
+                                                    </span>
+                                                </div>
+                                                <div class="grid grid-cols-4 gap-1.5 text-[11px] text-center">
+                                                    <div class="p-1.5 rounded-lg bg-white/5">
+                                                        <span class="text-slate-300 block text-[10px]">المدين + ضريبته</span>
+                                                        <b class="font-mono text-emerald-400 block mt-0.5">{{ number_format($totalDebit, 2) }} ر.س</b>
+                                                        @if($debitTax > 0)
+                                                            <span class="text-[9px] text-slate-400 font-mono block">({{ number_format($baseDebit, 0) }}+{{ number_format($debitTax, 0) }})</span>
+                                                        @endif
+                                                    </div>
+                                                    <div class="p-1.5 rounded-lg bg-white/5">
+                                                        <span class="text-slate-300 block text-[10px]">الدائن + ضريبته</span>
+                                                        <b class="font-mono text-amber-400 block mt-0.5">{{ number_format($totalCredit, 2) }} ر.س</b>
+                                                        @if($creditTax > 0)
+                                                            <span class="text-[9px] text-slate-400 font-mono block">({{ number_format($baseCredit, 0) }}+{{ number_format($creditTax, 0) }})</span>
+                                                        @endif
+                                                    </div>
+                                                    <div class="p-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                                                        <span class="text-emerald-200 block text-[10px]">إجمالي القيد المعتمد</span>
+                                                        <b class="font-mono text-white block mt-0.5">{{ number_format($entryAmount, 2) }} ر.س</b>
+                                                        @if($totalTax > 0)
+                                                            <span class="text-[9px] text-emerald-300 block">ضريبة: {{ number_format($totalTax, 2) }}</span>
+                                                        @endif
+                                                    </div>
+                                                    <div class="p-1.5 rounded-lg bg-white/5">
+                                                        <span class="text-slate-300 block text-[10px]">صافي الفرق</span>
+                                                        <b class="font-mono {{ $isBalanced ? 'text-emerald-400' : 'text-rose-400' }} block mt-0.5">{{ number_format($netDiff, 2) }} ر.س</b>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </td>
                                         <td class="py-4 px-4 text-center">
                                             <div class="flex items-center justify-center gap-1.5 flex-wrap">
                                                 <button type="button" onclick="openModal('viewJournalModal_{{ $je->id }}')"
                                                         class="px-2.5 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 text-xs font-bold transition">
-                                                     عرض ({{ $items->count() }})
+                                                    عرض ({{ $items->count() }})
                                                 </button>
 
                                                 <button type="button" onclick="openModal('printChoiceJournalModal_{{ $je->id }}')"
                                                         class="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold transition">
-                                                     طباعة
+                                                    طباعة
                                                 </button>
 
                                                 <button type="button" onclick="openModal('editJournalModal_{{ $je->id }}')"
                                                         class="px-2.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white text-xs font-bold transition">
-                                                     تعديل
+                                                    تعديل
                                                 </button>
 
-                                                <form action="{{ route('erp.journal.delete', $je->id) }}" method="POST" onsubmit="return confirm('حذف هذا القيد وعكس أثره من شجرة الحسابات؟');">
+                                                <form action="{{ route('erp.journal.delete', $je->id) }}" method="POST" class="inline" onsubmit="return confirm('حذف هذا القيد وعكس أثره من شجرة الحسابات؟');">
                                                     @csrf
                                                     <button type="submit" class="px-2.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-600 text-red-600 hover:text-white text-xs font-bold transition">
                                                         🗑️ حذف
@@ -4405,20 +4466,20 @@
                                         </td>
                                     </tr>
                                 @empty
-                                    <tr><td colspan="7" class="py-12 text-center text-slate-400">لا توجد قيود يومية مسجلة بعد. اضغط على "إضافة قيد يومي جديد" للبدء.</td></tr>
+                                    <tr><td colspan="6" class="py-12 text-center text-slate-400">لا توجد قيود يومية مسجلة بعد. اضغط على "إضافة قيد يومي جديد" للبدء.</td></tr>
                                 @endforelse
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <!-- نافذة إضافة قيد يومي متعدد الجداول (مع زر حذف لأي خانة إضافية) -->
+                <!-- نافذة إضافة قيد يومي متعدد الجداول -->
                 <div id="addJournalEntryModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
                     <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
                         <div class="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
                             <div>
                                 <h3 class="font-bold text-base text-slate-900">➕ إضافة قيد يومي محاسبي متعدد العمليات</h3>
-                                <p class="text-xs text-slate-500">أدخل البيان العام بالأعلى ثم أضف العمليات في الجداول بالأسفل، ويمكنك حذف أي خانة إضافية لا تحتاجها</p>
+                                <p class="text-xs text-slate-500">أدخل البيان العام بالأعلى ثم أضف العمليات في الجداول بالأسفل</p>
                             </div>
                             <button type="button" onclick="closeModal('addJournalEntryModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                         </div>
@@ -4439,7 +4500,6 @@
                             </div>
 
                             <div id="journalTablesContainer" class="space-y-3">
-                                <!-- الجدول الأول الأساسي -->
                                 <div class="p-4 rounded-2xl bg-slate-50 border-2 border-slate-200 journal-table-block">
                                     <div class="flex items-center justify-between mb-2">
                                         <span class="text-xs font-bold text-slate-700 journal-block-title">جدول العملية (1) — الطرف الأول</span>
@@ -4476,7 +4536,6 @@
                                     </div>
                                 </div>
 
-                                <!-- الجدول الثاني الأساسي -->
                                 <div class="p-4 rounded-2xl bg-slate-50 border-2 border-slate-200 journal-table-block">
                                     <div class="flex items-center justify-between mb-2">
                                         <span class="text-xs font-bold text-slate-700 journal-block-title">جدول العملية (2) — الطرف المقابل</span>
@@ -4531,7 +4590,15 @@
 
                 <!-- نوافذ العرض والطباعة والتعديل لكل قيد يومي -->
                 @foreach($journalEntries as $je)
-                    @php $items = $journalItemsByEntry[$je->id] ?? collect(); @endphp
+                    @php
+                        $items = $journalItemsByEntry[$je->id] ?? collect();
+                        $totalDebit = (float) $je->total_debit;
+                        $totalCredit = (float) $je->total_credit;
+                        $totalTax = (float) $je->total_tax;
+                        $entryAmount = max($totalDebit, $totalCredit);
+                        $netDiff = round(abs($totalDebit - $totalCredit), 2);
+                        $isBalanced = $netDiff <= 0.05;
+                    @endphp
 
                     <div id="viewJournalModal_{{ $je->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
                         <div class="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto">
@@ -4540,20 +4607,31 @@
                                     <h3 class="font-bold text-base text-slate-900">📒 تفاصيل القيد اليومي رقم (#{{ $je->entry_number }})</h3>
                                     <p class="text-xs text-slate-500">التاريخ: {{ $je->entry_date }} | البيان العام: {{ $je->general_notes }}</p>
                                 </div>
-                                <button type="button" onclick="closeModal('viewJournalModal_{{ $je->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" onclick="exportJournalPDF('{{ $je->id }}', '{{ $je->entry_number }}')"
+                                            class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold">
+                                        📥 تحميل PDF
+                                    </button>
+                                    <button type="button" onclick="closeModal('viewJournalModal_{{ $je->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                                </div>
                             </div>
 
-                            <div id="printableJournalArea_{{ $je->id }}" class="p-4 rounded-2xl border border-slate-200 bg-white space-y-4">
-                                <div class="flex items-center justify-between border-b pb-3">
+                            <div id="printableJournalArea_{{ $je->id }}" class="p-6 rounded-2xl border-2 border-slate-800 bg-white space-y-5 text-slate-900">
+                                <div class="flex items-center justify-between border-b-2 border-slate-800 pb-4">
                                     <div>
-                                        <div class="font-bold text-slate-900">سند قيد يومية رقم: #{{ $je->entry_number }}</div>
-                                        <div class="text-xs text-slate-500">البيان العام: {{ $je->general_notes }}</div>
+                                        <div class="text-base font-extrabold text-slate-900">سند قيد يومية محاسبي رقم: #{{ $je->entry_number }}</div>
+                                        <div class="text-xs text-slate-600 mt-1">البيان العام: <b>{{ $je->general_notes }}</b></div>
                                     </div>
-                                    <div class="text-xs font-mono font-bold">التاريخ: {{ $je->entry_date }}</div>
+                                    <div class="text-left text-xs space-y-1">
+                                        <div class="font-mono font-bold">التاريخ: {{ $je->entry_date }}</div>
+                                        <div class="px-2.5 py-0.5 rounded bg-emerald-50 text-emerald-800 font-bold inline-block">
+                                            {{ $isBalanced ? '✔ قيد متوازن' : '⚠️ غير متوازن' }}
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <table class="w-full text-xs text-right border" id="journalDetailTable_{{ $je->id }}">
-                                    <thead class="bg-slate-100 text-slate-700 border-b">
+                                <table class="w-full text-xs text-right border border-slate-300" id="journalDetailTable_{{ $je->id }}">
+                                    <thead class="bg-slate-900 text-white">
                                         <tr>
                                             <th class="py-2.5 px-3">#</th>
                                             <th class="py-2.5 px-3">رقم واسم الحساب</th>
@@ -4563,7 +4641,7 @@
                                             <th class="py-2.5 px-3">البيان التفصيلي</th>
                                         </tr>
                                     </thead>
-                                    <tbody class="divide-y">
+                                    <tbody class="divide-y divide-slate-200">
                                         @foreach($items as $idx => $item)
                                             <tr>
                                                 <td class="py-2.5 px-3 font-mono">{{ $idx + 1 }}</td>
@@ -4575,16 +4653,35 @@
                                             </tr>
                                         @endforeach
                                     </tbody>
-                                    <tfoot class="bg-slate-50 font-bold border-t">
+                                    <tfoot class="bg-slate-100 font-bold border-t-2 border-slate-300">
                                         <tr>
-                                            <td colspan="2" class="py-2.5 px-3">الإجمالي</td>
-                                            <td class="py-2.5 px-3 font-mono text-emerald-700">{{ number_format($je->total_debit, 2) }} ر.س</td>
-                                            <td class="py-2.5 px-3 font-mono text-amber-700">{{ number_format($je->total_credit, 2) }} ر.س</td>
-                                            <td class="py-2.5 px-3 font-mono">{{ number_format($je->total_tax, 2) }} ر.س</td>
-                                            <td></td>
+                                            <td colspan="2" class="py-2.5 px-3">الإجمالي الشامل للقيد</td>
+                                            <td class="py-2.5 px-3 font-mono text-emerald-700">{{ number_format($totalDebit, 2) }} ر.س</td>
+                                            <td class="py-2.5 px-3 font-mono text-amber-700">{{ number_format($totalCredit, 2) }} ر.س</td>
+                                            <td class="py-2.5 px-3 font-mono">{{ number_format($totalTax, 2) }} ر.س</td>
+                                            <td class="py-2.5 px-3 font-mono text-emerald-800">صافي الفرق: {{ number_format($netDiff, 2) }} ر.س</td>
                                         </tr>
                                     </tfoot>
                                 </table>
+
+                                <div class="grid grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-300 text-xs text-center pdf-no-break">
+                                    <div>
+                                        <span class="text-slate-500 block">إجمالي المدين (شامل الضريبة)</span>
+                                        <b class="font-mono text-emerald-700 text-sm">{{ number_format($totalDebit, 2) }} ر.س</b>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500 block">إجمالي الدائن (شامل الضريبة)</span>
+                                        <b class="font-mono text-amber-700 text-sm">{{ number_format($totalCredit, 2) }} ر.س</b>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500 block">إجمالي القيد المعتمد</span>
+                                        <b class="font-mono text-slate-900 text-sm">{{ number_format($entryAmount, 2) }} ر.س</b>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500 block">صافي الفرق (التوازن)</span>
+                                        <b class="font-mono {{ $isBalanced ? 'text-emerald-700' : 'text-rose-600' }} text-sm">{{ number_format($netDiff, 2) }} ر.س ({{ $isBalanced ? 'متوازن ✔' : 'غير متوازن' }})</b>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -4599,7 +4696,7 @@
                                     <span class="text-2xl">📄</span>
                                     <span>تصدير ملف PDF</span>
                                 </button>
-                                <button type="button" onclick="exportTableToCSV('journalDetailTable_{{ $je->id }}', 'Journal_Entry_{{ $je->entry_number }}.csv')"
+                                <button type="button" onclick="exportTableToCSV('journalDetailTable_{{ $je->id }}', 'Journal_Entry_{{ $je->entry_number }}.xlsx')"
                                         class="p-4 rounded-2xl bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 font-bold text-xs transition flex flex-col items-center gap-2">
                                     <span class="text-2xl">📊</span>
                                     <span>تصدير ملف Excel</span>
@@ -7774,661 +7871,7 @@
     });
 })();
 </script>
-<!-- بداية البلوك الشامل المطور: تطابق العرض 100% في الصفحات الأفقية والعمودية والأستاذ العام + إصلاح الـ PDF والخطوط العربية -->
-<style id="arabic-pdf-and-journal-fixes">
-    /* 1. ضبط الخطوط العربية ومنع تقطع الحروف أو التصاق الكلمات */
-    body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
-        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
-        letter-spacing: 0px !important;
-        font-kerning: normal !important;
-        font-variant-ligatures: normal !important;
-    }
-
-    /* 2. توحيد وتطابق العرض على الشاشة في جميع الصفحات والأستاذ العام وكشف الحساب */
-    main {
-        width: 100% !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-        box-sizing: border-box !important;
-    }
-    main > div,
-    #financialStatementPrintable,
-    #pro_ownerSettlementPrintableArea,
-    #pro_general_ledger_view,
-    #officePropertiesPrintableWrap,
-    #officeInstallmentsPrintableWrap {
-        width: 100% !important;
-        max-width: 100% !important;
-        box-sizing: border-box !important;
-    }
-
-    /* منع انكسار شريط الفلاتر في صفحة الأستاذ العام عند إظهار فلتر الحساب أو المصروف */
-    #financialStatementPrintable .grid.md\:grid-cols-12 {
-        display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)) !important;
-        gap: 12px !important;
-        align-items: end !important;
-    }
-    #financialStatementPrintable .grid.md\:grid-cols-12 > div {
-        grid-column: span 1 / span 1 !important;
-        width: 100% !important;
-    }
-
-    /* 3. تثبيت حاوية html2pdf في نقطة الصفر (0,0) لمنع الإزاحة والقص في الصفحات الأفقية والعمودية نهائياً */
-    .html2pdf__overlay {
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        right: auto !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        direction: ltr !important;
-    }
-    .html2pdf__container {
-        position: absolute !important;
-        top: 0 !important;
-        left: 0 !important;
-        right: auto !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        transform: none !important;
-        direction: rtl !important;
-        box-sizing: border-box !important;
-    }
-
-    /* 4. منع انقسام الصفوف والبطاقات بين صفحات الـ PDF */
-    tr, thead, tfoot, .journal-table-block, .pdf-no-break {
-        page-break-inside: avoid !important;
-        break-inside: avoid !important;
-    }
-    thead { display: table-header-group !important; }
-    tfoot { display: table-footer-group !important; }
-
-    /* 5. تنسيق نسخة الـ PDF لتطابق عرض الورقة 100% من اليمين إلى اليسار بدون أي فراغ أو قص */
-    .erp-pdf-clean-clone {
-        direction: rtl !important;
-        text-align: right !important;
-        background: #ffffff !important;
-        color: #0f172a !important;
-        padding: 12px !important;
-        margin: 0 !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        min-width: 100% !important;
-        max-height: none !important;
-        overflow: visible !important;
-        box-sizing: border-box !important;
-        word-spacing: 2.5px !important;
-        text-rendering: auto !important;
-    }
-    .erp-pdf-clean-clone * {
-        font-family: 'Readex Pro', 'Tahoma', 'Arial', sans-serif !important;
-        letter-spacing: 0px !important;
-        word-spacing: 2px !important;
-        text-rendering: auto !important;
-        max-height: none !important;
-        overflow: visible !important;
-        box-sizing: border-box !important;
-    }
-    .erp-pdf-clean-clone .max-w-2xl,
-    .erp-pdf-clean-clone .max-w-3xl,
-    .erp-pdf-clean-clone .max-w-4xl,
-    .erp-pdf-clean-clone .overflow-x-auto {
-        max-width: 100% !important;
-        width: 100% !important;
-        margin-left: 0 !important;
-        margin-right: 0 !important;
-    }
-
-    /* ضبط البطاقات الـ 6 في تصفية المالك والبطاقات الـ 5 في الأستاذ العام لتظهر كاملة في سطر واحد */
-    .erp-pdf-clean-clone .md\:grid-cols-6 {
-        display: grid !important;
-        grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
-        gap: 8px !important;
-        width: 100% !important;
-    }
-    .erp-pdf-clean-clone .md\:grid-cols-5 {
-        display: grid !important;
-        grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
-        gap: 8px !important;
-        width: 100% !important;
-    }
-    .erp-pdf-clean-clone .md\:grid-cols-4 {
-        display: grid !important;
-        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
-        gap: 8px !important;
-        width: 100% !important;
-    }
-    .erp-pdf-clean-clone .md\:grid-cols-6 > div,
-    .erp-pdf-clean-clone .md\:grid-cols-5 > div,
-    .erp-pdf-clean-clone .md\:grid-cols-4 > div {
-        padding: 8px 6px !important;
-        min-width: 0 !important;
-    }
-    .erp-pdf-clean-clone .text-2xl,
-    .erp-pdf-clean-clone .text-lg {
-        font-size: 13px !important;
-        line-height: 1.35 !important;
-    }
-
-    /* إخفاء عناصر التحكم والأزرار غير المطبوعة فقط (دون إخفاء أسماء الحسابات والملاك) */
-    .erp-pdf-clean-clone .no-print,
-    .erp-pdf-clean-clone .erp-pagination-bar,
-    .erp-pdf-clean-clone form,
-    .erp-pdf-clean-clone input[type="text"],
-    .erp-pdf-clean-clone input[type="date"],
-    .erp-pdf-clean-clone select,
-    .erp-pdf-clean-clone .erp-picker-host {
-        display: none !important;
-    }
-
-    /* تنسيق الجداول في الـ PDF لتملأ 100% من عرض الصفحة بانتظام */
-    .erp-pdf-clean-clone table {
-        width: 100% !important;
-        min-width: 100% !important;
-        max-width: 100% !important;
-        border-collapse: collapse !important;
-        table-layout: auto !important;
-        direction: rtl !important;
-        margin-top: 6px !important;
-    }
-    .erp-pdf-clean-clone th {
-        background-color: #0f172a !important;
-        color: #ffffff !important;
-        border: 1px solid #334155 !important;
-        padding: 7px 6px !important;
-        font-size: 10.5px !important;
-        font-weight: 700 !important;
-        text-align: right !important;
-        white-space: normal !important;
-        line-height: 1.3 !important;
-    }
-    .erp-pdf-clean-clone td {
-        border: 1px solid #cbd5e1 !important;
-        padding: 6px 6px !important;
-        font-size: 10.5px !important;
-        line-height: 1.4 !important;
-        color: #0f172a !important;
-        white-space: normal !important;
-        word-break: break-word !important;
-        text-align: right !important;
-        vertical-align: middle !important;
-    }
-    .erp-pdf-clean-clone tfoot td,
-    .erp-pdf-clean-clone tfoot th {
-        background-color: #f1f5f9 !important;
-        color: #0f172a !important;
-        font-weight: 800 !important;
-        border: 1px solid #94a3b8 !important;
-    }
-</style>
-
-<script id="erp-master-fixes-script">
-(function() {
-    // 1. إصلاح انعكاس الأقواس والنقطتين في الكلمات العربية داخل Canvas أثناء توليد الـ PDF
-    const origFillText = CanvasRenderingContext2D.prototype.fillText;
-    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-        if (window.__erpPdfRenderingActive && typeof text === 'string' && /[\u0600-\u06FF]/.test(text)) {
-            this.direction = 'rtl';
-            let fixed = '\u200F' + text + '\u200F';
-            fixed = fixed.replace(/:/g, ':\u200F').replace(/\(/g, '\u200F(').replace(/\)/g, ')\u200F');
-            return maxWidth !== undefined
-                ? origFillText.call(this, fixed, x, y, maxWidth)
-                : origFillText.call(this, fixed, x, y);
-        }
-        return maxWidth !== undefined
-            ? origFillText.call(this, text, x, y, maxWidth)
-            : origFillText.call(this, text, x, y);
-    };
-
-    // 2. تعريب طرق الدفع في جميع الجداول والنوافذ
-    const PM_AR = {
-        bank_transfer: 'حوالة بنكية', transfer: 'حوالة بنكية', bank: 'حوالة بنكية',
-        sadad: 'نظام سداد', mada: 'شبكة مدى', pos: 'شبكة مدى', card: 'شبكة مدى',
-        cash: 'نقداً (كاش)', cheque: 'شيك مصدق', check: 'شيك مصدق'
-    };
-
-    window.translatePaymentMethodAr = function(v) {
-        if (!v) return 'حوالة بنكية';
-        const k = String(v).trim().toLowerCase();
-        return PM_AR[k] || v;
-    };
-
-    function localizeDOM() {
-        if (Array.isArray(window.officeVouchersMaster)) {
-            window.officeVouchersMaster.forEach(v => {
-                if (v && v.payment_method) v.payment_method = window.translatePaymentMethodAr(v.payment_method);
-            });
-        }
-        document.querySelectorAll('td, span, b, div, option').forEach(el => {
-            if (el.children.length === 0 && el.innerText) {
-                const k = el.innerText.trim().toLowerCase();
-                if (PM_AR[k]) el.innerText = PM_AR[k];
-            }
-        });
-    }
-
-    const origVoucher = window.openOfficialVoucherPreview;
-    window.openOfficialVoucherPreview = function(v) {
-        if (v) {
-            v.payment_method = window.translatePaymentMethodAr(v.payment_method || v.method);
-            v.method = v.payment_method;
-        }
-        if (typeof origVoucher === 'function') origVoucher(v);
-        const m = document.getElementById('pdf_method');
-        if (m) m.innerText = window.translatePaymentMethodAr(m.innerText);
-    };
-    window.previewOfficialVoucher = window.openOfficialVoucherPreview;
-
-    // 3. حساب إجمالي القيد اليومي المباشر + ضريبة المدين مدين وضريبة الدائن دائن
-    const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-    window.recalculateJournalFormTotals = function(form) {
-        if (!form) return;
-        const debits = form.querySelectorAll('input[name="debits[]"]');
-        const credits = form.querySelectorAll('input[name="credits[]"]');
-        const taxes = form.querySelectorAll('input[name="taxes[]"]');
-        let bD = 0, bC = 0, tD = 0, tC = 0;
-
-        for (let i = 0; i < Math.max(debits.length, credits.length); i++) {
-            const d = parseFloat(debits[i]?.value || 0) || 0;
-            const c = parseFloat(credits[i]?.value || 0) || 0;
-            const t = parseFloat(taxes[i]?.value || 0) || 0;
-            bD += d; bC += c;
-            if (taxes[i]) {
-                const lbl = taxes[i].parentElement.querySelector('label');
-                let hint = taxes[i].parentElement.querySelector('.row-tax-hint');
-                if (!hint) {
-                    hint = document.createElement('div');
-                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1';
-                    taxes[i].parentElement.appendChild(hint);
-                }
-                if (d > 0) {
-                    tD += t;
-                    if (lbl) lbl.innerText = 'الضريبة (مدين +)';
-                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-emerald-700';
-                    hint.innerText = 'الإجمالي: ' + fmt(d + t);
-                } else if (c > 0) {
-                    tC += t;
-                    if (lbl) lbl.innerText = 'الضريبة (دائن -)';
-                    hint.className = 'row-tax-hint text-[10px] font-bold mt-1 text-amber-700';
-                    hint.innerText = 'الإجمالي: ' + fmt(c + t);
-                } else {
-                    if (lbl) lbl.innerText = 'الضريبة';
-                    hint.innerText = '';
-                }
-            }
-        }
-
-        const totD = bD + tD, totC = bC + tC;
-        const entryTotal = Math.max(totD, totC);
-        const diff = Math.round((totD - totC) * 100) / 100;
-        const ok = Math.abs(diff) <= 0.05 && entryTotal > 0;
-
-        let box = form.querySelector('.live-journal-summary-bar');
-        if (!box) {
-            box = document.createElement('div');
-            box.className = 'live-journal-summary-bar p-4 rounded-2xl bg-slate-900 text-white space-y-2 my-3';
-            const footer = form.querySelector('.flex.justify-end');
-            footer ? form.insertBefore(box, footer) : form.appendChild(box);
-        }
-
-        box.innerHTML = `
-            <div class="flex flex-wrap justify-between items-center border-b border-slate-700 pb-2 text-xs">
-                <b class="text-emerald-400">📊 إجمالي القيد اليومي المباشر (شامل الضريبة):</b>
-                <span class="px-2.5 py-1 rounded font-bold ${ok ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200'}">
-                    ${ok ? '✔ متوازن (الفرق: 0.00)' : '⚠️ غير متوازن — الفرق: ' + fmt(Math.abs(diff)) + ' ر.س'}
-                </span>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
-                <div class="p-2 rounded bg-white/5">المدين + ضريبته: <b class="text-emerald-400 block">${fmt(bD)} + ${fmt(tD)} = ${fmt(totD)} ر.س</b></div>
-                <div class="p-2 rounded bg-white/5">الدائن + ضريبته: <b class="text-amber-400 block">${fmt(bC)} + ${fmt(tC)} = ${fmt(totC)} ر.س</b></div>
-                <div class="p-2 rounded bg-emerald-500/20">إجمالي القيد المعتمد: <b class="text-white text-sm block">${fmt(entryTotal)} ر.س</b></div>
-                <div class="p-2 rounded bg-white/5">صافي الفرق (التوازن): <b class="${ok ? 'text-emerald-400' : 'text-rose-300'} text-sm block">${fmt(diff)} ر.س</b></div>
-            </div>
-        `;
-    };
-
-    function initJournalAndLedgerFixes() {
-        // إزالة شريط الترقيم الخاطئ عن جداول القوائم المالية الفرعية وجداول برنت تصفية المالك
-        ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
-            document.querySelectorAll(sel).forEach(tbl => {
-                if (tbl._paginationBar) {
-                    tbl._paginationBar.remove();
-                    tbl._paginationBar = null;
-                }
-                tbl.querySelectorAll('tbody tr').forEach(r => r.style.display = '');
-            });
-        });
-
-        // توحيد فلترة الأستاذ العام وحساب الرصيد التراكمي والافتتاحي والختامي بدقة
-        const origApplyFilters = window.applyStatementFilters;
-        window.applyStatementFilters = function() {
-            if (typeof origApplyFilters === 'function') {
-                origApplyFilters();
-            }
-            const rows = Array.from(document.querySelectorAll('.stmt-movement-row'));
-            if (rows.length === 0) return;
-
-            const q = (document.getElementById('ledgerInstantSearch')?.value || '').trim().toLowerCase();
-            const mode = document.getElementById('stmt_filter_mode')?.value || 'all';
-            const specExp = document.getElementById('stmt_expense_select')?.value || '';
-            const specAcc = document.getElementById('stmt_account_select')?.value || '';
-            const officeId = document.getElementById('stmt_office_select')?.value || '';
-            const partyVal = document.getElementById('stmt_party_select')?.value || '';
-            const fromDate = document.getElementById('stmt_from_date')?.value || '';
-            const toDate = document.getElementById('stmt_to_date')?.value || '';
-
-            let debitSum = 0, creditSum = 0;
-            rows.forEach(row => {
-                const rSearch = (row.getAttribute('data-search') || '').toLowerCase();
-                const rDate = row.getAttribute('data-date') || '';
-                const rAcc = row.getAttribute('data-account-id') || '';
-                const rOff = row.getAttribute('data-office-id') || '';
-                const rOwn = row.getAttribute('data-owner-id') || '';
-                const rTen = row.getAttribute('data-tenant-id') || '';
-                const isExp = row.getAttribute('data-is-expense') === '1';
-                const isRev = row.getAttribute('data-is-revenue') === '1';
-
-                let show = true;
-                if (q && !rSearch.includes(q)) show = false;
-                if (mode === 'all_expenses' && !isExp) show = false;
-                if (mode === 'all_revenues' && !isRev) show = false;
-                if (mode === 'specific_expense' && specExp && rAcc !== specExp) show = false;
-                if (mode === 'specific_account' && specAcc && rAcc !== specAcc) show = false;
-                if (officeId && rOff !== officeId) show = false;
-                if (partyVal) {
-                    if (partyVal.startsWith('owner_') && rOwn !== partyVal.replace('owner_', '')) show = false;
-                    if (partyVal.startsWith('tenant_') && rTen !== partyVal.replace('tenant_', '')) show = false;
-                }
-                if (fromDate && rDate < fromDate) show = false;
-                if (toDate && rDate > toDate) show = false;
-
-                row.dataset.searchMatched = show ? '1' : '0';
-                row.style.display = show ? '' : 'none';
-                if (show) {
-                    debitSum += parseFloat(row.getAttribute('data-debit') || 0);
-                    creditSum += parseFloat(row.getAttribute('data-credit') || 0);
-                }
-            });
-
-            const net = debitSum - creditSum;
-            if (document.getElementById('filteredDebitSum')) document.getElementById('filteredDebitSum').innerText = fmt(debitSum);
-            if (document.getElementById('filteredCreditSum')) document.getElementById('filteredCreditSum').innerText = fmt(creditSum);
-            if (document.getElementById('filteredNetSum')) document.getElementById('filteredNetSum').innerText = fmt(net);
-            if (document.getElementById('ledgerClosingBalance')) document.getElementById('ledgerClosingBalance').innerText = fmt(net);
-
-            const table = document.getElementById('generalStatementTable');
-            if (table) {
-                if (typeof window.refreshTablePagination === 'function') window.refreshTablePagination(table, true);
-                else if (typeof window.refreshAdminTablePagination === 'function') window.refreshAdminTablePagination(table, true);
-            }
-        };
-
-        document.querySelectorAll('form[action*="journal-entries"]').forEach(f => {
-            if (f.dataset.bound !== '1') {
-                f.dataset.bound = '1';
-                f.addEventListener('input', e => {
-                    const t = e.target;
-                    const row = t?.closest('.grid');
-                    if (t?.name === 'debits[]' && parseFloat(t.value) > 0 && row) {
-                        const c = row.querySelector('input[name="credits[]"]');
-                        if (c && parseFloat(c.value) > 0) c.value = '0';
-                    } else if (t?.name === 'credits[]' && parseFloat(t.value) > 0 && row) {
-                        const d = row.querySelector('input[name="debits[]"]');
-                        if (d && parseFloat(d.value) > 0) d.value = '0';
-                    }
-                    window.recalculateJournalFormTotals(f);
-                });
-                f.addEventListener('click', () => setTimeout(() => window.recalculateJournalFormTotals(f), 50));
-            }
-            window.recalculateJournalFormTotals(f);
-        });
-
-        const tbl = document.getElementById('journalEntriesTable');
-        if (tbl && !tbl.querySelector('tfoot')) {
-            let sumE = 0, sumT = 0;
-            tbl.querySelectorAll('tbody tr.journal-row').forEach(tr => {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length >= 5) {
-                    sumE += parseFloat((tds[3].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
-                    sumT += parseFloat((tds[4].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
-                }
-            });
-            const tf = document.createElement('tfoot');
-            tf.className = 'bg-slate-900 text-white font-bold text-xs';
-            tf.innerHTML = `<tr><td colspan="3" class="py-3 px-4 text-emerald-300">إجمالي القيود المحفوظة</td><td class="py-3 px-4">${fmt(sumE)} ر.س</td><td class="py-3 px-4 text-amber-300">${fmt(sumT)} ر.س</td><td colspan="2" class="py-3 px-4 text-emerald-400">متوازن (الفرق: 0.00) ✔</td></tr>`;
-            tbl.appendChild(tf);
-        }
-    }
-
-    // 4. محرك تجهيز الـ PDF الذكي: يحافظ على أسماء الحسابات والملاك، ويضبط العرض 100% بلا إزاحة
-    window.prepareSmartPdfClone = function(el) {
-        const clone = el.cloneNode(true);
-        clone.classList.add('erp-pdf-clean-clone');
-
-        // إظهار الصفوف المطابقة للبحث/الفلترة والتي كانت مخفية بسبب ترقيم الصفحات (1, 2, 3)
-        clone.querySelectorAll('tbody tr').forEach(tr => {
-            if (tr.dataset.searchMatched === '0') {
-                tr.remove();
-            } else {
-                tr.style.display = '';
-            }
-        });
-
-        // حذف عمود "الإجراءات" من جداول الـ PDF وتوسيع الأعمدة المتبقية
-        let maxRemainingCols = 0;
-        const actionHeaderKeywords = ['إجراءات', 'الإجراءات', 'إجراء', 'حذف', 'تعديل', 'تحميل السند', 'إجراءات التحصيل', 'التوثيق في إيجار'];
-
-        clone.querySelectorAll('table').forEach(t => {
-            const dropIndices = [];
-            const ths = Array.from(t.querySelectorAll('thead th'));
-            ths.forEach((th, idx) => {
-                const txt = (th.innerText || '').trim();
-                if (actionHeaderKeywords.some(w => txt.includes(w))) {
-                    dropIndices.push(idx);
-                    th.remove();
-                }
-            });
-            if (dropIndices.length > 0) {
-                t.querySelectorAll('tbody tr').forEach(tr => {
-                    const tds = Array.from(tr.querySelectorAll('td'));
-                    if (tds.length > 1) {
-                        dropIndices.forEach(i => { if (tds[i]) tds[i].remove(); });
-                    }
-                });
-            }
-            const remainingCols = t.querySelectorAll('thead th').length;
-            if (remainingCols > maxRemainingCols) maxRemainingCols = remainingCols;
-        });
-
-        // تحويل الأزرار التي تحتوي على أسماء الحسابات أو الملاك أو المستأجرين داخل الخلايا إلى نصوص واضحة بدلاً من إخفائها
-        clone.querySelectorAll('td button').forEach(btn => {
-            const span = document.createElement('span');
-            span.className = 'font-bold text-slate-900';
-            span.innerHTML = btn.innerHTML;
-            btn.replaceWith(span);
-        });
-
-        // إزالة الأزرار المتبقية في الهيدر والفلاتر
-        clone.querySelectorAll('button').forEach(btn => btn.remove());
-
-        // تحديد الاتجاه (Landscape للأستاذ العام وتصفية المالك والجداول العريضة، وPortrait للسندات والفواتير المفردة)
-        const singlePortraitIds = [
-            'printableVoucherArea',
-            'companyTaxInvoicePrintArea',
-            'officeTaxInvoicePrintArea',
-            'legalNoticePrintableArea',
-            'installmentClaimPdfTemplate',
-            'invoicePdfArea'
-        ];
-        const isSingleDoc = singlePortraitIds.includes(el.id);
-        const isLandscape = !isSingleDoc && (maxRemainingCols >= 5 || el.id === 'pro_ownerSettlementPrintableArea' || el.id === 'financialStatementPrintable' || el.scrollWidth > 760);
-
-        // عرض ورقة A4 الصافي بعد خصم الهوامش (8mm من كل جهة):
-        // في الوضع الأفقي: 297mm - 16mm = 281mm (يعادل 1062px)
-        // في الوضع العمودي: 210mm - 16mm = 194mm (يعادل 733px)
-        const exactWidthMm = isLandscape ? 281 : 194;
-        const exactWidthPx = isLandscape ? 1062 : 733;
-
-        clone.style.width = exactWidthMm + 'mm';
-        clone.style.maxWidth = exactWidthMm + 'mm';
-        clone.style.minWidth = exactWidthMm + 'mm';
-
-        return { clone, isLandscape, exactWidthPx };
-    };
-
-    window.buildPdfWorkerOptions = function(filename, isLandscape, exactWidthPx) {
-        return {
-            margin: [8, 8, 8, 8],
-            filename: (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf',
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: {
-                scale: 2,
-                useCORS: true,
-                letterRendering: false,
-                backgroundColor: '#ffffff',
-                scrollX: 0,
-                scrollY: 0,
-                x: 0,
-                y: 0,
-                width: exactWidthPx
-            },
-            pagebreak: {
-                mode: ['css', 'legacy'],
-                avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break']
-            },
-            jsPDF: {
-                unit: 'mm',
-                format: 'a4',
-                orientation: isLandscape ? 'landscape' : 'portrait'
-            }
-        };
-    };
-
-    // 5. توحيد دالة تصدير الـ PDF لجميع صفحات وبوابات النظام
-    window.exportElementToPDF = async function(elementId, filename) {
-        const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
-        if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
-        if (document.fonts && document.fonts.ready) await document.fonts.ready;
-
-        const savedScrollX = window.scrollX;
-        const savedScrollY = window.scrollY;
-        window.scrollTo(0, 0);
-        window.__erpPdfRenderingActive = true;
-
-        const { clone, isLandscape, exactWidthPx } = window.prepareSmartPdfClone(el);
-        const opt = window.buildPdfWorkerOptions(filename, isLandscape, exactWidthPx);
-
-        try {
-            await html2pdf().set(opt).from(clone).toContainer().then(function() {
-                const c = document.querySelector('.html2pdf__container');
-                const o = document.querySelector('.html2pdf__overlay');
-                if (o) {
-                    o.style.left = '0px';
-                    o.style.top = '0px';
-                    o.style.right = 'auto';
-                    o.style.direction = 'ltr';
-                }
-                if (c) {
-                    c.style.left = '0px';
-                    c.style.top = '0px';
-                    c.style.right = 'auto';
-                    c.style.margin = '0px';
-                    c.style.width = exactWidthPx + 'px';
-                    c.style.direction = 'rtl';
-                }
-            }).toCanvas().toPdf().save();
-        } finally {
-            window.__erpPdfRenderingActive = false;
-            window.scrollTo(savedScrollX, savedScrollY);
-        }
-    };
-
-    // 6. ربط جميع دوال التصدير وإرسال الواتساب في النظام بالمحرك الموحد
-    window.exportStatementPDF = function() {
-        window.exportElementToPDF('financialStatementPrintable', 'دفتر_الأستاذ_العام_والقوائم_المالية.pdf');
-    };
-
-    window.downloadVoucherPDF = function() {
-        window.exportElementToPDF('printableVoucherArea', (window.currentVoucherNumber || 'Voucher') + '.pdf');
-    };
-
-    window.downloadCompanyTaxInvoicePDF = function() {
-        const targetId = document.getElementById('companyTaxInvoicePrintArea') ? 'companyTaxInvoicePrintArea' : 'printableVoucherArea';
-        window.exportElementToPDF(targetId, (window.currentCompanyInvoiceNo || 'Tax_Invoice') + '.pdf');
-    };
-
-    window.downloadOfficeTaxInvoicePDF = function() {
-        window.exportElementToPDF('officeTaxInvoicePrintArea', (window.currentOfficeInvoiceNo || 'Office_Tax_Invoice') + '.pdf');
-    };
-
-    window.sendElementAsOriginalPdfWhatsapp = async function(elementOrId, filename, targetPhone, docType = 'general') {
-        const el = typeof elementOrId === 'string' ? document.getElementById(elementOrId) : elementOrId;
-        if (!el) return alert('عنصر الطباعة غير جاهز.');
-
-        let phone = (targetPhone || '').trim();
-        if (!phone) {
-            phone = prompt('أدخل رقم جوال المستلم لإرسال ملف الـ PDF الأصلي عبر الواتساب (مثال: 05XXXXXXXX):', '');
-            if (!phone) return;
-        }
-
-        const cleanFile = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
-        if (typeof window.showErpToast === 'function') {
-            window.showErpToast('⏳ جاري توليد ملف الـ PDF الأصلي وإرساله كمرفق عبر الواتساب...', 'info');
-        }
-
-        const savedScrollX = window.scrollX;
-        const savedScrollY = window.scrollY;
-        window.scrollTo(0, 0);
-        window.__erpPdfRenderingActive = true;
-
-        const { clone, isLandscape, exactWidthPx } = window.prepareSmartPdfClone(el);
-        const opt = window.buildPdfWorkerOptions(cleanFile, isLandscape, exactWidthPx);
-
-        try {
-            const pdfDataUri = await html2pdf().set(opt).from(clone).toContainer().then(function() {
-                const c = document.querySelector('.html2pdf__container');
-                const o = document.querySelector('.html2pdf__overlay');
-                if (o) { o.style.left = '0px'; o.style.top = '0px'; o.style.right = 'auto'; o.style.direction = 'ltr'; }
-                if (c) { c.style.left = '0px'; c.style.top = '0px'; c.style.right = 'auto'; c.style.margin = '0px'; c.style.width = exactWidthPx + 'px'; c.style.direction = 'rtl'; }
-            }).outputPdf('datauristring');
-
-            const res = await fetch('/whatsapp/send-raw-pdf', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
-                    'Accept': 'application/json'
-                },
-                body: JSON.stringify({
-                    phone: phone,
-                    pdf_base64: pdfDataUri,
-                    filename: cleanFile,
-                    doc_type: docType
-                })
-            });
-            const data = await res.json();
-            if (data && data.success) {
-                if (typeof window.showErpToast === 'function') window.showErpToast('✅ ' + data.message, 'success');
-            } else {
-                await window.exportElementToPDF(el, cleanFile);
-            }
-        } catch (err) {
-            await window.exportElementToPDF(el, cleanFile);
-        } finally {
-            window.__erpPdfRenderingActive = false;
-            window.scrollTo(savedScrollX, savedScrollY);
-        }
-    };
-
-    document.addEventListener('DOMContentLoaded', function() {
-        localizeDOM();
-        initJournalAndLedgerFixes();
-    });
-})();
-</script>
-<!-- بداية البلوك الشامل المطور: فصل الكلمات لمنع الالتصاق + عزل الأكواد والأرقام LTR + احتواء كامل لعرض الجداول في الـ PDF -->
+<!-- بداية البلوك الشامل المطور: إصلاح ملخص القيود اليومية + حذف إجمالي القيود المحفوظة + إصلاح طباعة القيد PDF وإظهار صافي الفرق -->
 <style id="arabic-pdf-and-journal-fixes">
     /* 1. ضبط الخطوط العربية على الشاشة وفي الـ PDF */
     body, body *, table, th, td, div, span, p, h1, h2, h3, h4, b, strong, .font-mono {
@@ -8459,7 +7902,6 @@
         box-sizing: border-box !important;
     }
 
-    /* تنسيق شريط فلاتر الأستاذ العام ليتمدد بانتظام دون كسر العرض */
     #financialStatementPrintable .grid.md\:grid-cols-12 {
         display: grid !important;
         grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)) !important;
@@ -8502,13 +7944,13 @@
     thead { display: table-header-group !important; }
     tfoot { display: table-footer-group !important; }
 
-    /* 5. تنسيق نسخة الـ PDF لتحتوي جميع الأعمدة بالكامل بدون قص أو التصاق كلمات */
+    /* 5. تنسيق نسخة الـ PDF لتحتوي جميع الأعمدة بالكامل بدون قص */
     .erp-pdf-clean-clone {
         direction: rtl !important;
         text-align: right !important;
         background: #ffffff !important;
         color: #0f172a !important;
-        padding: 8px 10px !important;
+        padding: 12px 14px !important;
         margin: 0 !important;
         width: 100% !important;
         max-width: 100% !important;
@@ -8528,19 +7970,6 @@
         overflow: visible !important;
         box-sizing: border-box !important;
     }
-    .erp-pdf-clean-clone .pdf-word-token {
-        display: inline-block !important;
-        white-space: nowrap !important;
-        vertical-align: baseline !important;
-    }
-    .erp-pdf-clean-clone #ledger_view_section,
-    .erp-pdf-clean-clone #cards_view_section,
-    .erp-pdf-clean-clone #trial_view_section,
-    .erp-pdf-clean-clone #income_view_section {
-        padding: 0 !important;
-        margin: 0 !important;
-        width: 100% !important;
-    }
     .erp-pdf-clean-clone .max-w-2xl,
     .erp-pdf-clean-clone .max-w-3xl,
     .erp-pdf-clean-clone .max-w-4xl,
@@ -8551,7 +7980,6 @@
         padding: 0 !important;
     }
 
-    /* ضبط شبكات البطاقات العلوية في تصفية المالك (6 بطاقات) والأستاذ العام (5 بطاقات) */
     .erp-pdf-clean-clone .md\:grid-cols-6 {
         display: grid !important;
         grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
@@ -8564,17 +7992,12 @@
         gap: 8px !important;
         width: 100% !important;
     }
-    .erp-pdf-clean-clone .md\:grid-cols-4 {
+    .erp-pdf-clean-clone .md\:grid-cols-4,
+    .erp-pdf-clean-clone .grid-cols-4 {
         display: grid !important;
         grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
         gap: 8px !important;
         width: 100% !important;
-    }
-    .erp-pdf-clean-clone .md\:grid-cols-6 > div,
-    .erp-pdf-clean-clone .md\:grid-cols-5 > div,
-    .erp-pdf-clean-clone .md\:grid-cols-4 > div {
-        padding: 8px 10px !important;
-        min-width: 0 !important;
     }
 
     /* إخفاء الفلاتر وأزرار التحكم غير المطبوعة فقط */
@@ -8632,23 +8055,7 @@
 
 <script id="erp-master-fixes-script">
 (function() {
-    // 1. ضبط اتجاه الرسم في Canvas أثناء توليد الـ PDF مع تثبيت textAlign = 'left'
-    const origFillText = CanvasRenderingContext2D.prototype.fillText;
-    CanvasRenderingContext2D.prototype.fillText = function(text, x, y, maxWidth) {
-        if (window.__erpPdfRenderingActive && typeof text === 'string') {
-            this.textAlign = 'left';
-            if (/[\u0600-\u06FF]/.test(text)) {
-                this.direction = 'rtl';
-            } else {
-                this.direction = 'ltr';
-            }
-        }
-        return maxWidth !== undefined
-            ? origFillText.call(this, text, x, y, maxWidth)
-            : origFillText.call(this, text, x, y);
-    };
-
-    // 2. تعريب طرق الدفع في جميع الجداول والنوافذ
+    // 1. تعريب طرق الدفع في جميع الجداول والنوافذ
     const PM_AR = {
         bank_transfer: 'حوالة بنكية', transfer: 'حوالة بنكية', bank: 'حوالة بنكية',
         sadad: 'نظام سداد', mada: 'شبكة مدى', pos: 'شبكة مدى', card: 'شبكة مدى',
@@ -8687,14 +8094,16 @@
     };
     window.previewOfficialVoucher = window.openOfficialVoucherPreview;
 
-    // 3. حساب إجمالي القيد اليومي المباشر + ضريبة المدين مدين وضريبة الدائن دائن
+    // 2. حساب إجمالي القيد اليومي المباشر في نوافذ الإضافة والتعديل فقط (مع استثناء نموذج الحذف نهائياً)
     const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     window.recalculateJournalFormTotals = function(form) {
-        if (!form) return;
+        if (!form || (form.action && form.action.includes('/delete'))) return;
         const debits = form.querySelectorAll('input[name="debits[]"]');
         const credits = form.querySelectorAll('input[name="credits[]"]');
         const taxes = form.querySelectorAll('input[name="taxes[]"]');
+        if (debits.length === 0 && credits.length === 0) return;
+
         let bD = 0, bC = 0, tD = 0, tC = 0;
 
         for (let i = 0; i < Math.max(debits.length, credits.length); i++) {
@@ -8729,8 +8138,8 @@
 
         const totD = bD + tD, totC = bC + tC;
         const entryTotal = Math.max(totD, totC);
-        const diff = Math.round((totD - totC) * 100) / 100;
-        const ok = Math.abs(diff) <= 0.05 && entryTotal > 0;
+        const diff = Math.round(Math.abs(totD - totC) * 100) / 100;
+        const isBalanced = diff <= 0.05;
 
         let box = form.querySelector('.live-journal-summary-bar');
         if (!box) {
@@ -8743,20 +8152,27 @@
         box.innerHTML = `
             <div class="flex flex-wrap justify-between items-center border-b border-slate-700 pb-2 text-xs">
                 <b class="text-emerald-400">📊 إجمالي القيد اليومي المباشر (شامل الضريبة):</b>
-                <span class="px-2.5 py-1 rounded font-bold ${ok ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200'}">
-                    ${ok ? '✔ متوازن (الفرق: 0.00)' : '⚠️ غير متوازن — الفرق: ' + fmt(Math.abs(diff)) + ' ر.س'}
+                <span class="px-2.5 py-1 rounded font-bold ${isBalanced ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/30 text-rose-200'}">
+                    ${isBalanced ? '✔ متوازن (الفرق: 0.00 ر.س)' : '⚠️ غير متوازن — الفرق: ' + fmt(diff) + ' ر.س'}
                 </span>
             </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
-                <div class="p-2 rounded bg-white/5">المدين + ضريبته: <b class="text-emerald-400 block">${fmt(bD)} + ${fmt(tD)} = ${fmt(totD)} ر.س</b></div>
-                <div class="p-2 rounded bg-white/5">الدائن + ضريبته: <b class="text-amber-400 block">${fmt(bC)} + ${fmt(tC)} = ${fmt(totC)} ر.س</b></div>
-                <div class="p-2 rounded bg-emerald-500/20">إجمالي القيد المعتمد: <b class="text-white text-sm block">${fmt(entryTotal)} ر.س</b></div>
-                <div class="p-2 rounded bg-white/5">صافي الفرق (التوازن): <b class="${ok ? 'text-emerald-400' : 'text-rose-300'} text-sm block">${fmt(diff)} ر.س</b></div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1 text-center">
+                <div class="p-2 rounded bg-white/5">المدين + ضريبته: <b class="text-emerald-400 block font-mono mt-0.5">${fmt(bD)} + ${fmt(tD)} = ${fmt(totD)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">الدائن + ضريبته: <b class="text-amber-400 block font-mono mt-0.5">${fmt(bC)} + ${fmt(tC)} = ${fmt(totC)} ر.س</b></div>
+                <div class="p-2 rounded bg-emerald-500/20">إجمالي القيد المعتمد: <b class="text-white text-sm block font-mono mt-0.5">${fmt(entryTotal)} ر.س</b></div>
+                <div class="p-2 rounded bg-white/5">صافي الفرق (التوازن): <b class="${isBalanced ? 'text-emerald-400' : 'text-rose-300'} text-sm block font-mono mt-0.5">${fmt(diff)} ر.س</b></div>
             </div>
         `;
     };
 
     function initJournalAndLedgerFixes() {
+        // إزالة أي شريط إجمالي قديم ظهر بالخطأ داخل جدول القيود أو تذييل إجمالي القيود المحفوظة
+        document.querySelectorAll('#journalEntriesTable .live-journal-summary-bar').forEach(el => el.remove());
+        const jeTbl = document.getElementById('journalEntriesTable');
+        if (jeTbl && jeTbl.querySelector('tfoot')) {
+            jeTbl.querySelector('tfoot').remove();
+        }
+
         ['#cards_view_section table', '#trial_view_section table', '#income_view_section table', '#pro_rep_contracts_table', '#pro_rep_vouchers_table'].forEach(sel => {
             document.querySelectorAll(sel).forEach(tbl => {
                 if (tbl._paginationBar) {
@@ -8767,7 +8183,8 @@
             });
         });
 
-        document.querySelectorAll('form[action*="journal-entries"]').forEach(f => {
+        // ربط حساب الإجمالي المباشر بنماذج الإضافة والتعديل فقط (بدون نموذج الحذف)
+        document.querySelectorAll('form[action*="journal-entries/store"], form[action*="journal-entries/"][action*="/update"]').forEach(f => {
             if (f.dataset.bound !== '1') {
                 f.dataset.bound = '1';
                 f.addEventListener('input', e => {
@@ -8786,78 +8203,13 @@
             }
             window.recalculateJournalFormTotals(f);
         });
-
-        const tbl = document.getElementById('journalEntriesTable');
-        if (tbl && !tbl.querySelector('tfoot')) {
-            let sumE = 0, sumT = 0;
-            tbl.querySelectorAll('tbody tr.journal-row').forEach(tr => {
-                const tds = tr.querySelectorAll('td');
-                if (tds.length >= 5) {
-                    sumE += parseFloat((tds[3].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
-                    sumT += parseFloat((tds[4].innerText || '').replace(/[^0-9.-]/g, '')) || 0;
-                }
-            });
-            const tf = document.createElement('tfoot');
-            tf.className = 'bg-slate-900 text-white font-bold text-xs';
-            tf.innerHTML = `<tr><td colspan="3" class="py-3 px-4 text-emerald-300">إجمالي القيود المحفوظة</td><td class="py-3 px-4">${fmt(sumE)} ر.س</td><td class="py-3 px-4 text-amber-300">${fmt(sumT)} ر.س</td><td colspan="2" class="py-3 px-4 text-emerald-400">متوازن (الفرق: 0.00) ✔</td></tr>`;
-            tbl.appendChild(tf);
-        }
     }
 
-    // 4. الدالة الذكية لفصل الكلمات وعزل الأكواد الإنجليزية والأرقام لمنع التصاق الحروف أو انقلاب رقم العقد والجوال
-    window.tokenizeCloneTextNodesForPdf = function(root) {
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-        const textNodes = [];
-        let n;
-        while ((n = walker.nextNode())) {
-            const pTag = n.parentElement ? n.parentElement.tagName : '';
-            if (['SCRIPT', 'STYLE', 'SVG', 'TEXTAREA', 'OPTION', 'NOSCRIPT'].includes(pTag)) continue;
-            if (n.nodeValue && n.nodeValue.trim().length > 0) {
-                textNodes.push(n);
-            }
-        }
-
-        textNodes.forEach(node => {
-            const raw = node.nodeValue;
-            const hasArabicInNode = /[\u0600-\u06FF]/.test(raw);
-            // إذا كان النص يحتوي على عربي وأقواس، نفصل الأقواس والمسافات كوحدات مستقلة لمنع التصاق الرقم بالقوس
-            const parts = hasArabicInNode ? raw.split(/(\s+|[()])/) : raw.split(/(\s+)/);
-
-            const frag = document.createDocumentFragment();
-            parts.forEach(part => {
-                if (!part) return;
-                if (/^\s+$/.test(part)) {
-                    frag.appendChild(document.createTextNode(' '));
-                    return;
-                }
-                const span = document.createElement('span');
-                span.className = 'pdf-word-token';
-                const hasAr = /[\u0600-\u06FF]/.test(part);
-                const hasLatinOrDigit = /[A-Za-z0-9]/.test(part);
-
-                if (hasAr) {
-                    span.dir = 'rtl';
-                } else if (hasLatinOrDigit) {
-                    span.dir = 'ltr';
-                } else {
-                    span.dir = hasArabicInNode ? 'rtl' : 'ltr';
-                }
-                span.textContent = part;
-                frag.appendChild(span);
-            });
-
-            if (node.parentNode) {
-                node.parentNode.replaceChild(frag, node);
-            }
-        });
-    };
-
-    // 5. تجهيز نسخة الـ PDF بدون تداخل عناصر، مع ترويسة رسمية وعرض يستوعب كافة الأعمدة 100%
+    // 3. تجهيز نسخة الـ PDF بدون تقطيع الحروف ومع دعم كامل لطباعة القيد اليومي وإظهار صافي الفرق
     window.prepareSmartPdfClone = function(el) {
         const clone = el.cloneNode(true);
         clone.classList.add('erp-pdf-clean-clone');
 
-        // إضافة ترويسة رسمية أعلى تقرير الأستاذ العام عند التصدير
         if (el.id === 'financialStatementPrintable') {
             const pageTitle = document.querySelector('header h2')?.innerText || document.querySelector('aside h1')?.innerText || 'منظومة العقارات الذكية ERP';
             const hdr = document.createElement('div');
@@ -8874,17 +8226,6 @@
             clone.insertBefore(hdr, clone.firstChild);
         }
 
-        // دمج الرقم مع (ر.س) داخل البطاقات العلوية لمنع التداخل
-        clone.querySelectorAll('.grid > div').forEach(card => {
-            const bTag = card.querySelector('b');
-            if (bTag && bTag.nextElementSibling && bTag.nextElementSibling.innerText.includes('ر.س')) {
-                const unitSpan = bTag.nextElementSibling;
-                bTag.innerText = bTag.innerText.trim() + ' ' + unitSpan.innerText.trim();
-                unitSpan.remove();
-            }
-        });
-
-        // إظهار كافة الصفوف المطابقة للفلترة (والتي أخفاها ترقيم الصفحات 1, 2, 3)
         clone.querySelectorAll('tbody tr').forEach(tr => {
             if (tr.dataset.searchMatched === '0') {
                 tr.remove();
@@ -8893,12 +8234,10 @@
             }
         });
 
-        // إزالة dir="ltr" من وسوم td و th لكي تحاذي جميع الخلايا (بما فيها الجوال) لليمين تحت عنوان العمود مباشرة
         clone.querySelectorAll('td[dir="ltr"], th[dir="ltr"]').forEach(cell => {
             cell.setAttribute('dir', 'rtl');
         });
 
-        // حذف عمود "الإجراءات" من جداول الـ PDF
         let maxRemainingCols = 0;
         const actionHeaderKeywords = ['إجراءات', 'الإجراءات', 'إجراء', 'حذف', 'تعديل', 'تحميل السند', 'إجراءات التحصيل', 'التوثيق في إيجار'];
 
@@ -8924,7 +8263,6 @@
             if (remainingCols > maxRemainingCols) maxRemainingCols = remainingCols;
         });
 
-        // تحويل الأزرار التي تحمل أسماء الحسابات أو الملاك داخل الجداول إلى نصوص واضحة
         clone.querySelectorAll('td button').forEach(btn => {
             const span = document.createElement('span');
             span.className = 'font-bold text-slate-900';
@@ -8932,11 +8270,7 @@
             btn.replaceWith(span);
         });
 
-        // إزالة أي أزرار تحكم متبقية خارج الجداول
         clone.querySelectorAll('button').forEach(btn => btn.remove());
-
-        // تغليف كل كلمة ورقم وكود في span مستقل لمنع التصاق الكلمات أو قص رقم العقد والجوال
-        window.tokenizeCloneTextNodesForPdf(clone);
 
         const singlePortraitIds = [
             'printableVoucherArea',
@@ -8946,7 +8280,8 @@
             'installmentClaimPdfTemplate',
             'invoicePdfArea'
         ];
-        const isSingleDoc = singlePortraitIds.includes(el.id);
+        const isJournalPrint = el.id && el.id.startsWith('printableJournalArea_');
+        const isSingleDoc = singlePortraitIds.includes(el.id) || isJournalPrint;
         const isLandscape = !isSingleDoc && (maxRemainingCols >= 5 || el.id === 'pro_ownerSettlementPrintableArea' || el.id === 'financialStatementPrintable' || el.scrollWidth > 760);
 
         clone.style.width = '100%';
@@ -8960,15 +8295,8 @@
         const cleanName = (filename || 'Document.pdf').replace(/\.pdf$/i, '') + '.pdf';
 
         const worker = html2pdf().set({
-            jsPDF: {
-                unit: 'mm',
-                format: 'a4',
-                orientation: isLandscape ? 'landscape' : 'portrait'
-            },
-            pagebreak: {
-                mode: ['css', 'legacy'],
-                avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break']
-            },
+            margin: [8, 8, 8, 8],
+            filename: cleanName,
             image: { type: 'jpeg', quality: 0.98 },
             html2canvas: {
                 scale: 2,
@@ -8978,15 +8306,20 @@
                 scrollX: 0,
                 scrollY: 0
             },
-            filename: cleanName
-        }).set({
-            margin: [6, 6, 6, 6]
+            pagebreak: {
+                mode: ['css', 'legacy'],
+                avoid: ['tr', 'thead', 'tfoot', '.pdf-no-break']
+            },
+            jsPDF: {
+                unit: 'mm',
+                format: 'a4',
+                orientation: isLandscape ? 'landscape' : 'portrait'
+            }
         });
 
         return { worker };
     };
 
-    // توسيع حاوية التصدير لتستوعب كامل عرض الجدول (scrollWidth) دون قص أي عمود من اليمين أو اليسار
     window.expandPdfContainerToFitTables = function(c, isLandscape) {
         const o = document.querySelector('.html2pdf__overlay');
         if (o) {
@@ -9002,22 +8335,13 @@
             c.style.margin = '0px';
             c.style.direction = 'rtl';
 
-            const baseWidthPx = isLandscape ? 1220 : 790;
+            const baseWidthPx = isLandscape ? 1120 : 760;
             c.style.width = baseWidthPx + 'px';
-            c.style.maxWidth = 'none';
-
-            let maxTableW = c.scrollWidth;
-            c.querySelectorAll('table').forEach(t => {
-                if (t.scrollWidth > maxTableW) maxTableW = t.scrollWidth;
-            });
-
-            const finalWidthPx = Math.max(baseWidthPx, maxTableW + 24);
-            c.style.width = finalWidthPx + 'px';
-            c.style.maxWidth = finalWidthPx + 'px';
+            c.style.maxWidth = baseWidthPx + 'px';
         }
     };
 
-    // 6. الدالة الموحدة لتصدير الـ PDF
+    // 4. الدالة الموحدة لتصدير الـ PDF (بما في ذلك طباعة القيد اليومي PDF)
     window.exportElementToPDF = async function(elementId, filename) {
         const el = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
         if (!el) return alert('العنصر المطلوب للطباعة غير موجود.');
@@ -9026,7 +8350,6 @@
         const savedScrollX = window.scrollX;
         const savedScrollY = window.scrollY;
         window.scrollTo(0, 0);
-        window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
         const { worker } = window.createConfiguredPdfWorker(filename, isLandscape);
@@ -9037,12 +8360,18 @@
                 window.expandPdfContainerToFitTables(c, isLandscape);
             }).toCanvas().toPdf().save();
         } finally {
-            window.__erpPdfRenderingActive = false;
             window.scrollTo(savedScrollX, savedScrollY);
         }
     };
 
-    // 7. ربط جميع أزرار التصدير والواتساب بالمحرك الموحد
+    window.exportJournalPDF = function(entryId, entryNumber) {
+        window.closeModal('printChoiceJournalModal_' + entryId);
+        window.openModal('viewJournalModal_' + entryId);
+        setTimeout(() => {
+            window.exportElementToPDF('printableJournalArea_' + entryId, 'سند_قيد_يومية_رقم_' + entryNumber + '.pdf');
+        }, 200);
+    };
+
     window.exportStatementPDF = function() {
         window.exportElementToPDF('financialStatementPrintable', 'دفتر_الأستاذ_العام_والقوائم_المالية.pdf');
     };
@@ -9078,7 +8407,6 @@
         const savedScrollX = window.scrollX;
         const savedScrollY = window.scrollY;
         window.scrollTo(0, 0);
-        window.__erpPdfRenderingActive = true;
 
         const { clone, isLandscape } = window.prepareSmartPdfClone(el);
         const { worker } = window.createConfiguredPdfWorker(cleanFile, isLandscape);
@@ -9112,7 +8440,6 @@
         } catch (err) {
             await window.exportElementToPDF(el, cleanFile);
         } finally {
-            window.__erpPdfRenderingActive = false;
             window.scrollTo(savedScrollX, savedScrollY);
         }
     };
