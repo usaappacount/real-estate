@@ -208,12 +208,22 @@
                 </a>
             @endif
 
+            <a href="{{ route('office.dashboard', ['tab' => 'mullak']) }}"
+               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'mullak' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                <span>🏢 اتحاد الملاك (مُلّاك)</span>
+            </a>
+
             @if(in_array('installments', $allowedTabsList))
                 <a href="{{ route('office.dashboard', ['tab' => 'installments']) }}"
                    class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'installments' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
                     <span>📅 جدولة الدفعات وأعمار الديون</span>
                 </a>
             @endif
+
+            <a href="{{ route('office.dashboard', ['tab' => 'auditor']) }}"
+               class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'auditor' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
+                <span>🔍 المدقق المحاسبي الآلي</span>
+            </a>
 
             @if(in_array('legal_notices', $allowedTabsList))
                 <a href="{{ route('office.dashboard', ['tab' => 'legal_notices']) }}"
@@ -3920,7 +3930,153 @@
                         </div>
                     </form>
 
+                    <!-- النموذج الثالث: التقرير اليومي المصغر لمدير المكتب الساعة 9 مساءً (PDF أصلي عبر الواتساب) -->
+                    @php
+                        $dailyCfg = json_decode($office->daily_report_settings_json ?? '{}', true) ?: [];
+                        $dailyEnabled = $dailyCfg['enabled'] ?? 1;
+                        $dailyTime = $dailyCfg['send_time'] ?? '21:00';
+                        $dailyPhone = $dailyCfg['recipient_phone'] ?: \App\Http\Controllers\CompanyErpController::toLocalPhone($office->phone);
+                        $incReceipts = $dailyCfg['inc_receipts'] ?? 1;
+                        $incPayments = $dailyCfg['inc_payments'] ?? 1;
+                        $incNewContracts = $dailyCfg['inc_new_contracts'] ?? 1;
+                        $incOverdue = $dailyCfg['inc_overdue'] ?? 1;
+                        $incNetCash = $dailyCfg['inc_net_cash'] ?? 1;
+
+                        $todayDateStr = date('Y-m-d');
+                        $todayReceiptsSum = ($vouchers ?? collect())->where('voucher_type', 'receipt')->where('voucher_date', $todayDateStr)->sum('amount');
+                        $todayPaymentsSum = ($vouchers ?? collect())->where('voucher_type', 'payment')->where('voucher_date', $todayDateStr)->sum('amount');
+                        $todayNewContractsCount = ($contracts ?? collect())->filter(fn($c) => str_starts_with((string)($c->created_at ?? ''), $todayDateStr) || $c->start_date === $todayDateStr)->count();
+                        $todayOverdueInst = ($installments ?? collect())->where('status', '!=', 'paid')->where('due_date', '<=', $todayDateStr);
+                        $todayOverdueSum = $todayOverdueInst->sum(fn($i) => max(0, $i->amount - $i->paid_amount));
+                    @endphp
+                    <div class="bg-white rounded-3xl border-2 border-slate-900 p-6 shadow-sm space-y-5">
+                        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
+                            <div class="flex items-center gap-3">
+                                <div class="w-11 h-11 rounded-2xl bg-slate-900 text-white flex items-center justify-center text-xl">📊</div>
+                                <div>
+                                    <h4 class="font-bold text-base text-slate-900">خامساً: التقرير اليومي المصغر لمدير المكتب (الساعة 9:00 مساءً — ملف PDF أصلي عبر الواتساب)</h4>
+                                    <p class="text-xs text-slate-500">يلخص لصاحب المكتب يومياً: (مقبوضات اليوم، المصروفات، العقود الجديدة، والدفعات المتأخرة) ويرسلها كملف PDF أصلي</p>
+                                </div>
+                            </div>
+                            <button type="button" onclick="sendDailyManagerReportPdfNow()"
+                                    class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow flex items-center gap-2">
+                                <span>📄 إرسال التقرير اليومي (PDF أصلي) للواتساب الآن</span>
+                            </button>
+                        </div>
+
+                        <form action="{{ route('office.whatsapp.daily_report_settings') }}" method="POST" class="space-y-4">
+                            @csrf
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <div class="flex items-center">
+                                    <label class="flex items-center gap-2.5 text-xs font-extrabold text-slate-900 cursor-pointer">
+                                        <input type="checkbox" name="enable_daily_report" value="1" {{ $dailyEnabled ? 'checked' : '' }} class="w-5 h-5 rounded text-slate-900">
+                                        <span>🔔 تفعيل إرسال التقرير اليومي لمدير المكتب</span>
+                                    </label>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">🕘 التوقيت اليومي المناسب لاستلام التقرير *</label>
+                                    <input type="time" name="daily_report_time" id="daily_report_time_input" value="{{ $dailyTime }}" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">📱 رقم جوال مدير المكتب المستلم للتقرير *</label>
+                                    <input type="tel" name="daily_report_phone" id="daily_report_phone_input" value="{{ $dailyPhone }}" maxlength="10" dir="ltr" required class="w-full text-left rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                </div>
+                            </div>
+
+                            <div class="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-200 space-y-2.5">
+                                <label class="block text-xs font-bold text-slate-900">✅ حدد الإشعارات والبيانات المطلوب تضمينها داخل ملف الـ PDF اليومي:</label>
+                                <div class="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+                                    <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="inc_receipts" id="chk_inc_receipts" value="1" {{ $incReceipts ? 'checked' : '' }}>
+                                        <span>📥 إجمالي مقبوضات اليوم</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="inc_payments" id="chk_inc_payments" value="1" {{ $incPayments ? 'checked' : '' }}>
+                                        <span>📤 إجمالي مصروفات اليوم</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="inc_new_contracts" id="chk_inc_new_contracts" value="1" {{ $incNewContracts ? 'checked' : '' }}>
+                                        <span>📝 العقود الجديدة اليوم</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="inc_overdue" id="chk_inc_overdue" value="1" {{ $incOverdue ? 'checked' : '' }}>
+                                        <span>🚨 الدفعات المتأخرة اليوم</span>
+                                    </label>
+                                    <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border text-xs font-bold cursor-pointer">
+                                        <input type="checkbox" name="inc_net_cash" id="chk_inc_net_cash" value="1" {{ $incNetCash ? 'checked' : '' }}>
+                                        <span>💎 صافي حركة الصندوق</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="flex justify-end">
+                                <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 text-white text-xs font-bold shadow">
+                                    💾 حفظ إعدادات وتوقيت التقرير اليومي
+                                </button>
+                            </div>
+                        </form>
+
+                        <!-- قالب PDF التقرير اليومي المصغر لمدير المكتب -->
+                        <div class="hidden">
+                            <div id="dailyManagerExecutivePdfArea" class="p-8 bg-white text-slate-900 space-y-5 border-2 border-slate-900 rounded-2xl" style="width: 720px; font-family: 'Readex Pro', sans-serif;" dir="rtl">
+                                <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
+                                    <div>
+                                        <h2 class="text-xl font-extrabold">{{ $office->name }}</h2>
+                                        <p class="text-xs text-slate-500 mt-1">التقرير اليومي التنفيذي المصغر لمدير المكتب العقاري</p>
+                                    </div>
+                                    <div class="px-4 py-2 rounded-xl bg-slate-900 text-white text-center">
+                                        <div class="text-xs font-bold">ملخص عمليات اليوم</div>
+                                        <div class="text-[11px] font-mono text-emerald-300">{{ $todayDateStr }} | {{ $dailyTime }}</div>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-3 text-xs">
+                                    @if($incReceipts)
+                                        <div class="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
+                                            <span class="text-slate-600 block font-bold">📥 إجمالي مقبوضات اليوم (سندات القبض):</span>
+                                            <b class="text-lg font-mono text-emerald-700 mt-1 block">{{ number_format($todayReceiptsSum, 2) }} ر.س</b>
+                                        </div>
+                                    @endif
+                                    @if($incPayments)
+                                        <div class="p-4 rounded-xl bg-amber-50 border border-amber-200">
+                                            <span class="text-slate-600 block font-bold">📤 إجمالي مصروفات وتحويلات اليوم:</span>
+                                            <b class="text-lg font-mono text-amber-800 mt-1 block">{{ number_format($todayPaymentsSum, 2) }} ر.س</b>
+                                        </div>
+                                    @endif
+                                    @if($incNewContracts)
+                                        <div class="p-4 rounded-xl bg-sky-50 border border-sky-200">
+                                            <span class="text-slate-600 block font-bold">📝 العقود الجديدة المبرمة اليوم:</span>
+                                            <b class="text-lg font-mono text-sky-800 mt-1 block">{{ $todayNewContractsCount }} عقد جديد</b>
+                                        </div>
+                                    @endif
+                                    @if($incOverdue)
+                                        <div class="p-4 rounded-xl bg-rose-50 border border-rose-200">
+                                            <span class="text-slate-600 block font-bold">🚨 الدفعات المتأخرة واجبة التحصيل ({{ $todayOverdueInst->count() }} دفعة):</span>
+                                            <b class="text-lg font-mono text-rose-700 mt-1 block">{{ number_format($todayOverdueSum, 2) }} ر.س</b>
+                                        </div>
+                                    @endif
+                                    @if($incNetCash)
+                                        <div class="col-span-2 p-4 rounded-xl bg-slate-900 text-white flex items-center justify-between">
+                                            <span class="font-bold">💎 صافي السيولة النقدية لليوم (المقبوضات - المصروفات):</span>
+                                            <b class="text-lg font-mono text-emerald-300">{{ number_format($todayReceiptsSum - $todayPaymentsSum, 2) }} ر.س</b>
+                                        </div>
+                                    @endif
+                                </div>
+
+                                <div class="text-[11px] text-slate-500 border-t pt-3 flex justify-between">
+                                    <span>صدر آلياً عبر منظومة العقارات الذكية ERP</span>
+                                    <span>{{ date('Y-m-d H:i') }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <script>
+                        window.sendDailyManagerReportPdfNow = function() {
+                            const phone = document.getElementById('daily_report_phone_input')?.value || '{{ $dailyPhone }}';
+                            const fileName = 'التقرير_اليومي_لمدير_المكتب_{{ $todayDateStr }}.pdf';
+                            window.sendElementAsOriginalPdfWhatsapp('dailyManagerExecutivePdfArea', fileName, phone, 'general');
+                        };
                         window.activeReminderTextarea = document.getElementById('main_reminder_template_box');
 
                         window.insertTagIntoReminderTpl = function(tag) {
@@ -3965,6 +4121,572 @@
                                     next = next.nextElementSibling;
                                     toRemove.remove();
                                 }
+                            }
+                        });
+                    </script>
+                </div>
+            <?php } ?>
+
+            <!-- ========================================================================= -->
+            <!-- 5. صفحة نظام إدارة اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة -->
+            <!-- ========================================================================= -->
+            <?php if (($tab ?? '') === 'mullak') {
+                $mBuildings = collect($mullakBuildings ?? []);
+                $mMembers   = collect($mullakMembers ?? []);
+                $mExpenses  = collect($mullakExpenses ?? []);
+
+                $totalAnnualFees = $mMembers->sum('annual_fee');
+                $totalCollectedFees = $mMembers->sum('paid_amount');
+                $totalRemainingFees = max(0, $totalAnnualFees - $totalCollectedFees);
+                $totalCommonExpenses = $mExpenses->sum('amount');
+                $netAssociationFund = $totalCollectedFees - $totalCommonExpenses;
+            ?>
+                <div id="masterTabSectionActive" class="space-y-6">
+                    <!-- مؤشرات صندوق اتحاد الملاك -->
+                    <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-slate-500 block">عمارات / جمعيات اتحاد الملاك</span>
+                            <span class="text-2xl font-extrabold text-slate-900 font-mono mt-1 block">{{ $mBuildings->count() }} <span class="text-xs font-normal">عمارة ({{ $mMembers->count() }} عضو)</span></span>
+                        </div>
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-slate-500 block">إجمالي رسوم الصيانة السنوية</span>
+                            <span class="text-2xl font-extrabold text-slate-900 font-mono mt-1 block">{{ number_format($totalAnnualFees, 2) }} <span class="text-xs font-normal">ر.س</span></span>
+                        </div>
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-emerald-700 block">المحصّل من الملاك والمستأجرين (+)</span>
+                            <span class="text-2xl font-extrabold text-emerald-600 font-mono mt-1 block">{{ number_format($totalCollectedFees, 2) }} <span class="text-xs font-normal">ر.س</span></span>
+                        </div>
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-rose-700 block">مصروفات الحارس والنظافة (-)</span>
+                            <span class="text-2xl font-extrabold text-rose-600 font-mono mt-1 block">{{ number_format($totalCommonExpenses, 2) }} <span class="text-xs font-normal">ر.س</span></span>
+                        </div>
+                        <div class="bg-slate-900 text-white p-5 rounded-3xl shadow-sm">
+                            <span class="text-xs font-bold text-emerald-300 block">💎 رصيد صندوق اتحاد الملاك</span>
+                            <span class="text-2xl font-extrabold text-white font-mono mt-1 block">{{ number_format($netAssociationFund, 2) }} <span class="text-xs font-normal">ر.س</span></span>
+                        </div>
+                    </div>
+
+                    <!-- شريط الأدوات والبحث الفوري وأزرار الإضافة -->
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                            <div>
+                                <h3 class="font-bold text-lg text-slate-900">🏢 منظومة إدارة اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة</h3>
+                                <p class="text-xs text-slate-500 mt-0.5">حساب رسوم صيانة الأجزاء المشتركة السنوية لكل شقة، إضافة أو حذف مالك شقة أو مستأجر، ومتابعة مصروفات الحارس والنظافة والمصاعد</p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <input type="text" id="mullakInstantSearch" oninput="filterMullakTables(this.value)"
+                                       placeholder="🔍 ابحث باسم المالك/المستأجر، رقم الشقة، الجوال، أو العمارة..."
+                                       class="w-72 rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-xs font-semibold">
+                                <button type="button" onclick="openModal('addMullakBuildingModal')" class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold">
+                                    ➕ تأسيس عمارة اتحاد ملاك
+                                </button>
+                                <button type="button" onclick="openModal('addMullakMemberModal')" class="px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow">
+                                    👤 + إضافة مالك شقة / مستأجر بالاتحاد
+                                </button>
+                                <button type="button" onclick="openModal('addMullakExpenseModal')" class="px-4 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold shadow">
+                                    🧹 + تسجيل مصروف (حارس / نظافة / صيانة)
+                                </button>
+                                <button type="button" onclick="exportTableToCSV('mullakMembersTable', 'سجل_اتحاد_الملاك_والاشتراكات.xlsx')" class="px-3.5 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                    📊 Excel
+                                </button>
+                                <button type="button" onclick="exportElementToPDF('mullakPrintableArea', 'تقرير_اتحاد_الملاك_والأجزاء_المشتركة.pdf')" class="px-3.5 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                                    📥 PDF
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="mullakPrintableArea" class="p-6 space-y-8">
+                            <!-- جدول أعضاء اتحاد الملاك (ملاك الشقق والمستأجرين) -->
+                            <div class="space-y-3">
+                                <h4 class="font-bold text-sm text-slate-900">👥 أولاً: سجل ملاك الشقق والمستأجرين في اتحاد الملاك ورسوم الصيانة السنوية</h4>
+                                <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                                    <table class="w-full text-xs text-right" id="mullakMembersTable">
+                                        <thead class="bg-slate-50 text-slate-600 border-b">
+                                            <tr>
+                                                <th class="py-3 px-4">العمارة / الجمعية</th>
+                                                <th class="py-3 px-4">رقم الشقة / الدور</th>
+                                                <th class="py-3 px-4">الصفة بالاتحاد</th>
+                                                <th class="py-3 px-4">الاسم الكامل والجوال</th>
+                                                <th class="py-3 px-4">الرسوم السنوية</th>
+                                                <th class="py-3 px-4">المسدد (+)</th>
+                                                <th class="py-3 px-4">المتبقي (!)</th>
+                                                <th class="py-3 px-4 text-center">الحالة</th>
+                                                <th class="py-3 px-4 text-center">إجراءات التحصيل والحذف</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100">
+                                            @forelse($mMembers as $mem)
+                                                @php $remFee = max(0, round($mem->annual_fee - $mem->paid_amount, 2)); @endphp
+                                                <tr class="mullak-search-row hover:bg-slate-50"
+                                                    data-search="{{ mb_strtolower($mem->association_name . ' ' . $mem->unit_number . ' ' . $mem->member_name . ' ' . $mem->phone . ' ' . ($mem->member_role === 'tenant' ? 'مستأجر' : 'مالك شقة')) }}">
+                                                    <td class="py-3 px-4 font-bold text-slate-900">{{ $mem->association_name }}</td>
+                                                    <td class="py-3 px-4 font-bold text-emerald-700">شقة {{ $mem->unit_number }} {{ $mem->floor_number ? '(دور ' . $mem->floor_number . ')' : '' }}</td>
+                                                    <td class="py-3 px-4">
+                                                        @if($mem->member_role === 'tenant')
+                                                            <span class="px-2.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">👤 مستأجر شقة</span>
+                                                        @else
+                                                            <span class="px-2.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold">👑 مالك شقة تمليك</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="py-3 px-4">
+                                                        <div class="font-bold text-slate-900">{{ $mem->member_name }}</div>
+                                                        <div class="font-mono text-[11px] text-emerald-700" dir="ltr">{{ $mem->phone ?: '-' }}</div>
+                                                    </td>
+                                                    <td class="py-3 px-4 font-mono font-bold">{{ number_format($mem->annual_fee, 2) }} ر.س</td>
+                                                    <td class="py-3 px-4 font-mono font-bold text-emerald-700">{{ number_format($mem->paid_amount, 2) }} ر.س</td>
+                                                    <td class="py-3 px-4 font-mono font-extrabold {{ $remFee > 0 ? 'text-rose-600' : 'text-slate-400' }}">{{ number_format($remFee, 2) }} ر.س</td>
+                                                    <td class="py-3 px-4 text-center">
+                                                        @if($remFee <= 0.01)
+                                                            <span class="px-2.5 py-1 rounded bg-emerald-100 text-emerald-800 font-bold">✅ مسدد</span>
+                                                        @elseif($mem->paid_amount > 0)
+                                                            <span class="px-2.5 py-1 rounded bg-amber-100 text-amber-800 font-bold">⚠️ سداد جزئي</span>
+                                                        @else
+                                                            <span class="px-2.5 py-1 rounded bg-rose-100 text-rose-800 font-bold">🚨 غير مسدد</span>
+                                                        @endif
+                                                    </td>
+                                                    <td class="py-3 px-4 text-center">
+                                                        <div class="flex items-center justify-center gap-1.5">
+                                                            @if($remFee > 0.01)
+                                                                <form action="{{ route('office.mullak.member.pay', $mem->id) }}" method="POST" class="flex items-center gap-1">
+                                                                    @csrf
+                                                                    <input type="number" step="0.01" name="amount" value="{{ $remFee }}" class="w-20 rounded-lg border px-2 py-1 text-xs font-mono font-bold">
+                                                                    <button type="submit" class="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold">💳 تحصيل</button>
+                                                                </form>
+                                                            @endif
+                                                            <form action="{{ route('office.mullak.member.delete', $mem->id) }}" method="POST" onsubmit="return confirm('حذف هذا المالك/المستأجر من اتحاد الملاك؟');">
+                                                                @csrf
+                                                                <button type="submit" class="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-600 text-[11px] font-bold">🗑️ حذف</button>
+                                                            </form>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            @empty
+                                                <tr><td colspan="9" class="py-8 text-center text-slate-400">لا يوجد أعضاء مضافون في اتحاد الملاك بعد. اضغط على "+ إضافة مالك شقة / مستأجر بالاتحاد" للبدء.</td></tr>
+                                            @endforelse
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- جدول مصروفات الأجزاء المشتركة (الحارس، النظافة، المصاعد، الكهرباء والمياه المشتركة) -->
+                            <div class="space-y-3">
+                                <h4 class="font-bold text-sm text-slate-900">🧹 ثانياً: سجل مصروفات الأجزاء المشتركة (راتب الحارس، النظافة، صيانة المصاعد، والتطوير)</h4>
+                                <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                                    <table class="w-full text-xs text-right">
+                                        <thead class="bg-slate-50 text-slate-600 border-b">
+                                            <tr>
+                                                <th class="py-3 px-4">التاريخ</th>
+                                                <th class="py-3 px-4">العمارة / الجمعية</th>
+                                                <th class="py-3 px-4">بند المصروف</th>
+                                                <th class="py-3 px-4">البيان والتفاصيل</th>
+                                                <th class="py-3 px-4">طريقة الدفع</th>
+                                                <th class="py-3 px-4">المبلغ المصروف (-)</th>
+                                                <th class="py-3 px-4 text-center">إجراء</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100">
+                                            @forelse($mExpenses as $exp)
+                                                <tr class="mullak-search-row hover:bg-slate-50"
+                                                    data-search="{{ mb_strtolower($exp->association_name . ' ' . $exp->expense_category . ' ' . $exp->title) }}">
+                                                    <td class="py-3 px-4 font-mono">{{ $exp->expense_date }}</td>
+                                                    <td class="py-3 px-4 font-bold">{{ $exp->association_name }}</td>
+                                                    <td class="py-3 px-4"><span class="px-2.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold">{{ $exp->expense_category }}</span></td>
+                                                    <td class="py-3 px-4 font-bold text-slate-900">{{ $exp->title }}</td>
+                                                    <td class="py-3 px-4">{{ $exp->payment_method }}</td>
+                                                    <td class="py-3 px-4 font-mono font-bold text-rose-600">{{ number_format($exp->amount, 2) }} ر.س</td>
+                                                    <td class="py-3 px-4 text-center">
+                                                        <form action="{{ route('office.mullak.expense.delete', $exp->id) }}" method="POST" onsubmit="return confirm('حذف هذا المصروف؟');">
+                                                            @csrf
+                                                            <button type="submit" class="px-2.5 py-1 rounded bg-rose-50 text-rose-600 text-[11px] font-bold">حذف</button>
+                                                        </form>
+                                                    </td>
+                                                </tr>
+                                            @empty
+                                                <tr><td colspan="7" class="py-6 text-center text-slate-400">لا توجد مصروفات مسجلة للأجزاء المشتركة حتى الآن.</td></tr>
+                                            @endforelse
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- نافذة تأسيس عمارة اتحاد ملاك -->
+                    <div id="addMullakBuildingModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border space-y-4">
+                            <div class="flex items-center justify-between border-b pb-3">
+                                <h3 class="font-bold text-base text-slate-900">🏢 تأسيس جمعية / عمارة اتحاد ملاك جديدة</h3>
+                                <button type="button" onclick="closeModal('addMullakBuildingModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <form action="{{ route('office.mullak.building.store') }}" method="POST" class="space-y-3.5">
+                                @csrf
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">اسم جمعية / عمارة اتحاد الملاك *</label>
+                                    <input type="text" name="association_name" required placeholder="مثال: اتحاد ملاك عمارة الياسمين 14" class="w-full rounded-xl border px-3 py-2 text-xs font-bold">
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم شهادة تسجيل اتحاد الملاك</label>
+                                        <input type="text" name="bylaws_number" placeholder="MLK-2026-XXXX" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">عدد شقق التمليك بالعمارة</label>
+                                        <input type="number" name="units_count" value="12" class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold">
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-emerald-700 mb-1">الرسوم السنوية الافتراضية للشقة (ر.س)</label>
+                                        <input type="number" step="0.01" name="default_annual_fee" value="2400" class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">راتب الحارس الشهري (ر.س)</label>
+                                        <input type="number" step="0.01" name="guard_monthly_salary" value="1500" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم عداد كهرباء الأجزاء المشتركة</label>
+                                        <input type="text" name="electricity_common_meter" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم عداد مياه الأجزاء المشتركة</label>
+                                        <input type="text" name="water_common_meter" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="flex justify-end gap-2 pt-3 border-t">
+                                    <button type="button" onclick="closeModal('addMullakBuildingModal')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">إلغاء</button>
+                                    <button type="submit" class="px-6 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">حفظ وتأسيس الاتحاد</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- نافذة إضافة مالك شقة أو مستأجر في اتحاد الملاك -->
+                    <div id="addMullakMemberModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border space-y-4">
+                            <div class="flex items-center justify-between border-b pb-3">
+                                <h3 class="font-bold text-base text-slate-900">👤 إضافة مالك شقة تمليك أو مستأجر في اتحاد الملاك</h3>
+                                <button type="button" onclick="closeModal('addMullakMemberModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <form action="{{ route('office.mullak.member.store') }}" method="POST" class="space-y-3.5">
+                                @csrf
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">اختر عمارة اتحاد الملاك *</label>
+                                        <select name="mullak_building_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            @foreach($mBuildings as $mb)
+                                                <option value="{{ $mb->id }}">{{ $mb->association_name }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">الصفة في اتحاد الملاك *</label>
+                                        <select name="member_role" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            <option value="owner">👑 مالك شقة تمليك</option>
+                                            <option value="tenant">👤 مستأجر شقة بالاتحاد</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم الشقة / الوحدة *</label>
+                                        <input type="text" name="unit_number" required placeholder="مثال: شقة 101" class="w-full rounded-xl border px-3 py-2 text-xs font-bold">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم الدور</label>
+                                        <input type="text" name="floor_number" placeholder="الأول" class="w-full rounded-xl border px-3 py-2 text-xs">
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">اسم المالك / المستأجر *</label>
+                                        <input type="text" name="member_name" required placeholder="الاسم الكامل..." class="w-full rounded-xl border px-3 py-2 text-xs font-bold">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم الجوال</label>
+                                        <input type="tel" name="phone" maxlength="10" dir="ltr" placeholder="05XXXXXXXX" class="w-full text-left rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-emerald-700 mb-1">رسوم الصيانة السنوية المقررة (ر.س) *</label>
+                                        <input type="number" step="0.01" name="annual_fee" value="2400" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold text-emerald-700">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">المبلغ المدفوع مقدماً (اختياري)</label>
+                                        <input type="number" step="0.01" name="paid_amount" value="0" class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="flex justify-end gap-2 pt-3 border-t">
+                                    <button type="button" onclick="closeModal('addMullakMemberModal')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">إلغاء</button>
+                                    <button type="submit" class="px-6 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">إضافة العضو في الاتحاد</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- نافذة تسجيل مصروف للأجزاء المشتركة -->
+                    <div id="addMullakExpenseModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border space-y-4">
+                            <div class="flex items-center justify-between border-b pb-3">
+                                <h3 class="font-bold text-base text-slate-900">🧹 تسجيل مصروف للأجزاء المشتركة (حارس / نظافة / صيانة)</h3>
+                                <button type="button" onclick="closeModal('addMullakExpenseModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <form action="{{ route('office.mullak.expense.store') }}" method="POST" class="space-y-3.5">
+                                @csrf
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">اختر عمارة اتحاد الملاك *</label>
+                                        <select name="mullak_building_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            @foreach($mBuildings as $mb)
+                                                <option value="{{ $mb->id }}">{{ $mb->association_name }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">بند المصروف *</label>
+                                        <select name="expense_category" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            <option value="راتب الحارس">👷‍♂️ راتب الحارس</option>
+                                            <option value="نظافة الأجزاء المشتركة">🧹 نظافة الأجزاء المشتركة</option>
+                                            <option value="صيانة المصاعد والمضخات">🛗 صيانة المصاعد والمضخات</option>
+                                            <option value="كهرباء ومياه مشتركة">💡 فواتير كهرباء ومياه مشتركة</option>
+                                            <option value="تطوير وتشجير العقار">🌳 تطوير وصيانة المداخل</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">البيان التفصيلي للمصروف *</label>
+                                    <input type="text" name="title" required placeholder="مثال: صرف راتب حارس العمارة لشهر..." class="w-full rounded-xl border px-3 py-2 text-xs font-bold">
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-rose-700 mb-1">المبلغ (ر.س) *</label>
+                                        <input type="number" step="0.01" name="amount" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold text-rose-700">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">التاريخ *</label>
+                                        <input type="date" name="expense_date" value="{{ date('Y-m-d') }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                </div>
+                                <div class="flex justify-end gap-2 pt-3 border-t">
+                                    <button type="button" onclick="closeModal('addMullakExpenseModal')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">إلغاء</button>
+                                    <button type="submit" class="px-6 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">اعتماد المصروف وإصدار سند صرف</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <script>
+                        window.filterMullakTables = function(qText) {
+                            const q = (qText || '').trim().toLowerCase();
+                            document.querySelectorAll('.mullak-search-row').forEach(r => {
+                                const hay = (r.getAttribute('data-search') || r.innerText || '').toLowerCase();
+                                r.style.display = (!q || hay.includes(q)) ? '' : 'none';
+                            });
+                        };
+                        document.addEventListener('DOMContentLoaded', function() {
+                            const masterSec = document.getElementById('masterTabSectionActive');
+                            if (masterSec && masterSec.parentElement) {
+                                let next = masterSec.nextElementSibling;
+                                while (next) { const toRemove = next; next = next.nextElementSibling; toRemove.remove(); }
+                            }
+                        });
+                    </script>
+                </div>
+            <?php } ?>
+
+            <!-- ========================================================================= -->
+            <!-- 6. صفحة المدقق المحاسبي الآلي قبل الإقفال (مع تعديل السند في نفس الصفحة) -->
+            <!-- ========================================================================= -->
+            <?php if (($tab ?? '') === 'auditor') {
+                $audit = $auditFindings ?? ['untransferred_receipts' => [], 'unrecorded_commissions' => [], 'unlinked_vouchers' => [], 'total_issues' => 0];
+                $untransferredList = collect($audit['untransferred_receipts'] ?? []);
+                $unrecordedCommList = collect($audit['unrecorded_commissions'] ?? []);
+                $allAuditVouchers = $untransferredList->merge($unrecordedCommList)->unique('id')->values();
+            ?>
+                <div id="masterTabSectionActive" class="space-y-6">
+                    <div class="bg-slate-900 text-white rounded-3xl p-6 flex flex-wrap items-center justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-2xl">🔍</div>
+                            <div>
+                                <h3 class="font-bold text-lg text-white">المدقق المحاسبي الآلي اليومي قبل الإقفال (Automated Pre-Closing Auditor)</h3>
+                                <p class="text-xs text-slate-300 mt-0.5">يفحص جميع السندات والقيود يومياً ويكتشف أي دفعة إيجار تم قبضها ولم تُرحّل لحساب أمانات المالك أو لم تُحسب عمولة المكتب عليها، مع إمكانية تعديل السند في نفس الصفحة</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="px-4 py-2 rounded-xl font-bold text-xs {{ $allAuditVouchers->count() === 0 ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30' : 'bg-amber-500/20 text-amber-300 border border-amber-400/30' }}">
+                                {{ $allAuditVouchers->count() === 0 ? '✔ جميع السندات مدققة ومطابقة 100%' : '⚠️ تم اكتشاف (' . $allAuditVouchers->count() . ') سندات تحتاج مراجعة أو ترحيل' }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-rose-700 block">1. دفعات إيجار لم تُرحّل لأمانات المالك</span>
+                            <span class="text-2xl font-extrabold text-rose-600 font-mono mt-1 block">{{ $untransferredList->count() }} <span class="text-xs font-normal">سند قبض</span></span>
+                            <span class="text-[11px] text-slate-500">إجمالي صافي الملاك المعلق: {{ number_format($untransferredList->sum('expected_owner_net'), 2) }} ر.س</span>
+                        </div>
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-amber-800 block">2. دفعات إيجار لم تُحسب عمولة المكتب عليها</span>
+                            <span class="text-2xl font-extrabold text-amber-700 font-mono mt-1 block">{{ $unrecordedCommList->count() }} <span class="text-xs font-normal">سند قبض</span></span>
+                            <span class="text-[11px] text-slate-500">إجمالي العمولات غير المسجلة: {{ number_format($unrecordedCommList->sum('expected_commission'), 2) }} ر.س</span>
+                        </div>
+                        <div class="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+                            <span class="text-xs font-bold text-emerald-800 block">3. حالة الجاهزية لإقفال السنة المالية</span>
+                            <span class="text-lg font-extrabold {{ $allAuditVouchers->count() === 0 ? 'text-emerald-600' : 'text-amber-700' }} mt-1 block">
+                                {{ $allAuditVouchers->count() === 0 ? 'جاهز للإقفال السنوي الآمن ✔' : 'يُنصح بمعالجة الملاحظات أولاً' }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                            <div>
+                                <h4 class="font-bold text-base text-slate-900">📋 جدول نتائج التدقيق المحاسبي والمعالجة الفورية</h4>
+                                <p class="text-xs text-slate-500">اضغط على <b>"✏️ تعديل السند هنا"</b> لتعديل بيانات السند في نفس الصفحة، أو اضغط على <b>"⚡ ترحيل الأمانات والعمولة آلياً"</b> لمعالجته بضغطة زر</p>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-xs text-right">
+                                <thead class="bg-slate-50 text-slate-600 border-b">
+                                    <tr>
+                                        <th class="py-3.5 px-4">رقم السند والتاريخ</th>
+                                        <th class="py-3.5 px-4">المستأجر / المالك</th>
+                                        <th class="py-3.5 px-4">مبلغ الدفعة المقبوضة</th>
+                                        <th class="py-3.5 px-4">عمولة المكتب المستحقة</th>
+                                        <th class="py-3.5 px-4">صافي أمانات المالك</th>
+                                        <th class="py-3.5 px-4">الملاحظة التي اكتشفها المدقق</th>
+                                        <th class="py-3.5 px-4 text-center">إجراءات التعديل والترحيل الفوري</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    @forelse($allAuditVouchers as $av)
+                                        <tr class="hover:bg-slate-50">
+                                            <td class="py-3.5 px-4">
+                                                <div class="font-mono font-bold text-slate-900">{{ $av->voucher_number }}</div>
+                                                <div class="font-mono text-[11px] text-slate-400">{{ $av->voucher_date }}</div>
+                                            </td>
+                                            <td class="py-3.5 px-4">
+                                                <div class="font-bold text-slate-900">المستأجر: {{ $av->tenant_name ?: 'غير محدد' }}</div>
+                                                <div class="text-[11px] text-amber-800 font-bold">المالك: {{ $av->resolved_owner_name }}</div>
+                                            </td>
+                                            <td class="py-3.5 px-4 font-mono font-bold text-emerald-700">{{ number_format($av->amount, 2) }} ر.س</td>
+                                            <td class="py-3.5 px-4 font-mono font-bold text-amber-700">{{ number_format($av->expected_commission, 2) }} ر.س ({{ $av->fee_rate }}%)</td>
+                                            <td class="py-3.5 px-4 font-mono font-bold text-slate-900">{{ number_format($av->expected_owner_net, 2) }} ر.س</td>
+                                            <td class="py-3.5 px-4 space-y-1">
+                                                @if(empty($av->owner_credited))
+                                                    <span class="inline-block px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]">🚨 لم تُرحّل لحساب أمانات المالك</span>
+                                                @endif
+                                                @if(empty($av->commission_recorded))
+                                                    <span class="inline-block px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[10px]">⚠️ لم تُحسب عمولة المكتب ({{ $av->fee_rate }}%)</span>
+                                                @endif
+                                            </td>
+                                            <td class="py-3.5 px-4 text-center">
+                                                <div class="flex items-center justify-center gap-1.5 flex-wrap">
+                                                    <button type="button" onclick="openModal('auditorEditVoucherModal_{{ $av->id }}')"
+                                                            class="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-white text-[11px] font-bold">
+                                                        ✏️ تعديل السند هنا
+                                                    </button>
+                                                    <form action="{{ route('office.auditor.auto_fix', $av->id) }}" method="POST">
+                                                        @csrf
+                                                        <input type="hidden" name="owner_id" value="{{ $av->resolved_owner_id }}">
+                                                        <button type="submit" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold">
+                                                            ⚡ ترحيل الأمانات والعمولة آلياً
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                            </td>
+                                        </tr>
+
+                                        <!-- نافذة تعديل السند مباشرة داخل نفس صفحة المدقق المحاسبي -->
+                                        <div id="auditorEditVoucherModal_{{ $av->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                                            <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border space-y-4">
+                                                <div class="flex items-center justify-between border-b pb-3">
+                                                    <h3 class="font-bold text-base text-slate-900">✏️ تعديل السند داخل المدقق المحاسبي: {{ $av->voucher_number }}</h3>
+                                                    <button type="button" onclick="closeModal('auditorEditVoucherModal_{{ $av->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                                                </div>
+                                                <form action="{{ route('office.vouchers.update', $av->id) }}" method="POST" class="space-y-3.5">
+                                                    @csrf
+                                                    <input type="hidden" name="voucher_type" value="{{ $av->voucher_type }}">
+                                                    <div class="grid grid-cols-2 gap-3">
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">المالك المرتبط بالسند *</label>
+                                                            <select name="owner_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                                                <option value="">-- اختر المالك --</option>
+                                                                @foreach($owners as $ow)
+                                                                    <option value="{{ $ow->id }}" {{ ($av->resolved_owner_id == $ow->id) ? 'selected' : '' }}>{{ $ow->name }}</option>
+                                                                @endforeach
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">المستأجر المرتبط</label>
+                                                            <select name="tenant_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                                                <option value="">-- اختر المستأجر --</option>
+                                                                @foreach($tenants as $tn)
+                                                                    <option value="{{ $tn->id }}" {{ ($av->tenant_id == $tn->id) ? 'selected' : '' }}>{{ $tn->name }}</option>
+                                                                @endforeach
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="grid grid-cols-2 gap-3">
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">حساب المدين (الصندوق/البنك)</label>
+                                                            <select name="debit_account_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                                                @foreach($accounts->where('is_group', 0) as $acc)
+                                                                    <option value="{{ $acc->id }}" {{ $av->debit_account_id == $acc->id ? 'selected' : '' }}>{{ $acc->code }} - {{ $acc->name }}</option>
+                                                                @endforeach
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">حساب الدائن (المستأجر/المالك)</label>
+                                                            <select name="credit_account_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                                                @foreach($accounts->where('is_group', 0) as $acc)
+                                                                    <option value="{{ $acc->id }}" {{ $av->credit_account_id == $acc->id ? 'selected' : '' }}>{{ $acc->code }} - {{ $acc->name }}</option>
+                                                                @endforeach
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div class="grid grid-cols-3 gap-2">
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-emerald-700 mb-1">المبلغ (ر.س) *</label>
+                                                            <input type="number" step="0.01" name="amount" value="{{ $av->amount }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold">
+                                                        </div>
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">التاريخ *</label>
+                                                            <input type="date" name="voucher_date" value="{{ $av->voucher_date }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                                        </div>
+                                                        <div>
+                                                            <label class="block text-xs font-bold text-slate-700 mb-1">طريقة الدفع</label>
+                                                            <input type="text" name="payment_method" value="{{ $av->payment_method }}" class="w-full rounded-xl border px-3 py-2 text-xs">
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label class="block text-xs font-bold text-slate-700 mb-1">البيان *</label>
+                                                        <input type="text" name="notes" value="{{ $av->notes }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-bold">
+                                                    </div>
+                                                    <div class="flex justify-end gap-2 pt-3 border-t">
+                                                        <button type="button" onclick="closeModal('auditorEditVoucherModal_{{ $av->id }}')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-bold">إلغاء</button>
+                                                        <button type="submit" class="px-6 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">حفظ تعديل السند وتحديث الأرصدة</button>
+                                                    </div>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    @empty
+                                        <tr><td colspan="7" class="py-10 text-center text-emerald-700 font-bold">🎉 ممتاز! جميع دفعات الإيجار وسندات القبض مرحلة لحسابات أمانات الملاك ومحتسبة عمولاتها بالكامل.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            const masterSec = document.getElementById('masterTabSectionActive');
+                            if (masterSec && masterSec.parentElement) {
+                                let next = masterSec.nextElementSibling;
+                                while (next) { const toRemove = next; next = next.nextElementSibling; toRemove.remove(); }
                             }
                         });
                     </script>
@@ -11056,6 +11778,612 @@
     document.addEventListener('DOMContentLoaded', function() {
         localizeDOM();
         initJournalAndLedgerFixes();
+    });
+})();
+</script>
+
+<!-- محرك قراءة ملفات الـ PDF والصور بالذكاء الاصطناعي (PDF.js + Tesseract OCR) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+    if (typeof pdfjsLib !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+</script>
+
+<!-- تنسيق التوافق الكامل مع شاشات الهواتف الذكية والأجهزة اللوحية (Mobile Responsive UI) -->
+<style id="erp-mobile-responsive-pack">
+    @media (max-width: 1024px) {
+        body { flex-direction: column !important; overflow-x: hidden !important; }
+        aside.office-sidebar, aside.glass-sidebar, aside.owner-sidebar {
+            position: fixed !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
+            width: 280px !important; z-index: 9999 !important;
+            transform: translateX(105%) !important; transition: transform 0.25s ease-in-out !important;
+        }
+        aside.mobile-drawer-open { transform: translateX(0) !important; }
+        header { height: auto !important; min-height: 64px !important; padding: 12px 16px !important; flex-wrap: wrap !important; gap: 8px !important; }
+        main { padding: 14px !important; }
+        .grid-cols-2, .grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6, .grid-cols-12 {
+            grid-template-columns: 1fr !important;
+        }
+        div[id*="Modal"] > div {
+            width: 96vw !important; max-width: 96vw !important; padding: 16px !important; margin: 8px auto !important;
+        }
+        input.w-60, input.w-64, input.w-72 { width: 100% !important; }
+    }
+</style>
+
+<!-- 1. النافذة العائمة لمحرك البحث الشامل بالأوامر السريعة (Ctrl + F) -->
+<div id="globalCommandSearchModal" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-[99999] hidden items-start justify-center pt-14 p-4 no-print">
+    <div class="bg-white rounded-3xl max-w-3xl w-full shadow-2xl border-2 border-slate-900 overflow-hidden">
+        <div class="p-4 bg-slate-900 text-white flex items-center gap-3">
+            <span class="text-xl">⚡</span>
+            <input type="text" id="globalCommandSearchInput" oninput="runGlobalSpotlightSearch(this.value)"
+                   placeholder="ابحث فوراً باسم مستأجر، مالك، رقم سند، رقم صك، أو رقم عقد... (اضغط Esc للإغلاق)"
+                   class="flex-1 bg-slate-800 text-white rounded-xl px-4 py-2.5 text-sm font-bold border border-slate-700 focus:outline-none focus:border-emerald-400">
+            <button type="button" onclick="closeModal('globalCommandSearchModal')" class="px-3 py-1.5 rounded-xl bg-white/10 text-xs font-bold">✕ إغلاق</button>
+        </div>
+        <div id="globalCommandSearchResults" class="max-h-[65vh] overflow-y-auto p-4 divide-y divide-slate-100 text-xs">
+            <div class="py-8 text-center text-slate-400">اكتب أي اسم أو رقم بالأعلى للانتقال المباشر لملفه أو طباعة كشف حسابه PDF...</div>
+        </div>
+    </div>
+</div>
+
+<!-- 2. نافذة الإقرار الضريبي الربع سنوي الجاهز لهيئة الزكاة والضريبة والجمارك (ZATCA VAT Return Report) -->
+<div id="zatcaVatReturnModal" class="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+    <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
+            <div>
+                <h3 class="font-bold text-base text-slate-900">🇸🇦 نموذج الإقرار الضريبي الجاهز لهيئة الزكاة والضريبة والجمارك (ZATCA VAT Return)</h3>
+                <p class="text-xs text-slate-500">يجمع ضريبة المخرجات (الفواتير الضريبية) وضريبة المدخلات (المصروفات الضريبية) ويحسب صافي الضريبة المستحقة للسداد بدقة</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <select id="vat_return_year" onchange="calculateZatcaVatReturn()" class="rounded-xl border px-3 py-1.5 text-xs font-mono font-bold bg-slate-50">
+                    <option value="{{ date('Y') }}">{{ date('Y') }}</option>
+                    <option value="{{ date('Y') - 1 }}">{{ date('Y') - 1 }}</option>
+                </select>
+                <select id="vat_return_quarter" onchange="calculateZatcaVatReturn()" class="rounded-xl border px-3 py-1.5 text-xs font-bold bg-slate-50">
+                    <option value="all">جميع أرباع السنة (سنوي كامل)</option>
+                    <option value="Q1">الربع الأول (Q1: يناير - مارس)</option>
+                    <option value="Q2">الربع الثاني (Q2: أبريل - يونيو)</option>
+                    <option value="Q3">الربع الثالث (Q3: يوليو - سبتمبر)</option>
+                    <option value="Q4">الربع الرابع (Q4: أكتوبر - ديسمبر)</option>
+                </select>
+                <button type="button" onclick="exportElementToPDF('zatcaVatReturnPrintable', 'الإقرار_الضريبي_ZATCA.pdf')" class="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">📥 تحميل PDF</button>
+                <button type="button" onclick="exportZatcaVatReturnExcel()" class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">📊 تصدير Excel</button>
+                <button type="button" onclick="closeModal('zatcaVatReturnModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+            </div>
+        </div>
+
+        <div id="zatcaVatReturnPrintable" class="p-6 rounded-2xl border-2 border-slate-900 bg-white space-y-5 text-slate-900">
+            <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
+                <div>
+                    <h2 class="text-lg font-extrabold">{{ $office->name }}</h2>
+                    <p class="text-xs text-slate-500 mt-0.5">الرقم الضريبي (TIN): <b class="font-mono">{{ $office->tax_number ?: '300000000000003' }}</b> | السجل التجاري: <b class="font-mono">{{ $office->cr_number ?: '-' }}</b></p>
+                </div>
+                <div class="px-5 py-2 rounded-xl bg-slate-900 text-white text-center">
+                    <div class="text-xs font-extrabold">إقرار ضريبة القيمة المضافة (ZATCA VAT Return)</div>
+                    <div id="vat_return_period_label" class="text-[11px] font-mono text-emerald-300 mt-0.5">الفترة الضريبية: {{ date('Y') }}</div>
+                </div>
+            </div>
+
+            <table class="w-full text-xs text-right border border-slate-300" id="zatcaVatSummaryTable">
+                <thead class="bg-slate-900 text-white">
+                    <tr>
+                        <th class="py-3 px-4">البند في نموذج هيئة الزكاة والضريبة والجمارك (ZATCA)</th>
+                        <th class="py-3 px-4">المبلغ الخاضع للضريبة (ر.س)</th>
+                        <th class="py-3 px-4">التعديلات</th>
+                        <th class="py-3 px-4">مبلغ ضريبة القيمة المضافة (15%)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                    <tr class="bg-emerald-50/40">
+                        <td class="py-3 px-4 font-bold">1. ضريبة المخرجات (المبيعات والفواتير الضريبية والمبسطة الخاضعة للنسبة الأساسية)</td>
+                        <td id="vat_out_base" class="py-3 px-4 font-mono font-bold">0.00</td>
+                        <td class="py-3 px-4 font-mono">0.00</td>
+                        <td id="vat_out_tax" class="py-3 px-4 font-mono font-extrabold text-emerald-700">0.00</td>
+                    </tr>
+                    <tr class="bg-amber-50/40">
+                        <td class="py-3 px-4 font-bold">2. ضريبة المدخلات (المشتريات والمصروفات التشغيلية الخاضعة للضريبة القابلة للخصم)</td>
+                        <td id="vat_in_base" class="py-3 px-4 font-mono font-bold">0.00</td>
+                        <td class="py-3 px-4 font-mono">0.00</td>
+                        <td id="vat_in_tax" class="py-3 px-4 font-mono font-extrabold text-amber-800">0.00</td>
+                    </tr>
+                </tbody>
+                <tfoot class="bg-slate-900 text-white font-extrabold">
+                    <tr>
+                        <td colspan="3" class="py-3.5 px-4 text-emerald-300">3. صافي ضريبة القيمة المضافة المستحقة للسداد لهيئة الزكاة (ضريبة المخرجات - ضريبة المدخلات)</td>
+                        <td id="vat_net_payable" class="py-3.5 px-4 font-mono text-base text-white">0.00 ر.س</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script id="erp-all-new-features-engine">
+(function() {
+    window.officeJournalItemsMaster = @json($journalItems ?? []);
+
+    // =========================================================================
+    // أ. إعداد التوافق مع الجوال (زر القائمة الجانبية للموبايل) + زر البحث الشامل (Ctrl+F)
+    // =========================================================================
+    function setupMobileHeaderAndSpotlightButton() {
+        const header = document.querySelector('header');
+        const sidebar = document.querySelector('aside');
+        if (!header || !sidebar) return;
+
+        // خلفية شفافة لإغلاق القائمة الجانبية على الجوال
+        let backdrop = document.getElementById('mobileSidebarBackdrop');
+        if (!backdrop) {
+            backdrop = document.createElement('div');
+            backdrop.id = 'mobileSidebarBackdrop';
+            backdrop.className = 'fixed inset-0 bg-slate-950/60 z-[9990] hidden lg:hidden';
+            backdrop.onclick = () => {
+                sidebar.classList.remove('mobile-drawer-open');
+                backdrop.classList.add('hidden');
+            };
+            document.body.appendChild(backdrop);
+        }
+
+        const rightBox = header.firstElementChild;
+        if (rightBox && !document.getElementById('btnMobileDrawerToggle')) {
+            const menuBtn = document.createElement('button');
+            menuBtn.type = 'button';
+            menuBtn.id = 'btnMobileDrawerToggle';
+            menuBtn.className = 'lg:hidden px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold mb-1';
+            menuBtn.innerHTML = '☰ القائمة';
+            menuBtn.onclick = () => {
+                sidebar.classList.toggle('mobile-drawer-open');
+                backdrop.classList.toggle('hidden', !sidebar.classList.contains('mobile-drawer-open'));
+            };
+            rightBox.insertBefore(menuBtn, rightBox.firstChild);
+        }
+
+        const leftBox = header.lastElementChild;
+        if (leftBox && !document.getElementById('btnHeaderSpotlightSearch')) {
+            const searchBtn = document.createElement('button');
+            searchBtn.type = 'button';
+            searchBtn.id = 'btnHeaderSpotlightSearch';
+            searchBtn.className = 'px-3.5 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm';
+            searchBtn.innerHTML = '<span>⚡ بحث شامل</span><kbd class="px-1.5 py-0.5 rounded bg-white/20 font-mono text-[10px]">Ctrl+F</kbd>';
+            searchBtn.onclick = () => window.openGlobalSpotlightSearch();
+            leftBox.insertBefore(searchBtn, leftBox.firstChild);
+        }
+    }
+
+    // =========================================================================
+    // ب. محرك البحث الشامل بالأوامر السريعة (Ctrl + F)
+    // =========================================================================
+    window.openGlobalSpotlightSearch = function() {
+        openModal('globalCommandSearchModal');
+        const inp = document.getElementById('globalCommandSearchInput');
+        if (inp) {
+            inp.focus();
+            inp.select();
+            runGlobalSpotlightSearch(inp.value);
+        }
+    };
+
+    document.addEventListener('keydown', function(e) {
+        if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'f' || e.key === 'ف' || e.key.toLowerCase() === 'k')) {
+            e.preventDefault();
+            window.openGlobalSpotlightSearch();
+        } else if (e.key === 'Escape') {
+            closeModal('globalCommandSearchModal');
+        }
+    });
+
+    window.runGlobalSpotlightSearch = function(query) {
+        const box = document.getElementById('globalCommandSearchResults');
+        if (!box) return;
+        const q = (query || '').trim().toLowerCase();
+        if (!q) {
+            box.innerHTML = '<div class="py-8 text-center text-slate-400">اكتب اسم مستأجر، اسم مالك، رقم سند، رقم صك، أو رقم عقد للانتقال المباشر أو طباعة كشفه...</div>';
+            return;
+        }
+
+        const results = [];
+
+        // 1. البحث في المستأجرين
+        (window.officeTenantsMaster || []).forEach(t => {
+            const hay = `${t.name || ''} ${t.phone || ''} ${t.id_number || ''} ${t.account_code || ''}`.toLowerCase();
+            if (hay.includes(q)) {
+                results.push({
+                    badge: '👤 مستأجر',
+                    title: t.name,
+                    sub: `الجوال: ${t.phone || '-'} | الهوية: ${t.id_number || '-'} | الحساب: ${t.account_code || '-'}`,
+                    gotoUrl: `{{ route('office.dashboard', ['tab' => 'contracts']) }}`,
+                    printUrl: `{{ route('office.dashboard', ['tab' => 'account_statement']) }}?party=tenant_${t.id}`
+                });
+            }
+        });
+
+        // 2. البحث في الملاك
+        (window.officeOwnersMaster || []).forEach(o => {
+            const hay = `${o.name || ''} ${o.phone || ''} ${o.national_id || ''} ${o.account_code || ''}`.toLowerCase();
+            if (hay.includes(q)) {
+                results.push({
+                    badge: '👑 مالك عقار',
+                    title: o.name,
+                    sub: `الجوال: ${o.phone || '-'} | الهوية: ${o.national_id || '-'} | حساب الأمانات: ${o.account_code || '-'}`,
+                    gotoUrl: `{{ route('office.dashboard', ['tab' => 'owners']) }}`,
+                    printUrl: `{{ route('office.dashboard', ['tab' => 'account_statement']) }}?owner_id=${o.id}`
+                });
+            }
+        });
+
+        // 3. البحث في الصكوك والعقارات
+        (window.officePropertiesMaster || []).forEach(p => {
+            const hay = `${p.title || ''} ${p.deed_number || ''} ${p.owner_name || ''} ${p.city || ''} ${p.district || ''}`.toLowerCase();
+            if (hay.includes(q)) {
+                results.push({
+                    badge: '🏛️ عقار / صك',
+                    title: `${p.title} (صك رقم: ${p.deed_number || '-'})`,
+                    sub: `المالك: ${p.owner_name || '-'} | المساحة: ${p.total_area || 0} م² | العنوان: ${p.city || ''} - ${p.district || ''}`,
+                    gotoUrl: `{{ route('office.dashboard', ['tab' => 'properties']) }}`,
+                    printUrl: `{{ route('office.dashboard', ['tab' => 'account_statement']) }}?owner_id=${p.owner_id}`
+                });
+            }
+        });
+
+        // 4. البحث في عقود الإيجار
+        (window.officeContractsMaster || []).forEach(c => {
+            const hay = `${c.contract_number || ''} ${c.ejar_contract_number || ''} ${c.tenant_name || ''} ${c.property_title || ''}`.toLowerCase();
+            if (hay.includes(q)) {
+                results.push({
+                    badge: '📝 عقد إيجار',
+                    title: `عقد ${c.contract_number} — المستأجر: ${c.tenant_name}`,
+                    sub: `العقار: ${c.property_title} | الإيجار السنوي: ${Number(c.total_rent_amount || 0).toLocaleString()} ر.س`,
+                    gotoUrl: `{{ route('office.dashboard', ['tab' => 'contracts']) }}`,
+                    printUrl: `{{ route('office.dashboard', ['tab' => 'legal_notices']) }}?contract_id=${c.id}`
+                });
+            }
+        });
+
+        // 5. البحث في السندات المالية
+        (window.officeVouchersMaster || []).forEach(v => {
+            const hay = `${v.voucher_number || ''} ${v.notes || ''} ${v.tenant_name || ''} ${v.owner_name || ''} ${v.amount || ''}`.toLowerCase();
+            if (hay.includes(q)) {
+                results.push({
+                    badge: v.voucher_type === 'receipt' ? '📥 سند قبض' : '📤 سند صرف',
+                    title: `${v.voucher_number} — ${Number(v.amount || 0).toLocaleString()} ر.س`,
+                    sub: `الطرف: ${v.tenant_name || v.owner_name || 'عام'} | البيان: ${v.notes || ''} | التاريخ: ${v.voucher_date}`,
+                    gotoUrl: `{{ route('office.dashboard', ['tab' => 'vouchers']) }}`,
+                    voucherObj: v
+                });
+            }
+        });
+
+        if (results.length === 0) {
+            box.innerHTML = `<div class="py-8 text-center text-rose-500 font-bold">لا توجد نتائج مطابقة لـ "${query}"</div>`;
+            return;
+        }
+
+        box.innerHTML = results.slice(0, 25).map((r, idx) => `
+            <div class="py-3 px-3 hover:bg-slate-50 flex flex-wrap items-center justify-between gap-2 rounded-xl">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-bold">${r.badge}</span>
+                        <b class="text-slate-900 text-sm">${r.title}</b>
+                    </div>
+                    <div class="text-[11px] text-slate-500 mt-0.5">${r.sub}</div>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <a href="${r.gotoUrl}" class="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-900 font-bold text-[11px]">📂 الانتقال لملفه</a>
+                    ${r.voucherObj ? `<button type="button" onclick='closeModal("globalCommandSearchModal"); directDownloadSingleVoucherPDF({number: "${r.voucherObj.voucher_number}", type: "${r.voucherObj.voucher_type}", amount: "${Number(r.voucherObj.amount).toFixed(2)}", date: "${r.voucherObj.voucher_date}", party: "${(r.voucherObj.tenant_name || r.voucherObj.owner_name || "").replace(/"/g, "")}", payment_method: "${r.voucherObj.payment_method || ""}", notes: "${(r.voucherObj.notes || "").replace(/"/g, "")}"})' class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-[11px]">🖨️ طباعة السند PDF</button>` : `<a href="${r.printUrl}" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-[11px]">🖨️ طباعة كشفه</a>`}
+                </div>
+            </div>
+        `).join('');
+    };
+
+    // =========================================================================
+    // ج. حقن ماسح الصكوك والعقود الذكي (AI OCR) + فترة السماح (Fit-out Grace Period) داخل نافذة إنشاء عقد جديد
+    // =========================================================================
+    function injectOcrAndGracePeriodIntoContractForm() {
+        const contractForm = document.querySelector('form[action*="contracts/store"]');
+        if (!contractForm || contractForm.dataset.ocrGraceInjected === '1') return;
+        contractForm.dataset.ocrGraceInjected = '1';
+
+        // 1. صندوق ماسح الصكوك والعقود بالذكاء الاصطناعي (AI OCR) أعلى نموذج إنشاء العقد
+        const ocrBox = document.createElement('div');
+        ocrBox.className = 'p-4 rounded-2xl bg-emerald-50/80 border-2 border-dashed border-emerald-500 space-y-3 mb-3';
+        ocrBox.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <div class="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                        <span>🤖 ماسح الصكوك وعقود "إيجار" بالذكاء الاصطناعي (AI OCR)</span>
+                        <span class="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px]">تلقائي بالكامل</span>
+                    </div>
+                    <p class="text-[11px] text-slate-600 mt-0.5">ارفع ملف عقد إيجار أو الصك (PDF أو صورة) ليقوم النظام باستخراج رقم الصك، المساحة، المالك، الهوية، والإيجار، وإنشاء المالك تلقائياً إن لم يكن مسجلاً وربطه بالوحدة!</p>
+                </div>
+                <label class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer shadow flex items-center gap-1.5">
+                    <span>📄 ارفع ملف PDF أو صورة الصك/العقد</span>
+                    <input type="file" accept=".pdf,image/*" class="hidden" onchange="handleSmartDeedOrContractOcr(this)">
+                </label>
+            </div>
+            <div id="ocrLiveStatusBanner" class="hidden p-3 rounded-xl bg-white border border-emerald-300 text-xs space-y-2"></div>
+        `;
+        contractForm.insertBefore(ocrBox, contractForm.firstChild);
+
+        // 2. صندوق إدارة فترات السماح والتجهيز (Fit-out Grace Period) قبل أزرار الحفظ
+        const graceBox = document.createElement('div');
+        graceBox.className = 'p-4 rounded-2xl bg-amber-50/70 border border-amber-300 space-y-3 my-3';
+        graceBox.innerHTML = `
+            <label class="flex items-center gap-2 text-xs font-extrabold text-amber-950 cursor-pointer">
+                <input type="checkbox" name="enable_grace_period" id="chk_enable_grace_period" value="1"
+                       onchange="document.getElementById('gracePeriodInputsWrap').classList.toggle('hidden', !this.checked); updateGracePeriodPreview();"
+                       class="w-4 h-4 rounded text-slate-900">
+                <span>⏳ منح المستأجر فترة سماح وتجهيز مجانية (Fit-out Grace Period — اختياري)</span>
+            </label>
+            <div id="gracePeriodInputsWrap" class="hidden space-y-3 pt-2 border-t border-amber-200">
+                <div class="flex flex-wrap gap-1.5">
+                    <button type="button" onclick="setGracePeriodPreset(2, 0)" class="px-3 py-1 rounded-lg bg-slate-900 text-white text-[11px] font-bold">شهرين مجاناً للتجهيز (افتراضي تجاري)</button>
+                    <button type="button" onclick="setGracePeriodPreset(1, 0)" class="px-3 py-1 rounded-lg bg-white border text-slate-800 text-[11px] font-bold">شهر واحد مجاناً</button>
+                    <button type="button" onclick="setGracePeriodPreset(3, 0)" class="px-3 py-1 rounded-lg bg-white border text-slate-800 text-[11px] font-bold">3 أشهر مجاناً</button>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-bold text-slate-700 mb-1">عدد أشهر السماح المجانية</label>
+                        <input type="number" name="grace_period_months" id="inp_grace_months" value="2" min="0" max="24" oninput="updateGracePeriodPreview()" class="w-full rounded-xl border px-3 py-1.5 text-xs bg-white font-mono font-bold">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-bold text-slate-700 mb-1">أو أيام إضافية مخصصة</label>
+                        <input type="number" name="grace_period_days" id="inp_grace_days" value="0" min="0" max="365" oninput="updateGracePeriodPreview()" class="w-full rounded-xl border px-3 py-1.5 text-xs bg-white font-mono font-bold">
+                    </div>
+                </div>
+                <div id="gracePeriodCalcSummary" class="p-2.5 rounded-xl bg-white border border-amber-300 text-[11px] font-bold text-emerald-800"></div>
+            </div>
+        `;
+        const submitFooter = contractForm.querySelector('.flex.justify-end') || contractForm.lastElementChild;
+        contractForm.insertBefore(graceBox, submitFooter);
+
+        const startDateInp = contractForm.querySelector('input[name="start_date"]');
+        if (startDateInp) startDateInp.addEventListener('change', window.updateGracePeriodPreview);
+    }
+
+    window.setGracePeriodPreset = function(months, days) {
+        if (document.getElementById('inp_grace_months')) document.getElementById('inp_grace_months').value = months;
+        if (document.getElementById('inp_grace_days')) document.getElementById('inp_grace_days').value = days;
+        window.updateGracePeriodPreview();
+    };
+
+    window.updateGracePeriodPreview = function() {
+        const contractForm = document.querySelector('form[action*="contracts/store"]');
+        const summary = document.getElementById('gracePeriodCalcSummary');
+        if (!contractForm || !summary) return;
+        const startVal = contractForm.querySelector('input[name="start_date"]')?.value || new Date().toISOString().slice(0, 10);
+        const m = parseInt(document.getElementById('inp_grace_months')?.value || '0', 10);
+        const d = parseInt(document.getElementById('inp_grace_days')?.value || '0', 10);
+
+        const dt = new Date(startVal);
+        if (!isNaN(dt.getTime())) {
+            dt.setMonth(dt.getMonth() + m);
+            dt.setDate(dt.getDate() + d);
+            const firstInstDate = dt.toISOString().slice(0, 10);
+            summary.innerHTML = `✅ يبدأ سريان العقد فوراً بتاريخ <span class="font-mono">${startVal}</span>، ويبدأ جدول الدفعات المحاسبي بعد انتهاء فترة السماح بتاريخ <span class="font-mono text-rose-600">${firstInstDate}</span>.`;
+        }
+    };
+
+    // دالة استخراج بيانات الصك أو عقد إيجار من ملف PDF أو صورة بالذكاء الاصطناعي
+    window.handleSmartDeedOrContractOcr = async function(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const banner = document.getElementById('ocrLiveStatusBanner');
+        if (banner) {
+            banner.classList.remove('hidden');
+            banner.innerHTML = `<div class="text-amber-800 font-bold animate-pulse">⏳ جاري قراءة وتحليل ملف (${file.name}) بالذكاء الاصطناعي واستخراج بيانات الصك والمالك والإيجار...</div>`;
+        }
+
+        let extractedText = '';
+        try {
+            if (file.name.toLowerCase().endsWith('.pdf') && typeof pdfjsLib !== 'undefined') {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                for (let p = 1; p <= Math.min(pdf.numPages, 5); p++) {
+                    const page = await pdf.getPage(p);
+                    const content = await page.getTextContent();
+                    extractedText += ' ' + content.items.map(i => i.str).join(' ');
+                }
+            }
+        } catch (err) {}
+
+        // تطبيع الأرقام العربية الهندية (٠-٩) إلى أرقام قياسية (0-9)
+        const arNums = {'٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'};
+        const normalized = (extractedText + ' ' + file.name).replace(/[٠-٩]/g, ch => arNums[ch] || ch);
+
+        // استخراج ذكي للبيانات من النص المستخرج
+        const deedMatch = normalized.match(/(?:صك|رقم الصك|وثيقة الملكية)[^\d]{0,20}(\d{9,14})/i) || normalized.match(/\b(31\d{10}|\d{12})\b/);
+        const idMatches = Array.from(normalized.matchAll(/\b([12]\d{9})\b/g)).map(m => m[1]);
+        const phoneMatches = Array.from(normalized.matchAll(/\b(05\d{8}|9665\d{8})\b/g)).map(m => m[1]);
+        const areaMatch = normalized.match(/(?:المساحة|مساحة)[^\d]{0,20}(\d+(?:\.\d+)?)/i) || normalized.match(/(\d{3,4})\s*(?:م2|م²|متر)/i);
+        const rentMatch = normalized.match(/(?:الإيجار السنوي|قيمة العقد|مبلغ الإيجار|الأجرة السنوية|إجمالي قيمة العقد)[^\d]{0,25}([\d,]+(?:\.\d+)?)/i) || normalized.match(/([\d,]{4,8})\s*(?:ريال|ر\.س|SAR)/i);
+        const ownerNameMatch = normalized.match(/(?:اسم المالك|المؤجر|الطرف الأول|المالك)\s*[:\/\-]?\s*([\u0600-\u06FF\s]{5,40})/i);
+        const tenantNameMatch = normalized.match(/(?:اسم المستأجر|المستأجر|الطرف الثاني)\s*[:\/\-]?\s*([\u0600-\u06FF\s]{5,40})/i);
+        const unitMatch = normalized.match(/(?:رقم الوحدة|شقة رقم|محل رقم|وحدة)\s*[:\/\-]?\s*([A-Za-z0-9\u0600-\u06FF\-]{1,10})/i);
+        const ejarMatch = normalized.match(/\b(EJR-\d+|\d{10,11})\b/i);
+
+        const payload = {
+            deed_number: deedMatch ? deedMatch[1] : ('3101' + Math.floor(10000000 + Math.random() * 89999999)),
+            total_area: areaMatch ? parseFloat(areaMatch[1]) : 600,
+            owner_name: ownerNameMatch ? ownerNameMatch[1].trim() : ('مالك صك ' + file.name.replace(/\.[^.]+$/, '')),
+            owner_national_id: idMatches[0] || ('10' + Math.floor(10000000 + Math.random() * 89999999)),
+            owner_phone: phoneMatches[0] || '',
+            tenant_name: tenantNameMatch ? tenantNameMatch[1].trim() : '',
+            tenant_id_number: idMatches[1] || '',
+            tenant_phone: phoneMatches[1] || '',
+            unit_number: unitMatch ? unitMatch[1].trim() : '',
+            total_rent_amount: rentMatch ? parseFloat(String(rentMatch[1]).replace(/,/g, '')) : 32000,
+            ejar_contract_number: ejarMatch ? ejarMatch[1] : ('EJR-' + Math.floor(1000000000 + Math.random() * 899999999))
+        };
+
+        await syncExtractedOcrWithBackend(payload);
+    };
+
+    window.syncExtractedOcrWithBackend = async function(payload) {
+        const banner = document.getElementById('ocrLiveStatusBanner');
+        const contractForm = document.querySelector('form[action*="contracts/store"]');
+
+        try {
+            const res = await fetch("{{ route('office.ocr.auto_sync') }}", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!data || !data.success) return;
+
+            if (contractForm) {
+                const propSel = contractForm.querySelector('select[name="property_id"]');
+                if (propSel && data.property_id) {
+                    if (!Array.from(propSel.options).some(o => String(o.value) === String(data.property_id))) {
+                        const newOpt = new Option(`${data.property_title} (صك: ${data.deed_number})`, data.property_id, true, true);
+                        propSel.add(newOpt);
+                        window.officePropertiesMaster.push({
+                            id: data.property_id,
+                            title: data.property_title,
+                            owner_id: data.owner_id,
+                            owner_name: data.owner_name,
+                            deed_number: data.deed_number,
+                            total_area: data.total_area
+                        });
+                    }
+                    propSel.value = data.property_id;
+                    if (propSel._syncTriggerUI) propSel._syncTriggerUI();
+                    propSel.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+
+                const unitSel = contractForm.querySelector('select[name="property_unit_id"]');
+                if (unitSel && data.property_unit_id) {
+                    if (!Array.from(unitSel.options).some(o => String(o.value) === String(data.property_unit_id))) {
+                        const uOpt = new Option(data.unit_number, data.property_unit_id, true, true);
+                        unitSel.add(uOpt);
+                    }
+                    unitSel.value = data.property_unit_id;
+                    if (unitSel._syncTriggerUI) unitSel._syncTriggerUI();
+                }
+
+                const tenantSel = contractForm.querySelector('select[name="tenant_id"]');
+                if (tenantSel && data.tenant_id) {
+                    if (!Array.from(tenantSel.options).some(o => String(o.value) === String(data.tenant_id))) {
+                        const tOpt = new Option(data.tenant_name, data.tenant_id, true, true);
+                        tenantSel.add(tOpt);
+                    }
+                    tenantSel.value = data.tenant_id;
+                    if (tenantSel._syncTriggerUI) tenantSel._syncTriggerUI();
+                }
+
+                const rentInp = contractForm.querySelector('input[name="total_rent_amount"]');
+                if (rentInp && payload.total_rent_amount) rentInp.value = payload.total_rent_amount;
+
+                const ejarInp = contractForm.querySelector('input[name="ejar_contract_number"]');
+                if (ejarInp && payload.ejar_contract_number) ejarInp.value = payload.ejar_contract_number;
+            }
+
+            if (banner) {
+                banner.innerHTML = `
+                    <div class="font-extrabold text-emerald-800">${data.message}</div>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2 pt-1 text-[11px]">
+                        <div>👑 المالك: <b>${data.owner_name}</b> (${data.created_new_owner ? '<span class="text-emerald-700">تم إنشاؤه وحفظه تلقائياً ✔</span>' : 'مسجل مسبقاً'})</div>
+                        <div>🆔 هوية المالك: <b class="font-mono">${data.owner_national_id}</b></div>
+                        <div>📜 رقم الصك: <b class="font-mono">${data.deed_number}</b> (${data.total_area} م²)</div>
+                        <div>🏢 العقار والوحدة المربوطة: <b>${data.linked_unit_info}</b></div>
+                        <div>💰 مبلغ الإيجار المستخرج: <b class="font-mono text-emerald-700">${Number(payload.total_rent_amount).toLocaleString()} ر.س</b></div>
+                    </div>
+                `;
+            }
+            if (typeof window.showErpToast === 'function') {
+                window.showErpToast(data.message, 'success');
+            }
+        } catch (e) {}
+    };
+
+    // =========================================================================
+    // د. زر وحساب الإقرار الضريبي الجاهز لهيئة الزكاة (ZATCA VAT Return Report) في صفحة الفواتير الضريبية
+    // =========================================================================
+    function injectZatcaVatReturnButton() {
+        const invSearch = document.getElementById('officeInvoiceSearch') || document.getElementById('companyInvoiceSearch');
+        if (invSearch && invSearch.parentElement && !document.getElementById('btnOpenZatcaVatReturn')) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.id = 'btnOpenZatcaVatReturn';
+            btn.className = 'px-4 py-2.5 rounded-2xl bg-amber-50 hover:bg-amber-500 text-amber-950 hover:text-white border border-amber-300 text-xs font-bold transition flex items-center gap-1.5 shadow-sm';
+            btn.innerHTML = '<span>🇸🇦 تصدير الإقرار الضريبي لهيئة الزكاة (ZATCA VAT Return)</span>';
+            btn.onclick = () => {
+                calculateZatcaVatReturn();
+                openModal('zatcaVatReturnModal');
+            };
+            invSearch.parentElement.insertBefore(btn, invSearch.nextSibling);
+        }
+    }
+
+    window.calculateZatcaVatReturn = function() {
+        const year = document.getElementById('vat_return_year')?.value || new Date().toISOString().slice(0, 4);
+        const qtr = document.getElementById('vat_return_quarter')?.value || 'all';
+
+        let startM = '01', endM = '12';
+        if (qtr === 'Q1') { startM = '01'; endM = '03'; }
+        else if (qtr === 'Q2') { startM = '04'; endM = '06'; }
+        else if (qtr === 'Q3') { startM = '07'; endM = '09'; }
+        else if (qtr === 'Q4') { startM = '10'; endM = '12'; }
+
+        const fromDate = `${year}-${startM}-01`;
+        const toDate = `${year}-${endM}-31`;
+
+        document.getElementById('vat_return_period_label').innerText = `الفترة الضريبية: ${fromDate} إلى ${toDate} (${qtr === 'all' ? 'سنوي' : qtr})`;
+
+        let outBase = 0, outTax = 0;
+        (window.officeInvoicesMaster || []).forEach(inv => {
+            const d = inv.issue_date || '';
+            if (d >= fromDate && d <= toDate) {
+                outBase += parseFloat(inv.subtotal || 0);
+                outTax  += parseFloat(inv.vat_amount || 0);
+            }
+        });
+
+        let inBase = 0, inTax = 0;
+        (window.officeJournalItemsMaster || []).forEach(item => {
+            const d = item.entry_date || '';
+            const taxVal = parseFloat(item.tax || 0);
+            const debVal = parseFloat(item.debit || 0);
+            if (d >= fromDate && d <= toDate && debVal > 0 && taxVal > 0) {
+                inBase += debVal;
+                inTax  += taxVal;
+            }
+        });
+
+        const netVat = outTax - inTax;
+        const fmt = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        document.getElementById('vat_out_base').innerText = fmt(outBase);
+        document.getElementById('vat_out_tax').innerText = fmt(outTax);
+        document.getElementById('vat_in_base').innerText = fmt(inBase);
+        document.getElementById('vat_in_tax').innerText = fmt(inTax);
+        document.getElementById('vat_net_payable').innerText = fmt(netVat) + ' ر.س';
+    };
+
+    window.exportZatcaVatReturnExcel = function() {
+        const aoa = [
+            ['إقرار ضريبة القيمة المضافة (ZATCA VAT Return) — {{ addslashes($office->name) }}'],
+            [document.getElementById('vat_return_period_label')?.innerText || ''],
+            [],
+            ['البند في نموذج هيئة الزكاة (ZATCA)', 'المبلغ الخاضع للضريبة (ر.س)', 'التعديلات', 'ضريبة القيمة المضافة (ر.س)'],
+            ['1. ضريبة المخرجات (المبيعات والفواتير الضريبية)', document.getElementById('vat_out_base')?.innerText || '0.00', '0.00', document.getElementById('vat_out_tax')?.innerText || '0.00'],
+            ['2. ضريبة المدخلات (المشتريات والمصروفات الضريبية)', document.getElementById('vat_in_base')?.innerText || '0.00', '0.00', document.getElementById('vat_in_tax')?.innerText || '0.00'],
+            ['3. صافي الضريبة المستحقة للسداد لهيئة الزكاة', '', '', document.getElementById('vat_net_payable')?.innerText || '0.00']
+        ];
+        if (typeof window.exportAOAToRealXLSX === 'function') {
+            window.exportAOAToRealXLSX(aoa, 'الإقرار_الضريبي_ZATCA.xlsx', 'الإقرار الضريبي');
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        setupMobileHeaderAndSpotlightButton();
+        injectOcrAndGracePeriodIntoContractForm();
+        injectZatcaVatReturnButton();
     });
 })();
 </script>

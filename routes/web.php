@@ -193,6 +193,17 @@ Route::middleware([
         Route::post('/vouchers/{id}/approve', [OfficeErpController::class, 'approvePendingVoucher'])->name('vouchers.approve');
         Route::post('/accounting/close-year', [OfficeErpController::class, 'closeFiscalYear'])->name('accounting.close_year');
         Route::post('/installments/pay', [OfficeErpController::class, 'payInstallmentPart'])->name('installments.pay');
+
+        // مسارات ماسح الصكوك والعقود الذكي (AI OCR) + المدقق المحاسبي + التقرير اليومي + اتحاد الملاك (Mullak)
+        Route::post('/ocr/auto-sync', [OfficeErpController::class, 'syncOcrDeedOrContract'])->name('ocr.auto_sync');
+        Route::post('/auditor/auto-fix/{id}', [OfficeErpController::class, 'autoFixAuditedVoucher'])->name('auditor.auto_fix');
+        Route::post('/whatsapp/daily-report-settings', [OfficeErpController::class, 'saveDailyReportSettings'])->name('whatsapp.daily_report_settings');
+        Route::post('/mullak/building/store', [OfficeErpController::class, 'storeMullakBuilding'])->name('mullak.building.store');
+        Route::post('/mullak/member/store', [OfficeErpController::class, 'storeMullakMember'])->name('mullak.member.store');
+        Route::post('/mullak/member/{id}/pay', [OfficeErpController::class, 'payMullakMemberFee'])->name('mullak.member.pay');
+        Route::post('/mullak/member/{id}/delete', [OfficeErpController::class, 'deleteMullakMember'])->name('mullak.member.delete');
+        Route::post('/mullak/expense/store', [OfficeErpController::class, 'storeMullakExpense'])->name('mullak.expense.store');
+        Route::post('/mullak/expense/{id}/delete', [OfficeErpController::class, 'deleteMullakExpense'])->name('mullak.expense.delete');
     });
 
     Route::post('/whatsapp/send-raw-pdf', [CompanyErpController::class, 'sendRawPdfViaWhatsapp'])->name('erp.whatsapp.send_raw_pdf');

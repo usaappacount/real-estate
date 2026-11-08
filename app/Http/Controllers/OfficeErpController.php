@@ -89,6 +89,12 @@ class OfficeErpController extends Controller
         if (!in_array('overview', $allowedOfficeTabs)) {
             array_unshift($allowedOfficeTabs, 'overview');
         }
+        if (in_array('properties', $allowedOfficeTabs) && !in_array('mullak', $allowedOfficeTabs)) {
+            $allowedOfficeTabs[] = 'mullak';
+        }
+        if ((in_array('accounting', $allowedOfficeTabs) || in_array('vouchers', $allowedOfficeTabs)) && !in_array('auditor', $allowedOfficeTabs)) {
+            $allowedOfficeTabs[] = 'auditor';
+        }
 
         $tab = $request->get('tab', 'overview');
         if (!in_array($tab, $allowedOfficeTabs)) {
@@ -373,6 +379,22 @@ class OfficeErpController extends Controller
             'total_payments' => $vouchers->where('voucher_type', 'payment')->sum('amount'),
         ];
 
+        $mullakBuildings = DB::table('mullak_buildings')->where('office_id', $officeId)->orderBy('id', 'desc')->get();
+        $mullakMembers = DB::table('mullak_members')
+            ->join('mullak_buildings', 'mullak_members.mullak_building_id', '=', 'mullak_buildings.id')
+            ->where('mullak_members.office_id', $officeId)
+            ->select('mullak_members.*', 'mullak_buildings.association_name')
+            ->orderBy('mullak_members.id', 'desc')
+            ->get();
+        $mullakExpenses = DB::table('mullak_expenses')
+            ->join('mullak_buildings', 'mullak_expenses.mullak_building_id', '=', 'mullak_buildings.id')
+            ->where('mullak_expenses.office_id', $officeId)
+            ->select('mullak_expenses.*', 'mullak_buildings.association_name')
+            ->orderBy('mullak_expenses.id', 'desc')
+            ->get();
+
+        $auditFindings = $this->runPreClosingAccountingAuditInternal($officeId, $vouchers, $owners, $contracts, $journalEntries);
+
         return view('office_dashboard', compact(
             'office', 'tab', 'allowedOfficeTabs', 'owners', 'propertyTypes', 'allAttributes',
             'properties', 'units', 'tenants', 'contracts', 'accountTypes',
@@ -380,7 +402,8 @@ class OfficeErpController extends Controller
             'staff', 'stats', 'defaultTenantParentAcc', 'defaultOwnerParentAcc',
             'companyAdminPhone', 'nextReceiptNo', 'nextPaymentNo',
             'paymentMethods', 'officeInvoices', 'defaultVatRate', 'activityLogs',
-            'installments', 'agingBuckets', 'anomalyAlerts'
+            'installments', 'agingBuckets', 'anomalyAlerts',
+            'mullakBuildings', 'mullakMembers', 'mullakExpenses', 'auditFindings'
         ));
     }
 
@@ -844,10 +867,18 @@ class OfficeErpController extends Controller
             ? $request->office_commission
             : (($request->total_rent_amount * ($owner->office_management_fee_rate ?? 5)) / 100);
 
+        CompanyErpController::ensureContractInstallmentsTable();
         $contractNumber = 'CNT-' . date('Y') . '-' . random_int(10000, 99999);
 
-        DB::transaction(function () use ($request, $officeId, $property, $tenant, $unitId, $contractNumber, $officeCommission, $companyFee) {
-            DB::table('lease_contracts')->insert([
+        $graceMonths = $request->has('enable_grace_period') ? max(0, (int) ($request->grace_period_months ?? 0)) : 0;
+        $graceDays   = $request->has('enable_grace_period') ? max(0, (int) ($request->grace_period_days ?? 0)) : 0;
+        $installmentsStartDate = \Carbon\Carbon::parse($request->start_date)
+            ->addMonths($graceMonths)
+            ->addDays($graceDays)
+            ->toDateString();
+
+        DB::transaction(function () use ($request, $officeId, $property, $tenant, $unitId, $contractNumber, $officeCommission, $companyFee, $graceMonths, $graceDays, $installmentsStartDate) {
+            $newContractId = DB::table('lease_contracts')->insertGetId([
                 'contract_number' => $contractNumber,
                 'ejar_contract_number' => $request->ejar_contract_number ?: null,
                 'ejar_status' => $request->filled('ejar_contract_number') ? 'active' : 'not_sent',
@@ -858,6 +889,9 @@ class OfficeErpController extends Controller
                 'tenant_id' => $tenant->id,
                 'start_date' => $request->start_date,
                 'end_date' => $request->end_date,
+                'grace_period_months' => $graceMonths,
+                'grace_period_days' => $graceDays,
+                'installments_start_date' => $installmentsStartDate,
                 'payment_cycle' => $request->payment_cycle ?: 'annual',
                 'total_rent_amount' => $request->total_rent_amount,
                 'security_deposit' => $request->security_deposit ?: 0,
@@ -871,10 +905,19 @@ class OfficeErpController extends Controller
             if ($unitId) {
                 DB::table('property_units')->where('id', $unitId)->update(['status' => 'rented']);
             }
+
+            $contractObj = DB::table('lease_contracts')->where('id', $newContractId)->first();
+            if ($contractObj) {
+                CompanyErpController::generateInstallmentsForContract($contractObj);
+            }
         });
 
+        $graceNote = ($graceMonths > 0 || $graceDays > 0)
+            ? " مع منح المستأجر فترة سماح وتجهيز مجانية (يبدأ جدول الدفعات المحاسبي بتاريخ {$installmentsStartDate})."
+            : ".";
+
         return redirect()->route('office.dashboard', ['tab' => 'contracts'])
-            ->with('success', 'تم إبرام عقد الإيجار رقم (' . $contractNumber . ') بنجاح.');
+            ->with('success', 'تم إبرام عقد الإيجار رقم (' . $contractNumber . ') بنجاح' . $graceNote);
     }
 
     public function updateContract(Request $request, $id)
@@ -2626,5 +2669,639 @@ class OfficeErpController extends Controller
         });
 
         return back()->with('success', 'تم إقفال السنة المالية للمكتب بنجاح وترحيل صافي الربح (' . number_format($netProfit, 2) . ' ر.س) إلى حساب الأرباح المبقاة.');
+    }
+
+    // =========================================================================
+    // 1. ماسح الصكوك والعقود بالذكاء الاصطناعي (AI OCR) + إنشاء المالك وربط الوحدة تلقائياً
+    // =========================================================================
+    public function syncOcrDeedOrContract(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureContractInstallmentsTable();
+
+        $ownerName     = trim((string) $request->input('owner_name', ''));
+        $ownerNatId    = preg_replace('/\D/', '', (string) $request->input('owner_national_id', ''));
+        $ownerPhoneRaw = trim((string) $request->input('owner_phone', ''));
+        $deedNumber    = trim((string) $request->input('deed_number', ''));
+        $totalArea     = (float) ($request->input('total_area', 0) ?: 500);
+        $propTitle     = trim((string) $request->input('property_title', ''));
+        $unitNumber    = trim((string) $request->input('unit_number', ''));
+        $rentAmount    = (float) ($request->input('total_rent_amount', 0) ?: 25000);
+        $tenantName    = trim((string) $request->input('tenant_name', ''));
+        $tenantNatId   = preg_replace('/\D/', '', (string) $request->input('tenant_id_number', ''));
+        $tenantPhoneRaw= trim((string) $request->input('tenant_phone', ''));
+
+        $createdNewOwner = false;
+        $createdNewTenant = false;
+        $linkedUnitInfo = '';
+
+        $result = DB::transaction(function () use (
+            $officeId, $ownerName, $ownerNatId, $ownerPhoneRaw, $deedNumber, $totalArea,
+            $propTitle, $unitNumber, $rentAmount, $tenantName, $tenantNatId, $tenantPhoneRaw,
+            &$createdNewOwner, &$createdNewTenant, &$linkedUnitInfo
+        ) {
+            // 1. البحث عن المالك في النظام أو إنشاؤه وحفظه تلقائياً إذا لم يكن موجوداً
+            $owner = null;
+            if (!empty($ownerNatId)) {
+                $owner = DB::table('owners')->where('office_id', $officeId)->where('national_id', $ownerNatId)->first();
+            }
+            if (!$owner && !empty($ownerName)) {
+                $owner = DB::table('owners')->where('office_id', $officeId)->where('name', 'like', '%' . $ownerName . '%')->first();
+            }
+
+            if (!$owner) {
+                $finalOwnerName = $ownerName !== '' ? $ownerName : ('مالك صك ' . ($deedNumber ?: rand(1000, 9999)));
+                $finalOwnerNat  = $ownerNatId !== '' ? $ownerNatId : ('10' . rand(10000000, 99999999));
+                $cleanPhone     = preg_replace('/\D/', '', $ownerPhoneRaw);
+                if (strlen($cleanPhone) < 9) {
+                    $cleanPhone = '050' . rand(1000000, 9999999);
+                }
+                $formattedOwnerPhone = CompanyErpController::formatSaudiPhone($cleanPhone);
+
+                $defaultParent = DB::table('accounts')->where('office_id', $officeId)->where('code', '2101')->first();
+                $ownerAccountId = CompanyErpController::createSequentialSubAccount(
+                    $officeId,
+                    $defaultParent ? $defaultParent->id : null,
+                    'أمانات المالك: ' . $finalOwnerName
+                );
+
+                $ownerUsername = 'owner_ocr_' . time() . '_' . rand(10, 99);
+                $newOwnerId = DB::table('owners')->insertGetId([
+                    'office_id' => $officeId,
+                    'name' => $finalOwnerName,
+                    'national_id' => $finalOwnerNat,
+                    'phone' => $formattedOwnerPhone,
+                    'email' => $ownerUsername . '@owner.local',
+                    'office_management_fee_rate' => 5.00,
+                    'account_id' => $ownerAccountId,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                DB::table('users')->insert([
+                    'name' => $finalOwnerName,
+                    'username' => $ownerUsername,
+                    'phone' => $formattedOwnerPhone,
+                    'email' => $ownerUsername . '@owner.local',
+                    'national_id' => $finalOwnerNat,
+                    'password' => Hash::make('123456'),
+                    'user_type' => 'owner',
+                    'office_id' => $officeId,
+                    'owner_id' => $newOwnerId,
+                    'is_active' => 1,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                $owner = DB::table('owners')->where('id', $newOwnerId)->first();
+                $createdNewOwner = true;
+            }
+
+            // 2. البحث عن الوحدة أو العقار الموجود في النظام وربط المالك به تلقائياً
+            $matchedUnit = null;
+            $matchedProperty = null;
+
+            if (!empty($unitNumber)) {
+                $matchedUnit = DB::table('property_units')
+                    ->join('properties', 'property_units.property_id', '=', 'properties.id')
+                    ->where('properties.office_id', $officeId)
+                    ->where(function ($q) use ($unitNumber) {
+                        $q->where('property_units.unit_number', $unitNumber)
+                          ->orWhere('property_units.unit_number', 'like', '%' . $unitNumber . '%');
+                    })
+                    ->select('property_units.*')
+                    ->first();
+
+                if ($matchedUnit) {
+                    $matchedProperty = DB::table('properties')->where('id', $matchedUnit->property_id)->first();
+                }
+            }
+
+            if (!$matchedProperty && !empty($deedNumber)) {
+                $matchedProperty = DB::table('properties')
+                    ->where('office_id', $officeId)
+                    ->where('deed_number', $deedNumber)
+                    ->first();
+            }
+
+            if (!$matchedProperty && !empty($propTitle)) {
+                $matchedProperty = DB::table('properties')
+                    ->where('office_id', $officeId)
+                    ->where('title', 'like', '%' . $propTitle . '%')
+                    ->first();
+            }
+
+            // إذا لم يكن هناك عقار مطابق، نبحث عن أول وحدة شاغرة في النظام لربطها أو ننشئ العقار والوحدة تلقائياً
+            if (!$matchedProperty) {
+                $vacantUnitJoin = DB::table('property_units')
+                    ->join('properties', 'property_units.property_id', '=', 'properties.id')
+                    ->where('properties.office_id', $officeId)
+                    ->where('property_units.status', 'vacant')
+                    ->select('property_units.*')
+                    ->first();
+
+                if ($vacantUnitJoin && empty($deedNumber) && empty($propTitle)) {
+                    $matchedUnit = $vacantUnitJoin;
+                    $matchedProperty = DB::table('properties')->where('id', $vacantUnitJoin->property_id)->first();
+                } else {
+                    $firstPropType = DB::table('property_types')->first();
+                    $propTypeId = $firstPropType ? $firstPropType->id : 1;
+                    $newPropTitle = $propTitle !== '' ? $propTitle : ('عقار صك رقم ' . ($deedNumber ?: rand(1000, 9999)));
+
+                    $newPropId = DB::table('properties')->insertGetId([
+                        'office_id' => $officeId,
+                        'owner_id' => $owner->id,
+                        'property_type_id' => $propTypeId,
+                        'title' => $newPropTitle,
+                        'deed_number' => $deedNumber ?: ('3101' . rand(10000000, 99999999)),
+                        'deed_date' => date('Y-m-d'),
+                        'total_area' => $totalArea > 0 ? $totalArea : 500,
+                        'city' => 'الرياض',
+                        'district' => 'حي الملقا',
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                    $matchedProperty = DB::table('properties')->where('id', $newPropId)->first();
+                }
+            }
+
+            // ربط المالك بالعقار والوحدة الموجودة على النظام وتحديث رقم الصك والمساحة
+            if ($matchedProperty) {
+                $propUpdates = [
+                    'owner_id' => $owner->id,
+                    'updated_at' => now(),
+                ];
+                if (!empty($deedNumber)) $propUpdates['deed_number'] = $deedNumber;
+                if ($totalArea > 0) $propUpdates['total_area'] = $totalArea;
+                DB::table('properties')->where('id', $matchedProperty->id)->update($propUpdates);
+                $matchedProperty = DB::table('properties')->where('id', $matchedProperty->id)->first();
+            }
+
+            if (!$matchedUnit && $matchedProperty) {
+                $matchedUnit = DB::table('property_units')
+                    ->where('property_id', $matchedProperty->id)
+                    ->orderByRaw("CASE WHEN status = 'vacant' THEN 0 ELSE 1 END")
+                    ->first();
+
+                if (!$matchedUnit) {
+                    $newUnitId = DB::table('property_units')->insertGetId([
+                        'property_id' => $matchedProperty->id,
+                        'property_type_id' => $matchedProperty->property_type_id,
+                        'unit_number' => $unitNumber !== '' ? $unitNumber : 'وحدة 1',
+                        'floor_number' => 1,
+                        'area' => $totalArea > 0 ? min($totalArea, 180) : 150,
+                        'default_rent_price' => $rentAmount > 0 ? $rentAmount : 25000,
+                        'status' => 'vacant',
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                    $matchedUnit = DB::table('property_units')->where('id', $newUnitId)->first();
+                }
+            }
+
+            if ($matchedUnit) {
+                $linkedUnitInfo = $matchedProperty->title . ' — ' . $matchedUnit->unit_number;
+            }
+
+            // 3. البحث عن المستأجر أو إنشاؤه تلقائياً إذا وُجد في ملف عقد إيجار PDF
+            $tenant = null;
+            if (!empty($tenantNatId)) {
+                $tenant = DB::table('tenants')->where('office_id', $officeId)->where('id_number', $tenantNatId)->first();
+            }
+            if (!$tenant && !empty($tenantName)) {
+                $tenant = DB::table('tenants')->where('office_id', $officeId)->where('name', 'like', '%' . $tenantName . '%')->first();
+            }
+            if (!$tenant && !empty($tenantName)) {
+                $cleanTPhone = preg_replace('/\D/', '', $tenantPhoneRaw);
+                if (strlen($cleanTPhone) < 9) {
+                    $cleanTPhone = '055' . rand(1000000, 9999999);
+                }
+                $defaultTenantParent = DB::table('accounts')->where('office_id', $officeId)->where('code', '1103')->first();
+                $tAccId = CompanyErpController::createSequentialSubAccount(
+                    $officeId,
+                    $defaultTenantParent ? $defaultTenantParent->id : null,
+                    'المستأجر: ' . $tenantName
+                );
+                $newTenantId = DB::table('tenants')->insertGetId([
+                    'office_id' => $officeId,
+                    'name' => $tenantName,
+                    'id_type' => 'national_id',
+                    'id_number' => $tenantNatId ?: ('10' . rand(10000000, 99999999)),
+                    'phone' => CompanyErpController::formatSaudiPhone($cleanTPhone),
+                    'account_id' => $tAccId,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $tenant = DB::table('tenants')->where('id', $newTenantId)->first();
+                $createdNewTenant = true;
+            }
+
+            return [
+                'owner' => $owner,
+                'property' => $matchedProperty,
+                'unit' => $matchedUnit,
+                'tenant' => $tenant,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'created_new_owner' => $createdNewOwner,
+            'created_new_tenant' => $createdNewTenant,
+            'owner_id' => $result['owner']->id ?? null,
+            'owner_name' => $result['owner']->name ?? '',
+            'owner_national_id' => $result['owner']->national_id ?? '',
+            'property_id' => $result['property']->id ?? null,
+            'property_title' => $result['property']->title ?? '',
+            'deed_number' => $result['property']->deed_number ?? $deedNumber,
+            'total_area' => $result['property']->total_area ?? $totalArea,
+            'property_unit_id' => $result['unit']->id ?? null,
+            'unit_number' => $result['unit']->unit_number ?? '',
+            'tenant_id' => $result['tenant']->id ?? null,
+            'tenant_name' => $result['tenant']->name ?? '',
+            'linked_unit_info' => $linkedUnitInfo,
+            'message' => $createdNewOwner
+                ? "✅ تم قراءة الملف وإنشاء سجل جديد للمالك ({$result['owner']->name}) تلقائياً وربطه بالوحدة ({$linkedUnitInfo}) وتعبئة الحقول!"
+                : "✅ تم قراءة الملف والتعرف على المالك ({$result['owner']->name}) وربطه بالوحدة ({$linkedUnitInfo}) وتعبئة الحقول تلقائياً!",
+        ]);
+    }
+
+    // =========================================================================
+    // 2. المدقق المحاسبي الآلي قبل الإقفال (Pre-Closing Automated Accounting Auditor)
+    // =========================================================================
+    private function runPreClosingAccountingAuditInternal(int $officeId, $vouchers, $owners, $contracts, $journalEntries): array
+    {
+        $untransferredReceipts = [];
+        $unrecordedCommissions = [];
+        $unlinkedVouchers = [];
+
+        $ownersById = collect($owners)->keyBy('id');
+        $contractsByTenant = collect($contracts)->keyBy('tenant_id');
+        $journalNotesConcat = collect($journalEntries)->pluck('general_notes')->implode(' | ');
+
+        foreach ($vouchers as $v) {
+            if ($v->voucher_type !== 'receipt') {
+                if (empty($v->owner_id) && empty($v->tenant_id)) {
+                    $unlinkedVouchers[] = $v;
+                }
+                continue;
+            }
+
+            $resolvedOwnerId = $v->owner_id;
+            if (!$resolvedOwnerId && $v->tenant_id && isset($contractsByTenant[$v->tenant_id])) {
+                $resolvedOwnerId = $contractsByTenant[$v->tenant_id]->owner_id;
+            }
+
+            $ownerObj = $resolvedOwnerId && isset($ownersById[$resolvedOwnerId]) ? $ownersById[$resolvedOwnerId] : null;
+            $feeRate = $ownerObj ? (float) ($ownerObj->office_management_fee_rate ?? 5) : 5.0;
+            $expectedCommission = round(($v->amount * $feeRate) / 100, 2);
+            $expectedOwnerNet = round($v->amount - $expectedCommission, 2);
+
+            $v->expected_commission = $expectedCommission;
+            $v->expected_owner_net = $expectedOwnerNet;
+            $v->fee_rate = $feeRate;
+            $v->resolved_owner_id = $resolvedOwnerId;
+            $v->resolved_owner_name = $ownerObj->name ?? ($v->owner_name ?: 'غير محدد');
+
+            // 1. فحص هل تم ترحيل الدفعة لحساب أمانات المالك؟
+            $isOwnerCredited = !empty($v->owner_credited)
+                || ($ownerObj && (int) $v->credit_account_id === (int) $ownerObj->account_id)
+                || str_contains($journalNotesConcat, $v->voucher_number);
+
+            if (!$isOwnerCredited || empty($v->owner_id)) {
+                $untransferredReceipts[] = $v;
+            }
+
+            // 2. فحص هل تم احتساب عمولة المكتب على دفعة الإيجار؟
+            $isCommissionRecorded = !empty($v->commission_recorded)
+                || (str_contains($journalNotesConcat, 'عمولة') && str_contains($journalNotesConcat, $v->voucher_number));
+
+            if (!$isCommissionRecorded && $expectedCommission > 0) {
+                $unrecordedCommissions[] = $v;
+            }
+        }
+
+        return [
+            'untransferred_receipts' => $untransferredReceipts,
+            'unrecorded_commissions' => $unrecordedCommissions,
+            'unlinked_vouchers' => $unlinkedVouchers,
+            'total_issues' => count($untransferredReceipts) + count($unrecordedCommissions),
+        ];
+    }
+
+    public function autoFixAuditedVoucher(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        app(CompanyErpController::class)->ensureJournalTables();
+        CompanyErpController::ensureContractInstallmentsTable();
+
+        $v = DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->first();
+        if (!$v) {
+            return back()->withErrors(['السند غير موجود.']);
+        }
+
+        $ownerId = $request->filled('owner_id') ? (int) $request->owner_id : $v->owner_id;
+        if (!$ownerId && $v->tenant_id) {
+            $c = DB::table('lease_contracts')->where('office_id', $officeId)->where('tenant_id', $v->tenant_id)->orderBy('id', 'desc')->first();
+            if ($c) $ownerId = $c->owner_id;
+        }
+
+        $owner = $ownerId ? DB::table('owners')->where('id', $ownerId)->where('office_id', $officeId)->first() : null;
+        if (!$owner) {
+            return redirect()->route('office.dashboard', ['tab' => 'auditor'])
+                ->withErrors(['يرجى تحديد المالك المرتبط بالسند أولاً من زر (تعديل السند) ليتم ترحيل الأمانات والعمولة.']);
+        }
+
+        $feeRate = (float) ($owner->office_management_fee_rate ?? 5);
+        $commissionAmt = round(($v->amount * $feeRate) / 100, 2);
+        $netOwnerAmt = round($v->amount - $commissionAmt, 2);
+
+        $revAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '4101')->first()
+               ?: DB::table('accounts')->where('office_id', $officeId)->where('type', 'like', '%إيراد%')->where('is_group', 0)->first();
+
+        DB::transaction(function () use ($officeId, $v, $owner, $feeRate, $commissionAmt, $netOwnerAmt, $revAcc) {
+            DB::table('vouchers')->where('id', $v->id)->update([
+                'owner_id' => $owner->id,
+                'owner_credited' => 1,
+                'commission_recorded' => 1,
+                'updated_at' => now(),
+            ]);
+
+            $maxNo = DB::table('journal_entries')->where('office_id', $officeId)->max('entry_number') ?? 0;
+            $entryId = DB::table('journal_entries')->insertGetId([
+                'office_id' => $officeId,
+                'entry_number' => $maxNo + 1,
+                'entry_date' => date('Y-m-d'),
+                'general_notes' => "قيد تدقيق آلي للسند ({$v->voucher_number}): ترحيل أمانات المالك ({$owner->name}) واحتساب عمولة المكتب ({$feeRate}%)",
+                'total_debit' => $v->amount,
+                'total_credit' => $v->amount,
+                'total_tax' => 0,
+                'created_by' => Auth::id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            // مدين: حساب المستأجر/الوسيط
+            DB::table('journal_entry_items')->insert([
+                'journal_entry_id' => $entryId,
+                'account_id' => $v->credit_account_id,
+                'debit' => $v->amount,
+                'credit' => 0,
+                'tax' => 0,
+                'notes' => "تسوية وترحيل دفعة السند ({$v->voucher_number})",
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            // دائن 1: صافي أمانات المالك
+            if ($owner->account_id && $netOwnerAmt > 0) {
+                DB::table('journal_entry_items')->insert([
+                    'journal_entry_id' => $entryId,
+                    'account_id' => $owner->account_id,
+                    'debit' => 0,
+                    'credit' => $netOwnerAmt,
+                    'tax' => 0,
+                    'notes' => "صافي أمانات المالك ({$owner->name}) بعد خصم عمولة {$feeRate}%",
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                CompanyErpController::applyAccountMovement((int) $owner->account_id, 0, $netOwnerAmt);
+            }
+
+            // دائن 2: إيراد عمولة المكتب
+            if ($revAcc && $commissionAmt > 0) {
+                DB::table('journal_entry_items')->insert([
+                    'journal_entry_id' => $entryId,
+                    'account_id' => $revAcc->id,
+                    'debit' => 0,
+                    'credit' => $commissionAmt,
+                    'tax' => 0,
+                    'notes' => "عمولة إدارة الأملاك ({$feeRate}%) على السند ({$v->voucher_number})",
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                CompanyErpController::applyAccountMovement((int) $revAcc->id, 0, $commissionAmt);
+            }
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'auditor'])
+            ->with('success', "✅ تم تدقيق ومعالجة السند ({$v->voucher_number}): ترحيل صافي ({$netOwnerAmt} ر.س) لأمانات المالك ({$owner->name}) وتسجيل عمولة المكتب ({$commissionAmt} ر.س) في قيد يومي متوازن!");
+    }
+
+    // =========================================================================
+    // 3. حفظ إعدادات التقرير اليومي المصغر لمدير المكتب الساعة 9 مساءً (PDF عبر واتساب)
+    // =========================================================================
+    public function saveDailyReportSettings(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureContractInstallmentsTable();
+
+        $settings = [
+            'enabled' => $request->has('enable_daily_report') ? 1 : 0,
+            'send_time' => $request->input('daily_report_time', '21:00'),
+            'recipient_phone' => trim((string) $request->input('daily_report_phone', '')),
+            'inc_receipts' => $request->has('inc_receipts') ? 1 : 0,
+            'inc_payments' => $request->has('inc_payments') ? 1 : 0,
+            'inc_new_contracts' => $request->has('inc_new_contracts') ? 1 : 0,
+            'inc_overdue' => $request->has('inc_overdue') ? 1 : 0,
+            'inc_net_cash' => $request->has('inc_net_cash') ? 1 : 0,
+        ];
+
+        DB::table('offices')->where('id', $officeId)->update([
+            'daily_report_settings_json' => json_encode($settings, JSON_UNESCAPED_UNICODE),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'whatsapp'])
+            ->with('success', 'تم حفظ إعدادات وتوقيت التقرير اليومي المصغر لمدير المكتب (PDF أصلي عبر واتساب) بنجاح.');
+    }
+
+    // =========================================================================
+    // 4. نظام إدارة اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة
+    // =========================================================================
+    public function storeMullakBuilding(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureContractInstallmentsTable();
+
+        $request->validate(['association_name' => 'required']);
+
+        DB::table('mullak_buildings')->insert([
+            'office_id' => $officeId,
+            'property_id' => $request->filled('property_id') ? (int) $request->property_id : null,
+            'association_name' => trim($request->association_name),
+            'bylaws_number' => trim($request->bylaws_number ?? ''),
+            'units_count' => (int) ($request->units_count ?: 10),
+            'default_annual_fee' => (float) ($request->default_annual_fee ?? 2400),
+            'guard_monthly_salary' => (float) ($request->guard_monthly_salary ?? 1500),
+            'electricity_common_meter' => trim($request->electricity_common_meter ?? ''),
+            'water_common_meter' => trim($request->water_common_meter ?? ''),
+            'notes' => trim($request->notes ?? ''),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم تأسيس جمعية / عمارة اتحاد الملاك بنجاح.');
+    }
+
+    public function storeMullakMember(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureContractInstallmentsTable();
+
+        $request->validate([
+            'mullak_building_id' => 'required',
+            'unit_number' => 'required',
+            'member_name' => 'required',
+            'annual_fee' => 'required|numeric',
+        ]);
+
+        $annualFee = (float) $request->annual_fee;
+        $paidAmount = (float) ($request->paid_amount ?? 0);
+        $status = $paidAmount >= $annualFee ? 'paid' : ($paidAmount > 0 ? 'partial' : 'due');
+
+        DB::table('mullak_members')->insert([
+            'office_id' => $officeId,
+            'mullak_building_id' => (int) $request->mullak_building_id,
+            'unit_number' => trim($request->unit_number),
+            'floor_number' => trim($request->floor_number ?? ''),
+            'member_role' => $request->input('member_role', 'owner'), // owner | tenant
+            'member_name' => trim($request->member_name),
+            'phone' => trim($request->phone ?? ''),
+            'national_id' => trim($request->national_id ?? ''),
+            'area_share_pct' => (float) ($request->area_share_pct ?? 0),
+            'annual_fee' => $annualFee,
+            'paid_amount' => $paidAmount,
+            'billing_year' => $request->input('billing_year', date('Y')),
+            'status' => $status,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم إضافة العضو (مالك شقة / مستأجر) في اتحاد الملاك واحتساب رسوم الأجزاء المشتركة بنجاح.');
+    }
+
+    public function payMullakMemberFee(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $member = DB::table('mullak_members')->where('id', $id)->where('office_id', $officeId)->first();
+        if (!$member) {
+            return back()->withErrors(['العضو غير موجود في اتحاد الملاك.']);
+        }
+
+        $payAmt = (float) ($request->amount ?? 0);
+        if ($payAmt <= 0) {
+            return back()->withErrors(['يرجى إدخال مبلغ سداد صحيح.']);
+        }
+
+        $newPaid = round($member->paid_amount + $payAmt, 2);
+        $newStatus = $newPaid >= ($member->annual_fee - 0.01) ? 'paid' : 'partial';
+
+        DB::transaction(function () use ($officeId, $member, $payAmt, $newPaid, $newStatus, $request) {
+            DB::table('mullak_members')->where('id', $member->id)->update([
+                'paid_amount' => $newPaid,
+                'status' => $newStatus,
+                'updated_at' => now(),
+            ]);
+
+            $cashAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '1102')->first()
+                    ?: DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->first();
+            $accId = $cashAcc ? $cashAcc->id : 1;
+
+            $vNo = CompanyErpController::generateNextVoucherNumber('receipt', $officeId);
+            DB::table('vouchers')->insert([
+                'voucher_number' => $vNo,
+                'voucher_type' => 'receipt',
+                'office_id' => $officeId,
+                'debit_account_id' => $accId,
+                'credit_account_id' => $accId,
+                'amount' => $payAmt,
+                'payment_method' => CompanyErpController::normalizeVoucherPaymentMethod($request->payment_method ?: 'حوالة بنكية'),
+                'voucher_date' => date('Y-m-d'),
+                'notes' => "تحصيل رسوم صيانة اتحاد الملاك - وحدة ({$member->unit_number}) - {$member->member_name}",
+                'owner_credited' => 1,
+                'commission_recorded' => 1,
+                'created_by' => Auth::id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            CompanyErpController::applyAccountMovement((int) $accId, $payAmt, 0);
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', "تم تحصيل مبلغ ({$payAmt} ر.س) لرسوم صيانة الأجزاء المشتركة للوحدة ({$member->unit_number}) وإصدار سند قبض رسمي.");
+    }
+
+    public function deleteMullakMember($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('mullak_members')->where('id', $id)->where('office_id', $officeId)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم حذف المالك / المستأجر من سجل اتحاد الملاك بنجاح.');
+    }
+
+    public function storeMullakExpense(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $request->validate([
+            'mullak_building_id' => 'required',
+            'title' => 'required',
+            'amount' => 'required|numeric|min:0.01',
+        ]);
+
+        $amt = (float) $request->amount;
+        DB::transaction(function () use ($officeId, $request, $amt) {
+            $cashAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '1102')->first()
+                    ?: DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->first();
+            $expAcc  = DB::table('accounts')->where('office_id', $officeId)->where('code', '5101')->first() ?: $cashAcc;
+
+            $vId = null;
+            if ($cashAcc && $expAcc) {
+                $vNo = CompanyErpController::generateNextVoucherNumber('payment', $officeId);
+                $vId = DB::table('vouchers')->insertGetId([
+                    'voucher_number' => $vNo,
+                    'voucher_type' => 'payment',
+                    'office_id' => $officeId,
+                    'debit_account_id' => $expAcc->id,
+                    'credit_account_id' => $cashAcc->id,
+                    'amount' => $amt,
+                    'payment_method' => CompanyErpController::normalizeVoucherPaymentMethod($request->payment_method ?: 'حوالة بنكية'),
+                    'voucher_date' => $request->expense_date ?: date('Y-m-d'),
+                    'notes' => "مصروف اتحاد الملاك ({$request->expense_category}): " . trim($request->title),
+                    'created_by' => Auth::id(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                CompanyErpController::applyAccountMovement((int) $expAcc->id, $amt, 0);
+                CompanyErpController::applyAccountMovement((int) $cashAcc->id, 0, $amt);
+            }
+
+            DB::table('mullak_expenses')->insert([
+                'office_id' => $officeId,
+                'mullak_building_id' => (int) $request->mullak_building_id,
+                'expense_category' => $request->expense_category ?: 'راتب الحارس',
+                'title' => trim($request->title),
+                'amount' => $amt,
+                'expense_date' => $request->expense_date ?: date('Y-m-d'),
+                'payment_method' => $request->payment_method ?: 'حوالة بنكية',
+                'voucher_id' => $vId,
+                'notes' => trim($request->notes ?? ''),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم تسجيل مصروف الأجزاء المشتركة (الحارس / النظافة / الصيانة) وإصدار سند الصرف بنجاح.');
+    }
+
+    public function deleteMullakExpense($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::table('mullak_expenses')->where('id', $id)->where('office_id', $officeId)->delete();
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم حذف مصروف اتحاد الملاك.');
     }
 }

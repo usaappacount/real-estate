@@ -4592,11 +4592,13 @@ class CompanyErpController extends Controller
             'owners' => 'إدارة الملاك',
             'properties' => 'العقارات والصكوك والوحدات',
             'contracts' => 'المستأجرون وعقود (إيجار)',
+            'mullak' => 'اتحاد الملاك (مُلّاك) والأجزاء المشتركة',
             'installments' => 'جدولة الدفعات وأعمار الديون',
             'legal_notices' => 'مولد الإنذارات القانونية الذكي',
             'accounting' => 'شجرة الحسابات المحاسبية',
             'vouchers' => 'سندات القبض والصرف',
             'journal' => 'القيود اليومية',
+            'auditor' => 'المدقق المحاسبي الآلي قبل الإقفال',
             'invoicing' => 'الفواتير الضريبية (ZATCA)',
             'account_statement' => 'كشف الحساب التفصيلي',
             'statements' => 'الأستاذ العام والقوائم المالية',
@@ -4817,10 +4819,100 @@ class CompanyErpController extends Controller
                 $table->timestamps();
             });
         }
+
+        // إضافة أعمدة فترة السماح والتجهيز (Fit-out Grace Period) لعقود الإيجار تلقائياً
+        if (Schema::hasTable('lease_contracts')) {
+            Schema::table('lease_contracts', function (Blueprint $table) {
+                if (!Schema::hasColumn('lease_contracts', 'grace_period_months')) {
+                    $table->integer('grace_period_months')->default(0);
+                }
+                if (!Schema::hasColumn('lease_contracts', 'grace_period_days')) {
+                    $table->integer('grace_period_days')->default(0);
+                }
+                if (!Schema::hasColumn('lease_contracts', 'installments_start_date')) {
+                    $table->date('installments_start_date')->nullable();
+                }
+            });
+        }
+
+        // إضافة عمود إعدادات التقرير اليومي الساعة 9 مساءً في جدول المكاتب تلقائياً
+        if (Schema::hasTable('offices')) {
+            Schema::table('offices', function (Blueprint $table) {
+                if (!Schema::hasColumn('offices', 'daily_report_settings_json')) {
+                    $table->text('daily_report_settings_json')->nullable();
+                }
+            });
+        }
+
+        // إضافة أعمدة التدقيق المحاسبي للسندات تلقائياً
+        if (Schema::hasTable('vouchers')) {
+            Schema::table('vouchers', function (Blueprint $table) {
+                if (!Schema::hasColumn('vouchers', 'owner_credited')) {
+                    $table->boolean('owner_credited')->default(false);
+                }
+                if (!Schema::hasColumn('vouchers', 'commission_recorded')) {
+                    $table->boolean('commission_recorded')->default(false);
+                }
+            });
+        }
+
+        // إنشاء جداول نظام اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة تلقائياً
+        if (!Schema::hasTable('mullak_buildings')) {
+            Schema::create('mullak_buildings', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('property_id')->nullable();
+                $table->string('association_name');
+                $table->string('bylaws_number')->nullable();
+                $table->integer('units_count')->default(1);
+                $table->decimal('default_annual_fee', 15, 2)->default(2400);
+                $table->decimal('guard_monthly_salary', 15, 2)->default(1500);
+                $table->string('electricity_common_meter')->nullable();
+                $table->string('water_common_meter')->nullable();
+                $table->text('notes')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('mullak_members')) {
+            Schema::create('mullak_members', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('mullak_building_id')->index();
+                $table->string('unit_number');
+                $table->string('floor_number')->nullable();
+                $table->string('member_role')->default('owner'); // owner (مالك شقة) | tenant (مستأجر بالاتحاد)
+                $table->string('member_name');
+                $table->string('phone')->nullable();
+                $table->string('national_id')->nullable();
+                $table->decimal('area_share_pct', 6, 2)->default(0);
+                $table->decimal('annual_fee', 15, 2)->default(0);
+                $table->decimal('paid_amount', 15, 2)->default(0);
+                $table->string('billing_year', 10)->default(date('Y'));
+                $table->string('status')->default('due'); // due | partial | paid
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('mullak_expenses')) {
+            Schema::create('mullak_expenses', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('office_id')->index();
+                $table->unsignedBigInteger('mullak_building_id')->index();
+                $table->string('expense_category')->default('راتب الحارس'); // راتب الحارس | النظافة | المصاعد | كهرباء ومياه مشتركة | تطوير وصيانة
+                $table->string('title');
+                $table->decimal('amount', 15, 2)->default(0);
+                $table->date('expense_date');
+                $table->string('payment_method')->default('حوالة بنكية');
+                $table->unsignedBigInteger('voucher_id')->nullable();
+                $table->text('notes')->nullable();
+                $table->timestamps();
+            });
+        }
     }
 
     /**
-     * توليد جدول دفعات العقد تلقائياً حسب دورة الإيجار (شهري: 12، ربع سنوي: 4، نصف سنوي: 2، سنوي: 1)
+     * توليد جدول دفعات العقد تلقائياً حسب دورة الإيجار مع احترام فترة السماح والتجهيز (Fit-out Grace Period)
      */
     public static function generateInstallmentsForContract(object $contract): void
     {
@@ -4836,13 +4928,27 @@ class CompanyErpController extends Controller
         };
         $monthsStep = (int) (12 / $count);
         $basePart = floor(($contract->total_rent_amount / $count) * 100) / 100;
-        $startDate = \Carbon\Carbon::parse($contract->start_date ?: date('Y-m-d'));
+
+        // إذا كان هناك فترة سماح وتجهيز (Fit-out Grace Period)، يبدأ جدول الدفعات المحاسبي بعد انتهاء فترة السماح
+        if (!empty($contract->installments_start_date)) {
+            $firstInstallmentDate = \Carbon\Carbon::parse($contract->installments_start_date);
+        } else {
+            $firstInstallmentDate = \Carbon\Carbon::parse($contract->start_date ?: date('Y-m-d'));
+            $graceMonths = (int) ($contract->grace_period_months ?? 0);
+            $graceDays = (int) ($contract->grace_period_days ?? 0);
+            if ($graceMonths > 0) {
+                $firstInstallmentDate->addMonths($graceMonths);
+            }
+            if ($graceDays > 0) {
+                $firstInstallmentDate->addDays($graceDays);
+            }
+        }
 
         for ($i = 1; $i <= $count; $i++) {
             $amt = ($i === $count)
                 ? round($contract->total_rent_amount - ($basePart * ($count - 1)), 2)
                 : $basePart;
-            $dueDate = $startDate->copy()->addMonths(($i - 1) * $monthsStep)->toDateString();
+            $dueDate = $firstInstallmentDate->copy()->addMonths(($i - 1) * $monthsStep)->toDateString();
 
             DB::table('contract_installments')->insert([
                 'office_id' => $contract->office_id,

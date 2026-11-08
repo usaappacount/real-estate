@@ -8557,5 +8557,32 @@
     });
 })();
 </script>
+<style id="mobile-responsive-global">
+    @media (max-width: 1024px) {
+        body { flex-direction: column !important; overflow-x: hidden !important; }
+        aside {
+            position: fixed !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
+            width: 280px !important; z-index: 9999 !important;
+            transform: translateX(105%) !important; transition: transform 0.25s ease-in-out !important;
+        }
+        aside.mobile-drawer-open { transform: translateX(0) !important; }
+        header { height: auto !important; padding: 12px 16px !important; flex-wrap: wrap !important; }
+        main { padding: 14px !important; }
+        div[id*="Modal"] > div { width: 96vw !important; max-width: 96vw !important; padding: 16px !important; }
+    }
+</style>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const header = document.querySelector('header');
+        const sidebar = document.querySelector('aside');
+        if (!header || !sidebar) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lg:hidden px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold';
+        btn.innerHTML = '☰ القائمة';
+        btn.onclick = () => sidebar.classList.toggle('mobile-drawer-open');
+        header.insertBefore(btn, header.firstChild);
+    });
+</script>
 </body>
 </html>
