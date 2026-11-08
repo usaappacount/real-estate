@@ -1119,8 +1119,7 @@ class CompanyErpController extends Controller
         $activityLogs = self::getFilteredActivityLogs();
 
         self::ensureSiteAnalyticsAndAdsTables();
-        $siteAnalytics = $this->getSiteAnalyticsData();
-        $liveQrState = $this->fetchLiveMarketingQrState();
+        $siteAnalytics =$tab === 'overview' ? $this->getSiteAnalyticsData() : [];$liveQrState = $tab === 'whatsapp' ?$this->fetchLiveMarketingQrState() : ['connected' => false];
         $adsWhatsappSettings = [
             'qr_status'       => $liveQrState['connected'] ? 'connected' : 'disconnected',
             'account_name'    => $liveQrState['account_name'] ?? '',
@@ -4798,8 +4797,15 @@ class CompanyErpController extends Controller
     // =========================================================================
     // الميزات الذكية الجديدة: جدولة الدفعات + إرسال PDF واتساب + المساعد الذكي + الاعتماد
     // =========================================================================
+    private static bool $installmentsSchemaEnsured = false;
+
     public static function ensureContractInstallmentsTable(): void
     {
+        if (self::$installmentsSchemaEnsured) {
+            return;
+        }
+        self::$installmentsSchemaEnsured = true;
+
         if (!Schema::hasTable('contract_installments')) {
             Schema::create('contract_installments', function (Blueprint $table) {
                 $table->id();
@@ -4813,14 +4819,13 @@ class CompanyErpController extends Controller
                 $table->date('due_date')->index();
                 $table->decimal('amount', 15, 2)->default(0);
                 $table->decimal('paid_amount', 15, 2)->default(0);
-                $table->string('status')->default('due'); // due | partial | overdue | paid
+                $table->string('status')->default('due');
                 $table->unsignedBigInteger('last_voucher_id')->nullable();
                 $table->text('voucher_ids_json')->nullable();
                 $table->timestamps();
             });
         }
 
-        // إضافة أعمدة فترة السماح والتجهيز (Fit-out Grace Period) لعقود الإيجار تلقائياً
         if (Schema::hasTable('lease_contracts')) {
             Schema::table('lease_contracts', function (Blueprint $table) {
                 if (!Schema::hasColumn('lease_contracts', 'grace_period_months')) {
@@ -4835,7 +4840,6 @@ class CompanyErpController extends Controller
             });
         }
 
-        // إضافة عمود إعدادات التقرير اليومي الساعة 9 مساءً في جدول المكاتب تلقائياً
         if (Schema::hasTable('offices')) {
             Schema::table('offices', function (Blueprint $table) {
                 if (!Schema::hasColumn('offices', 'daily_report_settings_json')) {
@@ -4844,7 +4848,6 @@ class CompanyErpController extends Controller
             });
         }
 
-        // إضافة أعمدة التدقيق المحاسبي للسندات تلقائياً
         if (Schema::hasTable('vouchers')) {
             Schema::table('vouchers', function (Blueprint $table) {
                 if (!Schema::hasColumn('vouchers', 'owner_credited')) {
@@ -4856,7 +4859,6 @@ class CompanyErpController extends Controller
             });
         }
 
-        // إنشاء جداول نظام اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة تلقائياً
         if (!Schema::hasTable('mullak_buildings')) {
             Schema::create('mullak_buildings', function (Blueprint $table) {
                 $table->id();
@@ -4864,13 +4866,36 @@ class CompanyErpController extends Controller
                 $table->unsignedBigInteger('property_id')->nullable();
                 $table->string('association_name');
                 $table->string('bylaws_number')->nullable();
+                $table->string('deed_number')->nullable();
+                $table->string('owner_name')->nullable();
+                $table->string('address')->nullable();
+                $table->decimal('total_area', 15, 2)->default(0);
                 $table->integer('units_count')->default(1);
-                $table->decimal('default_annual_fee', 15, 2)->default(2400);
+                $table->string('distribution_method')->default('equal'); // equal | by_units
+                $table->decimal('default_annual_fee', 15, 2)->default(12000);
                 $table->decimal('guard_monthly_salary', 15, 2)->default(1500);
                 $table->string('electricity_common_meter')->nullable();
                 $table->string('water_common_meter')->nullable();
                 $table->text('notes')->nullable();
                 $table->timestamps();
+            });
+        } else {
+            Schema::table('mullak_buildings', function (Blueprint $table) {
+                if (!Schema::hasColumn('mullak_buildings', 'deed_number')) {
+                    $table->string('deed_number')->nullable();
+                }
+                if (!Schema::hasColumn('mullak_buildings', 'owner_name')) {
+                    $table->string('owner_name')->nullable();
+                }
+                if (!Schema::hasColumn('mullak_buildings', 'address')) {
+                    $table->string('address')->nullable();
+                }
+                if (!Schema::hasColumn('mullak_buildings', 'total_area')) {
+                    $table->decimal('total_area', 15, 2)->default(0);
+                }
+                if (!Schema::hasColumn('mullak_buildings', 'distribution_method')) {
+                    $table->string('distribution_method')->default('equal');
+                }
             });
         }
 
@@ -4879,9 +4904,11 @@ class CompanyErpController extends Controller
                 $table->id();
                 $table->unsignedBigInteger('office_id')->index();
                 $table->unsignedBigInteger('mullak_building_id')->index();
+                $table->unsignedBigInteger('tenant_id')->nullable();
                 $table->string('unit_number');
                 $table->string('floor_number')->nullable();
-                $table->string('member_role')->default('owner'); // owner (مالك شقة) | tenant (مستأجر بالاتحاد)
+                $table->integer('units_count')->default(1);
+                $table->string('member_role')->default('tenant'); // owner | tenant
                 $table->string('member_name');
                 $table->string('phone')->nullable();
                 $table->string('national_id')->nullable();
@@ -4889,8 +4916,17 @@ class CompanyErpController extends Controller
                 $table->decimal('annual_fee', 15, 2)->default(0);
                 $table->decimal('paid_amount', 15, 2)->default(0);
                 $table->string('billing_year', 10)->default(date('Y'));
-                $table->string('status')->default('due'); // due | partial | paid
+                $table->string('status')->default('due');
                 $table->timestamps();
+            });
+        } else {
+            Schema::table('mullak_members', function (Blueprint $table) {
+                if (!Schema::hasColumn('mullak_members', 'tenant_id')) {
+                    $table->unsignedBigInteger('tenant_id')->nullable();
+                }
+                if (!Schema::hasColumn('mullak_members', 'units_count')) {
+                    $table->integer('units_count')->default(1);
+                }
             });
         }
 
@@ -4899,7 +4935,7 @@ class CompanyErpController extends Controller
                 $table->id();
                 $table->unsignedBigInteger('office_id')->index();
                 $table->unsignedBigInteger('mullak_building_id')->index();
-                $table->string('expense_category')->default('راتب الحارس'); // راتب الحارس | النظافة | المصاعد | كهرباء ومياه مشتركة | تطوير وصيانة
+                $table->string('expense_category')->default('راتب الحارس');
                 $table->string('title');
                 $table->decimal('amount', 15, 2)->default(0);
                 $table->date('expense_date');

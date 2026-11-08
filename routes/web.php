@@ -199,7 +199,9 @@ Route::middleware([
         Route::post('/auditor/auto-fix/{id}', [OfficeErpController::class, 'autoFixAuditedVoucher'])->name('auditor.auto_fix');
         Route::post('/whatsapp/daily-report-settings', [OfficeErpController::class, 'saveDailyReportSettings'])->name('whatsapp.daily_report_settings');
         Route::post('/mullak/building/store', [OfficeErpController::class, 'storeMullakBuilding'])->name('mullak.building.store');
+        Route::post('/mullak/building/{id}/delete', [OfficeErpController::class, 'deleteMullakBuilding'])->name('mullak.building.delete');
         Route::post('/mullak/member/store', [OfficeErpController::class, 'storeMullakMember'])->name('mullak.member.store');
+        Route::post('/mullak/member/{id}/update', [OfficeErpController::class, 'updateMullakMember'])->name('mullak.member.update');
         Route::post('/mullak/member/{id}/pay', [OfficeErpController::class, 'payMullakMemberFee'])->name('mullak.member.pay');
         Route::post('/mullak/member/{id}/delete', [OfficeErpController::class, 'deleteMullakMember'])->name('mullak.member.delete');
         Route::post('/mullak/expense/store', [OfficeErpController::class, 'storeMullakExpense'])->name('mullak.expense.store');

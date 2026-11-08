@@ -3117,22 +3117,91 @@ class OfficeErpController extends Controller
     }
 
     // =========================================================================
-    // 4. نظام إدارة اتحاد الملاك (Mullak) للشقق التمليك والأجزاء المشتركة
+    // 4. نظام إدارة اتحاد الملاك (Mullak) المطور مع جلب بيانات العمارة والمستأجرين وإعادة احتساب الرسوم تلقائياً
     // =========================================================================
+
+    /**
+     * إعادة احتساب وتوزيع رسوم الصيانة السنوية للعمارة تلقائياً على جميع الأعضاء المسجلين
+     * سواء بالتساوي (equal) أو حسب عدد الوحدات لكل عضو (by_units)
+     */
+    private function recalculateMullakBuildingFees(int $officeId, int $buildingId): void
+    {
+        $building = DB::table('mullak_buildings')->where('id', $buildingId)->where('office_id', $officeId)->first();
+        if (!$building) {
+            return;
+        }
+
+        $members = DB::table('mullak_members')->where('mullak_building_id', $buildingId)->where('office_id', $officeId)->get();
+        $membersCount = $members->count();
+        if ($membersCount === 0) {
+            return;
+        }
+
+        $totalPool = (float) ($building->default_annual_fee ?? 0);
+        if ($totalPool <= 0) {
+            return;
+        }
+
+        $method = $building->distribution_method ?: 'equal';
+        $totalMemberUnits = max(1, (int) $members->sum(fn($m) => max(1, (int) ($m->units_count ?? 1))));
+
+        foreach ($members as $m) {
+            $memberUnits = max(1, (int) ($m->units_count ?? 1));
+            if ($method === 'by_units') {
+                $sharePct = round(($memberUnits / $totalMemberUnits) * 100, 2);
+                $calculatedFee = round($totalPool * ($memberUnits / $totalMemberUnits), 2);
+            } else {
+                $sharePct = round((1 / $membersCount) * 100, 2);
+                $calculatedFee = round($totalPool / $membersCount, 2);
+            }
+
+            $paid = (float) ($m->paid_amount ?? 0);
+            $newStatus = $paid >= ($calculatedFee - 0.01) ? 'paid' : ($paid > 0 ? 'partial' : 'due');
+
+            DB::table('mullak_members')->where('id', $m->id)->update([
+                'annual_fee' => $calculatedFee,
+                'area_share_pct' => $sharePct,
+                'status' => $newStatus,
+                'updated_at' => now(),
+            ]);
+        }
+    }
+
     public function storeMullakBuilding(Request $request)
     {
         $officeId = $this->getCurrentOfficeId();
         CompanyErpController::ensureContractInstallmentsTable();
 
-        $request->validate(['association_name' => 'required']);
+        $prop = null;
+        if ($request->filled('property_id')) {
+            $prop = DB::table('properties')
+                ->leftJoin('owners', 'properties.owner_id', '=', 'owners.id')
+                ->where('properties.id', (int) $request->property_id)
+                ->where('properties.office_id', $officeId)
+                ->select('properties.*', 'owners.name as owner_name')
+                ->first();
+        }
+
+        $assocName = trim((string) $request->input('association_name', ''));
+        if ($assocName === '' && $prop) {
+            $assocName = 'اتحاد ملاك ' . $prop->title;
+        }
+        if ($assocName === '') {
+            return back()->withErrors(['يرجى اختيار العمارة أو كتابة اسم جمعية اتحاد الملاك.']);
+        }
 
         DB::table('mullak_buildings')->insert([
             'office_id' => $officeId,
-            'property_id' => $request->filled('property_id') ? (int) $request->property_id : null,
-            'association_name' => trim($request->association_name),
-            'bylaws_number' => trim($request->bylaws_number ?? ''),
-            'units_count' => (int) ($request->units_count ?: 10),
-            'default_annual_fee' => (float) ($request->default_annual_fee ?? 2400),
+            'property_id' => $prop ? $prop->id : null,
+            'association_name' => $assocName,
+            'bylaws_number' => trim($request->bylaws_number ?: ('MLK-' . date('Y') . '-' . rand(1000, 9999))),
+            'deed_number' => trim($request->deed_number ?: ($prop->deed_number ?? '')),
+            'owner_name' => trim($request->owner_name ?: ($prop->owner_name ?? '')),
+            'address' => trim($request->address ?: ($prop ? ($prop->city . ' - ' . $prop->district) : '')),
+            'total_area' => (float) ($request->total_area ?: ($prop->total_area ?? 0)),
+            'units_count' => max(1, (int) ($request->units_count ?: 1)),
+            'distribution_method' => $request->input('distribution_method', 'equal'),
+            'default_annual_fee' => (float) ($request->default_annual_fee ?? 12000),
             'guard_monthly_salary' => (float) ($request->guard_monthly_salary ?? 1500),
             'electricity_common_meter' => trim($request->electricity_common_meter ?? ''),
             'water_common_meter' => trim($request->water_common_meter ?? ''),
@@ -3142,7 +3211,20 @@ class OfficeErpController extends Controller
         ]);
 
         return redirect()->route('office.dashboard', ['tab' => 'mullak'])
-            ->with('success', 'تم تأسيس جمعية / عمارة اتحاد الملاك بنجاح.');
+            ->with('success', "تم إنشاء جمعية اتحاد الملاك على العقار ({$assocName}) وإضافتها في الجدول بنجاح.");
+    }
+
+    public function deleteMullakBuilding($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        DB::transaction(function () use ($officeId, $id) {
+            DB::table('mullak_members')->where('mullak_building_id', $id)->where('office_id', $officeId)->delete();
+            DB::table('mullak_expenses')->where('mullak_building_id', $id)->where('office_id', $officeId)->delete();
+            DB::table('mullak_buildings')->where('id', $id)->where('office_id', $officeId)->delete();
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+            ->with('success', 'تم حذف جمعية اتحاد الملاك وكافة السجلات المرتبطة بها.');
     }
 
     public function storeMullakMember(Request $request)
@@ -3152,35 +3234,132 @@ class OfficeErpController extends Controller
 
         $request->validate([
             'mullak_building_id' => 'required',
-            'unit_number' => 'required',
-            'member_name' => 'required',
-            'annual_fee' => 'required|numeric',
         ]);
 
-        $annualFee = (float) $request->annual_fee;
-        $paidAmount = (float) ($request->paid_amount ?? 0);
-        $status = $paidAmount >= $annualFee ? 'paid' : ($paidAmount > 0 ? 'partial' : 'due');
+        $buildingId = (int) $request->mullak_building_id;
+        $building = DB::table('mullak_buildings')->where('id', $buildingId)->where('office_id', $officeId)->first();
+        if (!$building) {
+            return back()->withErrors(['يرجى اختيار عمارة مسجل عليها اتحاد ملاك أولاً.']);
+        }
 
-        DB::table('mullak_members')->insert([
-            'office_id' => $officeId,
-            'mullak_building_id' => (int) $request->mullak_building_id,
-            'unit_number' => trim($request->unit_number),
-            'floor_number' => trim($request->floor_number ?? ''),
-            'member_role' => $request->input('member_role', 'owner'), // owner | tenant
-            'member_name' => trim($request->member_name),
-            'phone' => trim($request->phone ?? ''),
-            'national_id' => trim($request->national_id ?? ''),
-            'area_share_pct' => (float) ($request->area_share_pct ?? 0),
-            'annual_fee' => $annualFee,
+        // تحديث طريقة توزيع الرسوم وإجمالي الرسوم السنوية للعمارة إذا قام المستخدم بتحديدها في النافذة
+        $buildingUpdates = ['updated_at' => now()];
+        if ($request->filled('distribution_method')) {
+            $buildingUpdates['distribution_method'] = $request->input('distribution_method');
+        }
+        if ($request->filled('total_building_fee') && (float) $request->total_building_fee > 0) {
+            $buildingUpdates['default_annual_fee'] = (float) $request->total_building_fee;
+        }
+        DB::table('mullak_buildings')->where('id', $buildingId)->update($buildingUpdates);
+
+        DB::transaction(function () use ($request, $officeId, $buildingId) {
+            // 1. إذا تم استيراد المستأجرين تلقائياً من العمارة (قائمة متعددة)
+            $selectedRows = $request->input('selected_tenants', []);
+            $bulkNames    = $request->input('bulk_member_names', []);
+            $bulkPhones   = $request->input('bulk_phones', []);
+            $bulkUnits    = $request->input('bulk_unit_numbers', []);
+            $bulkUnitCnts = $request->input('bulk_units_counts', []);
+            $bulkRoles    = $request->input('bulk_roles', []);
+            $bulkTenantIds= $request->input('bulk_tenant_ids', []);
+
+            if (is_array($selectedRows) && count($selectedRows) > 0) {
+                foreach ($selectedRows as $rowIdx) {
+                    $mName = trim((string) ($bulkNames[$rowIdx] ?? ''));
+                    if ($mName === '') continue;
+
+                    $uNo = trim((string) ($bulkUnits[$rowIdx] ?? 'وحدة 1'));
+                    $tId = !empty($bulkTenantIds[$rowIdx]) ? (int) $bulkTenantIds[$rowIdx] : null;
+                    $uCount = max(1, (int) ($bulkUnitCnts[$rowIdx] ?? 1));
+
+                    // منع تكرار نفس المستأجر في نفس العمارة
+                    $exists = DB::table('mullak_members')
+                        ->where('mullak_building_id', $buildingId)
+                        ->where('member_name', $mName)
+                        ->where('unit_number', $uNo)
+                        ->exists();
+
+                    if (!$exists) {
+                        DB::table('mullak_members')->insert([
+                            'office_id' => $officeId,
+                            'mullak_building_id' => $buildingId,
+                            'tenant_id' => $tId,
+                            'unit_number' => $uNo,
+                            'units_count' => $uCount,
+                            'member_role' => $bulkRoles[$rowIdx] ?? 'tenant',
+                            'member_name' => $mName,
+                            'phone' => trim((string) ($bulkPhones[$rowIdx] ?? '')),
+                            'annual_fee' => 0,
+                            'paid_amount' => 0,
+                            'billing_year' => date('Y'),
+                            'status' => 'due',
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                    }
+                }
+            }
+
+            // 2. إذا تم إدخال عضو إضافي جديد يدوياً في نفس النافذة
+            $singleName = trim((string) $request->input('member_name', ''));
+            if ($singleName !== '') {
+                DB::table('mullak_members')->insert([
+                    'office_id' => $officeId,
+                    'mullak_building_id' => $buildingId,
+                    'unit_number' => trim((string) $request->input('unit_number', 'وحدة إضافية')),
+                    'floor_number' => trim((string) $request->input('floor_number', '')),
+                    'units_count' => max(1, (int) ($request->input('units_count', 1) ?: 1)),
+                    'member_role' => $request->input('member_role', 'tenant'),
+                    'member_name' => $singleName,
+                    'phone' => trim((string) $request->input('phone', '')),
+                    'national_id' => trim((string) $request->input('national_id', '')),
+                    'annual_fee' => (float) ($request->input('annual_fee', 0) ?: 0),
+                    'paid_amount' => (float) ($request->input('paid_amount', 0) ?: 0),
+                    'billing_year' => date('Y'),
+                    'status' => 'due',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            // 3. إعادة احتساب وتوزيع رسوم العمارة تلقائياً على جميع الأعضاء (السابقين والجدد)
+            $this->recalculateMullakBuildingFees($officeId, $buildingId);
+        });
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $buildingId])
+            ->with('success', 'تم حفظ الأعضاء وإعادة احتساب وتوزيع رسوم اتحاد الملاك على الجميع تلقائياً بنجاح.');
+    }
+
+    public function updateMullakMember(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        $member = DB::table('mullak_members')->where('id', $id)->where('office_id', $officeId)->first();
+        if (!$member) {
+            return back()->withErrors(['العضو غير موجود.']);
+        }
+
+        $unitsCount = max(1, (int) ($request->input('units_count', $member->units_count ?? 1) ?: 1));
+        $customAnnualFee = $request->filled('annual_fee') ? (float) $request->annual_fee : (float) $member->annual_fee;
+        $paidAmount = $request->filled('paid_amount') ? (float) $request->paid_amount : (float) $member->paid_amount;
+        $status = $paidAmount >= ($customAnnualFee - 0.01) ? 'paid' : ($paidAmount > 0 ? 'partial' : 'due');
+
+        DB::table('mullak_members')->where('id', $member->id)->update([
+            'member_name' => trim($request->input('member_name', $member->member_name)),
+            'phone' => trim($request->input('phone', $member->phone)),
+            'unit_number' => trim($request->input('unit_number', $member->unit_number)),
+            'member_role' => $request->input('member_role', $member->member_role),
+            'units_count' => $unitsCount,
+            'annual_fee' => $customAnnualFee,
             'paid_amount' => $paidAmount,
-            'billing_year' => $request->input('billing_year', date('Y')),
             'status' => $status,
-            'created_at' => now(),
             'updated_at' => now(),
         ]);
 
-        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
-            ->with('success', 'تم إضافة العضو (مالك شقة / مستأجر) في اتحاد الملاك واحتساب رسوم الأجزاء المشتركة بنجاح.');
+        if ($request->has('recalculate_all')) {
+            $this->recalculateMullakBuildingFees($officeId, (int) $member->mullak_building_id);
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $member->mullak_building_id])
+            ->with('success', 'تم تعديل بيانات عضو اتحاد الملاك وتحديث الكشف بنجاح.');
     }
 
     public function payMullakMemberFee(Request $request, $id)
@@ -3230,16 +3409,24 @@ class OfficeErpController extends Controller
             CompanyErpController::applyAccountMovement((int) $accId, $payAmt, 0);
         });
 
-        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $member->mullak_building_id])
             ->with('success', "تم تحصيل مبلغ ({$payAmt} ر.س) لرسوم صيانة الأجزاء المشتركة للوحدة ({$member->unit_number}) وإصدار سند قبض رسمي.");
     }
 
     public function deleteMullakMember($id)
     {
         $officeId = $this->getCurrentOfficeId();
+        $member = DB::table('mullak_members')->where('id', $id)->where('office_id', $officeId)->first();
+        $buildingId = $member ? (int) $member->mullak_building_id : null;
+
         DB::table('mullak_members')->where('id', $id)->where('office_id', $officeId)->delete();
-        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
-            ->with('success', 'تم حذف المالك / المستأجر من سجل اتحاد الملاك بنجاح.');
+
+        if ($buildingId) {
+            $this->recalculateMullakBuildingFees($officeId, $buildingId);
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $buildingId])
+            ->with('success', 'تم حذف العضو وإعادة توزيع رسوم الصيانة تلقائياً على باقي الأعضاء المسجلين.');
     }
 
     public function storeMullakExpense(Request $request)
@@ -3251,8 +3438,10 @@ class OfficeErpController extends Controller
             'amount' => 'required|numeric|min:0.01',
         ]);
 
+        $buildingId = (int) $request->mullak_building_id;
         $amt = (float) $request->amount;
-        DB::transaction(function () use ($officeId, $request, $amt) {
+
+        DB::transaction(function () use ($officeId, $request, $buildingId, $amt) {
             $cashAcc = DB::table('accounts')->where('office_id', $officeId)->where('code', '1102')->first()
                     ?: DB::table('accounts')->where('office_id', $officeId)->where('is_group', 0)->first();
             $expAcc  = DB::table('accounts')->where('office_id', $officeId)->where('code', '5101')->first() ?: $cashAcc;
@@ -3280,7 +3469,7 @@ class OfficeErpController extends Controller
 
             DB::table('mullak_expenses')->insert([
                 'office_id' => $officeId,
-                'mullak_building_id' => (int) $request->mullak_building_id,
+                'mullak_building_id' => $buildingId,
                 'expense_category' => $request->expense_category ?: 'راتب الحارس',
                 'title' => trim($request->title),
                 'amount' => $amt,
@@ -3293,15 +3482,19 @@ class OfficeErpController extends Controller
             ]);
         });
 
-        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
-            ->with('success', 'تم تسجيل مصروف الأجزاء المشتركة (الحارس / النظافة / الصيانة) وإصدار سند الصرف بنجاح.');
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $buildingId])
+            ->with('success', 'تم تسجيل مصروف الأجزاء المشتركة في كشف العمارة وإصدار سند الصرف بنجاح.');
     }
 
     public function deleteMullakExpense($id)
     {
         $officeId = $this->getCurrentOfficeId();
+        $exp = DB::table('mullak_expenses')->where('id', $id)->where('office_id', $officeId)->first();
+        $buildingId = $exp ? (int) $exp->mullak_building_id : null;
+
         DB::table('mullak_expenses')->where('id', $id)->where('office_id', $officeId)->delete();
-        return redirect()->route('office.dashboard', ['tab' => 'mullak'])
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $buildingId])
             ->with('success', 'تم حذف مصروف اتحاد الملاك.');
     }
 }
