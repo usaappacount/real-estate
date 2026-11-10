@@ -8,6 +8,19 @@ use App\Http\Controllers\OwnerErpController;
 // الواجهة الرئيسية التعريفية للمنصة وخدماتها (Landing Page)
 Route::get('/', [CompanyErpController::class, 'showLandingPage'])->name('landing');
 
+// مسار وضع العرض التفاعلي للزوار بدون تسجيل (Live Demo Sandbox - يعاد ضبطه كل ساعة)
+Route::get('/live-demo', [CompanyErpController::class, 'enterLiveDemoSandbox'])->name('public.live_demo');
+
+// مسار بوابة التسجيل الذاتي للمكاتب العقارية مع فترة تجريبية (Self-Onboarding Free Trial)
+Route::post('/register-office-trial', [CompanyErpController::class, 'registerOfficeSelfTrial'])
+    ->middleware('throttle:10,1')
+    ->name('public.register_office_trial');
+
+// مسار التصويت الإلكتروني العام لأعضاء جمعية اتحاد الملاك (مع التحقق بكود OTP من 4 أرقام)
+Route::get('/public/mullak-vote/{id}/{token}', [CompanyErpController::class, 'showPublicMullakVote'])->name('public.mullak_vote');
+Route::post('/public/mullak-vote/{id}/{token}/send-otp', [CompanyErpController::class, 'sendPublicMullakVoteOtp'])->middleware('throttle:10,1')->name('public.mullak_vote.send_otp');
+Route::post('/public/mullak-vote/{id}/{token}', [CompanyErpController::class, 'submitPublicMullakVote'])->middleware('throttle:10,1')->name('public.mullak_vote.submit');
+
 // مسار عرض وتحميل الفاتورة الضريبية العامة (لدعم زر إرسال الفاتورة عبر الواتساب)
 Route::get('/public/invoice-pdf/{id}/{token}', [CompanyErpController::class, 'showPublicInvoicePdf'])->name('public.invoice_pdf');
 
@@ -206,8 +219,16 @@ Route::middleware([
         Route::post('/mullak/member/{id}/delete', [OfficeErpController::class, 'deleteMullakMember'])->name('mullak.member.delete');
         Route::post('/mullak/expense/store', [OfficeErpController::class, 'storeMullakExpense'])->name('mullak.expense.store');
         Route::post('/mullak/expense/{id}/delete', [OfficeErpController::class, 'deleteMullakExpense'])->name('mullak.expense.delete');
+
+        // مسارات التصويت الإلكتروني لاتحاد الملاك (إنشاء، اعتماد/إلغاء، مشاركة واتساب للمستأجرين، حذف) + الهوية البصرية
+        Route::post('/mullak/poll/store', [OfficeErpController::class, 'storeMullakPoll'])->name('mullak.poll.store');
+        Route::post('/mullak/poll/{id}/status', [OfficeErpController::class, 'updateMullakPollStatus'])->name('mullak.poll.status');
+        Route::post('/mullak/poll/{id}/share-whatsapp', [OfficeErpController::class, 'shareMullakPollWhatsapp'])->name('mullak.poll.share_whatsapp');
+        Route::post('/mullak/poll/{id}/delete', [OfficeErpController::class, 'deleteMullakPoll'])->name('mullak.poll.delete');
+        Route::post('/branding/save', [OfficeErpController::class, 'saveOfficeBranding'])->name('branding.save');
     });
 
+    Route::post('/admin/saas-growth-settings/save', [CompanyErpController::class, 'saveSaasGrowthSettings'])->name('erp.saas_growth.save');
     Route::post('/whatsapp/send-raw-pdf', [CompanyErpController::class, 'sendRawPdfViaWhatsapp'])->name('erp.whatsapp.send_raw_pdf');
     Route::post('/admin/accounting/close-year', [CompanyErpController::class, 'closeCompanyFiscalYear'])->name('erp.accounting.close_year');
 

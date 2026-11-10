@@ -42,6 +42,8 @@ class OfficeErpController extends Controller
             abort(403, 'هذا الإجراء مخصص لمدير المكتب العقاري فقط.');
         }
 
+        CompanyErpController::capturePreActionSnapshot(request());
+
         return $this->{$method}(...array_values($parameters));
     }
 
@@ -395,6 +397,95 @@ class OfficeErpController extends Controller
 
         $auditFindings = $this->runPreClosingAccountingAuditInternal($officeId, $vouchers, $owners, $contracts, $journalEntries);
 
+        // 1. كاشف الوحدات الراكدة (Stagnant Vacancy Alert):
+        // يعرض فقط الوحدات الشاغرة (status === 'vacant')، بدون تكرار الوحدة، مع إمكانية تكرار اسم العمارة، مرتبة من الفترة الأكبر نزولاً للأقل
+        $propertiesByIdMap = $properties->keyBy('id');
+        $seenUnitKeys = [];
+        $stagnantVacantUnits = collect();
+
+        foreach ($units as $u) {
+            if (($u->status ?? '') !== 'vacant') {
+                continue; // استبعاد الوحدات المؤجرة نهائياً
+            }
+            $uniqueUnitKey = $u->property_id . '|' . mb_strtolower(trim((string) $u->unit_number));
+            if (isset($seenUnitKeys[$uniqueUnitKey])) {
+                continue; // منع تكرار نفس الوحدة في نفس العمارة
+            }
+            $seenUnitKeys[$uniqueUnitKey] = true;
+
+            // التحقق أيضاً من عدم وجود عقد نشط ساري حالياً على هذه الوحدة
+            $hasActiveContractNow = $contracts->contains(function ($c) use ($u) {
+                return (int) ($c->property_unit_id ?? 0) === (int) $u->id && ($c->status ?? '') === 'active' && ($c->end_date ?? '') >= date('Y-m-d');
+            });
+            if ($hasActiveContractNow) {
+                continue;
+            }
+
+            $parentProp = $propertiesByIdMap[$u->property_id] ?? null;
+            $lastEndedContract = $contracts
+                ->where('property_unit_id', $u->id)
+                ->sortByDesc('end_date')
+                ->first();
+
+            $vacantSinceDate = $lastEndedContract && !empty($lastEndedContract->end_date)
+                ? $lastEndedContract->end_date
+                : (!empty($u->created_at) ? substr((string) $u->created_at, 0, 10) : (!empty($parentProp->created_at) ? substr((string) $parentProp->created_at, 0, 10) : date('Y-m-d')));
+
+            $daysVacant = max(1, (int) \Carbon\Carbon::parse($vacantSinceDate)->startOfDay()->diffInDays(now()->startOfDay()));
+
+            $addressParts = array_filter([
+                $parentProp->city ?? '',
+                $parentProp->district ?? '',
+                $parentProp->street ?? '',
+            ]);
+
+            $stagnantVacantUnits->push((object) [
+                'unit_id'            => $u->id,
+                'property_id'        => $u->property_id,
+                'building_name'      => $parentProp->title ?? ($u->property_title ?? 'عمارة عقارية'),
+                'owner_name'         => $parentProp->owner_name ?? '-',
+                'unit_number'        => $u->unit_number,
+                'floor_number'       => $u->floor_number,
+                'area'               => $u->area,
+                'default_rent_price' => (float) ($u->default_rent_price ?? 0),
+                'address'            => !empty($addressParts) ? implode(' - ', $addressParts) : 'غير محدد',
+                'vacant_since'       => $vacantSinceDate,
+                'days_vacant'        => $daysVacant,
+            ]);
+        }
+
+        // ترتيب تنازلي: الفترة الشاغرة الأكبر في الأعلى نزولاً إلى الفترة الأقل
+        $stagnantVacantUnits = $stagnantVacantUnits->sortByDesc('days_vacant')->values();
+
+        // 2. جلب بيانات التصويت الإلكتروني لجمعيات اتحاد الملاك
+        CompanyErpController::ensureMullakVotingTables();
+        $mullakPolls = DB::table('mullak_polls')
+            ->join('mullak_buildings', 'mullak_polls.mullak_building_id', '=', 'mullak_buildings.id')
+            ->where('mullak_polls.office_id', $officeId)
+            ->select('mullak_polls.*', 'mullak_buildings.association_name')
+            ->orderByDesc('mullak_polls.id')
+            ->get();
+
+        $mullakPollVotes = DB::table('mullak_poll_votes')
+            ->whereIn('poll_id', $mullakPolls->pluck('id')->toArray())
+            ->get()
+            ->groupBy('poll_id');
+
+        // 3. التحقق من تفعيل ميزة تخصيص الهوية البصرية والشعار (White-Labeling) ضمن خيارات الباقة أو المكتب
+        $officeAllowWhiteLabel = in_array('white_label', $allowedOfficeTabs, true) || !empty($office->allow_white_label);
+        if (!$officeAllowWhiteLabel && !empty($office->plan_id) && \Illuminate\Support\Facades\Schema::hasTable('office_plans')) {
+            $planRow = DB::table('office_plans')->where('id', $office->plan_id)->first();
+            if ($planRow) {
+                $pTabs = json_decode($planRow->allowed_tabs ?? '[]', true) ?: [];
+                if (!empty($planRow->allow_white_label) || in_array('white_label', $pTabs, true)) {
+                    $officeAllowWhiteLabel = true;
+                }
+            }
+        }
+        if ($officeAllowWhiteLabel && !in_array('staff', $allowedOfficeTabs, true)) {
+            $allowedOfficeTabs[] = 'staff';
+        }
+
         return view('office_dashboard', compact(
             'office', 'tab', 'allowedOfficeTabs', 'owners', 'propertyTypes', 'allAttributes',
             'properties', 'units', 'tenants', 'contracts', 'accountTypes',
@@ -403,7 +494,8 @@ class OfficeErpController extends Controller
             'companyAdminPhone', 'nextReceiptNo', 'nextPaymentNo',
             'paymentMethods', 'officeInvoices', 'defaultVatRate', 'activityLogs',
             'installments', 'agingBuckets', 'anomalyAlerts',
-            'mullakBuildings', 'mullakMembers', 'mullakExpenses', 'auditFindings'
+            'mullakBuildings', 'mullakMembers', 'mullakExpenses', 'auditFindings',
+            'stagnantVacantUnits', 'mullakPolls', 'mullakPollVotes', 'officeAllowWhiteLabel'
         ));
     }
 
@@ -1446,50 +1538,142 @@ class OfficeErpController extends Controller
 
     public function updateOfficeVoucher(Request $request, $id)
     {
+        app(CompanyErpController::class)->ensurePaymentMethodsTable();
         $officeId = $this->getCurrentOfficeId();
         $oldVoucher = DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->first();
         if (!$oldVoucher) {
             return back()->withErrors(['السند غير موجود.']);
         }
 
-        DB::transaction(function () use ($request, $id, $officeId, $oldVoucher) {
+        $newAmount = (float) ($request->amount ?? $oldVoucher->amount);
+        if ($newAmount <= 0) {
+            return back()->withErrors(['يرجى إدخال مبلغ صحيح أكبر من الصفر.']);
+        }
+
+        $newType = in_array($request->voucher_type, ['receipt', 'payment'], true)
+            ? $request->voucher_type
+            : $oldVoucher->voucher_type;
+
+        // التحقق من رقم السند إذا قام المستخدم بتعديله يدوياً
+        $newVoucherNumber = trim((string) ($request->voucher_number ?: $oldVoucher->voucher_number));
+        $duplicateNo = DB::table('vouchers')
+            ->where('id', '!=', $id)
+            ->where('voucher_number', $newVoucherNumber)
+            ->exists();
+        if ($duplicateNo) {
+            $newVoucherNumber = $oldVoucher->voucher_number;
+        }
+
+        // تحديد المستأجر، المالك، العقار، الوحدة، والعقد
+        $tenantId = $request->has('tenant_id') ? ($request->tenant_id ? (int) $request->tenant_id : null) : $oldVoucher->tenant_id;
+        $ownerId  = $request->has('owner_id') ? ($request->owner_id ? (int) $request->owner_id : null) : $oldVoucher->owner_id;
+        $propId   = $request->has('property_id') ? ($request->property_id ? (int) $request->property_id : null) : ($oldVoucher->property_id ?? null);
+        $unitId   = $request->has('property_unit_id') ? ($request->property_unit_id ? (int) $request->property_unit_id : null) : ($oldVoucher->property_unit_id ?? null);
+        $contractId = $request->has('lease_contract_id') ? ($request->lease_contract_id ? (int) $request->lease_contract_id : null) : ($oldVoucher->lease_contract_id ?? null);
+
+        if ($tenantId) {
+            $activeContract = DB::table('lease_contracts')
+                ->where('office_id', $officeId)
+                ->where('tenant_id', $tenantId)
+                ->orderBy('id', 'desc')
+                ->first();
+            if ($activeContract) {
+                if (!$ownerId) $ownerId = (int) $activeContract->owner_id;
+                if (!$propId) $propId = (int) $activeContract->property_id;
+                if (!$unitId && $activeContract->property_unit_id) $unitId = (int) $activeContract->property_unit_id;
+                if (!$contractId) $contractId = (int) $activeContract->id;
+            }
+        }
+
+        if ($propId && !$ownerId) {
+            $propRow = DB::table('properties')->where('id', $propId)->where('office_id', $officeId)->first();
+            if ($propRow) $ownerId = (int) $propRow->owner_id;
+        }
+
+        $newDebitId = (int) $oldVoucher->debit_account_id;
+        if ($request->filled('debit_account_id')) {
+            $dRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->debit_account_id)->first();
+            if ($dRow) $newDebitId = (int) $dRow->id;
+        }
+
+        $newCreditId = (int) $oldVoucher->credit_account_id;
+        if ($request->filled('credit_account_id')) {
+            $cRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->credit_account_id)->first();
+            if ($cRow) $newCreditId = (int) $cRow->id;
+        }
+
+        $newApprovalStatus = $request->filled('approval_status')
+            ? $request->approval_status
+            : ($oldVoucher->approval_status ?? 'approved');
+
+        $safePaymentMethod = CompanyErpController::normalizeVoucherPaymentMethod(
+            $request->payment_method ?: $oldVoucher->payment_method
+        );
+
+        DB::transaction(function () use (
+            $request, $id, $officeId, $oldVoucher, $newVoucherNumber, $newType,
+            $newDebitId, $newCreditId, $ownerId, $tenantId, $propId, $unitId,
+            $contractId, $newAmount, $safePaymentMethod, $newApprovalStatus
+        ) {
+            // 1. عكس القيد المحاسبي القديم إذا كان السند معتمداً مسبقاً
             if (($oldVoucher->approval_status ?? 'approved') === 'approved') {
                 CompanyErpController::applyAccountMovement((int) $oldVoucher->debit_account_id, (float) $oldVoucher->amount, 0, true);
                 CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, 0, (float) $oldVoucher->amount, true);
+
+                if ($oldVoucher->voucher_type === 'receipt' && !empty($oldVoucher->owner_id)) {
+                    $oldOwnerObj = DB::table('owners')->where('id', $oldVoucher->owner_id)->where('office_id', $officeId)->first();
+                    if ($oldOwnerObj && $oldOwnerObj->account_id && (int) $oldOwnerObj->account_id !== (int) $oldVoucher->credit_account_id) {
+                        CompanyErpController::applyAccountMovement((int) $oldVoucher->credit_account_id, (float) $oldVoucher->amount, 0, true);
+                        CompanyErpController::applyAccountMovement((int) $oldOwnerObj->account_id, 0, (float) $oldVoucher->amount, true);
+                    }
+                }
             }
 
-            $newDebitId = $oldVoucher->debit_account_id;
-            if ($request->filled('debit_account_id')) {
-                $dRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->debit_account_id)->first();
-                if ($dRow) $newDebitId = $dRow->id;
-            }
-
-            $newCreditId = $oldVoucher->credit_account_id;
-            if ($request->filled('credit_account_id')) {
-                $cRow = DB::table('accounts')->where('office_id', $officeId)->where('id', (int) $request->credit_account_id)->first();
-                if ($cRow) $newCreditId = $cRow->id;
-            }
-
-            DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->update([
-                'voucher_type' => $request->voucher_type ?: $oldVoucher->voucher_type,
-                'debit_account_id' => $newDebitId,
+            // 2. تجهيز كافة الحقول المحدثة
+            $updatePayload = [
+                'voucher_number'    => $newVoucherNumber,
+                'voucher_type'      => $newType,
+                'debit_account_id'  => $newDebitId,
                 'credit_account_id' => $newCreditId,
-                'owner_id' => $request->has('owner_id') ? ($request->owner_id ?: null) : $oldVoucher->owner_id,
-                'tenant_id' => $request->has('tenant_id') ? ($request->tenant_id ?: null) : $oldVoucher->tenant_id,
-                'amount' => $request->amount,
-                'payment_method' => $request->payment_method ?: 'bank_transfer',
-                'voucher_date' => $request->voucher_date ?: $oldVoucher->voucher_date,
-                'notes' => trim($request->notes),
-                'updated_at' => now(),
-            ]);
+                'owner_id'          => $ownerId,
+                'tenant_id'         => $tenantId,
+                'lease_contract_id' => $contractId,
+                'amount'            => $newAmount,
+                'payment_method'    => $safePaymentMethod,
+                'reference_number'  => $request->has('reference_number') ? (trim((string) $request->reference_number) ?: null) : ($oldVoucher->reference_number ?? null),
+                'voucher_date'      => $request->voucher_date ?: $oldVoucher->voucher_date,
+                'notes'             => trim((string) ($request->notes ?: $oldVoucher->notes)),
+                'updated_at'        => now(),
+            ];
 
-            if (($oldVoucher->approval_status ?? 'approved') === 'approved') {
-                CompanyErpController::applyAccountMovement((int) $newDebitId, (float) $request->amount, 0);
-                CompanyErpController::applyAccountMovement((int) $newCreditId, 0, (float) $request->amount);
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_id')) {
+                $updatePayload['property_id'] = $propId;
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'property_unit_id')) {
+                $updatePayload['property_unit_id'] = $unitId;
+            }
+            if (\Illuminate\Support\Facades\Schema::hasColumn('vouchers', 'approval_status')) {
+                $updatePayload['approval_status'] = $newApprovalStatus;
+            }
+
+            DB::table('vouchers')->where('id', $id)->where('office_id', $officeId)->update($updatePayload);
+
+            // 3. تطبيق القيد المحاسبي الجديد إذا كانت حالة السند معتمدة
+            if ($newApprovalStatus === 'approved') {
+                CompanyErpController::applyAccountMovement($newDebitId, $newAmount, 0);
+                CompanyErpController::applyAccountMovement($newCreditId, 0, $newAmount);
+
+                if ($newType === 'receipt' && $ownerId) {
+                    $newOwnerObj = DB::table('owners')->where('id', $ownerId)->where('office_id', $officeId)->first();
+                    if ($newOwnerObj && $newOwnerObj->account_id && (int) $newOwnerObj->account_id !== $newCreditId) {
+                        CompanyErpController::applyAccountMovement($newCreditId, $newAmount, 0);
+                        CompanyErpController::applyAccountMovement((int) $newOwnerObj->account_id, 0, $newAmount);
+                    }
+                }
             }
         });
 
-        return back()->with('success', 'تم تعديل السند رقم (' . $oldVoucher->voucher_number . ') وتحديث أرصدة المكتب.');
+        return back()->with('success', '✅ تم تعديل كافة بيانات السند رقم (' . $newVoucherNumber . ') وتحديث الأرصدة المرتبطة في شجرة الحسابات بنجاح.');
     }
 
     public function deleteOfficeVoucher($id)
@@ -3496,5 +3680,192 @@ class OfficeErpController extends Controller
 
         return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_mullak_building' => $buildingId])
             ->with('success', 'تم حذف مصروف اتحاد الملاك.');
+    }
+
+    /**
+     * طرح قرار جديد للتصويت الإلكتروني في جمعية اتحاد الملاك (Mullak Digital Voting)
+     */
+    public function storeMullakPoll(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureMullakVotingTables();
+
+        $request->validate([
+            'mullak_building_id' => 'required',
+            'title'              => 'required|string|max:220',
+        ]);
+
+        $token = bin2hex(random_bytes(16));
+        DB::table('mullak_polls')->insert([
+            'office_id'           => $officeId,
+            'mullak_building_id'  => (int) $request->mullak_building_id,
+            'title'               => trim($request->title),
+            'description'         => trim((string) $request->input('description', '')),
+            'estimated_cost'      => (float) ($request->input('estimated_cost', 0) ?: 0),
+            'required_quorum_pct' => (float) ($request->input('required_quorum_pct', 51) ?: 51),
+            'closes_at'           => $request->input('closes_at') ?: now()->addDays(7)->toDateString(),
+            'status'              => 'open',
+            'public_token'        => $token,
+            'created_at'          => now(),
+            'updated_at'          => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+            ->with('success', '🗳️ تم طرح القرار في جدول التصويت الإلكتروني بنجاح.');
+    }
+
+    /**
+     * اعتماد أو إلغاء أو إعادة فتح قرار التصويت الإلكتروني
+     */
+    public function updateMullakPollStatus(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureMullakVotingTables();
+
+        $status = $request->input('status', 'approved');
+        if (!in_array($status, ['open', 'approved', 'cancelled'], true)) {
+            $status = 'approved';
+        }
+
+        DB::table('mullak_polls')
+            ->where('id', $id)
+            ->where('office_id', $officeId)
+            ->update([
+                'status'     => $status,
+                'updated_at' => now(),
+            ]);
+
+        $msg = match ($status) {
+            'approved'  => '✅ تم اعتماد قرار التصويت رسمياً.',
+            'cancelled' => '🚫 تم إلغاء التصويت وإيقاف استقبال الأصوات.',
+            default     => '🔓 تم إعادة فتح باب التصويت للقرار.',
+        };
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+            ->with('success', $msg);
+    }
+
+    /**
+     * مشاركة وإرسال رابط التصويت مباشرة لجميع المستأجرين/الأعضاء في العمارة عبر الواتساب بضغطة زر
+     */
+    public function shareMullakPollWhatsapp(Request $request, $id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureMullakVotingTables();
+
+        $poll = DB::table('mullak_polls')
+            ->join('mullak_buildings', 'mullak_polls.mullak_building_id', '=', 'mullak_buildings.id')
+            ->where('mullak_polls.id', $id)
+            ->where('mullak_polls.office_id', $officeId)
+            ->select('mullak_polls.*', 'mullak_buildings.association_name')
+            ->first();
+
+        if (!$poll) {
+            return back()->withErrors(['قرار التصويت غير موجود.']);
+        }
+
+        $members = DB::table('mullak_members')
+            ->where('mullak_building_id', $poll->mullak_building_id)
+            ->where('office_id', $officeId)
+            ->whereNotNull('phone')
+            ->get();
+
+        if ($members->count() === 0) {
+            return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+                ->withErrors(['لا يوجد أعضاء أو مستأجرون بأرقام جوال مسجلة في هذه العمارة لإرسال الرابط إليهم.']);
+        }
+
+        $voteUrl = route('public.mullak_vote', ['id' => $poll->id, 'token' => $poll->public_token]);
+        $sentCount = 0;
+        $firstPhone = '';
+
+        foreach ($members as $m) {
+            $cleanPhone = trim((string) $m->phone);
+            if ($cleanPhone === '') continue;
+            if ($firstPhone === '') $firstPhone = $cleanPhone;
+
+            $msg = "🗳️ *دعوة للتصويت الإلكتروني — {$poll->association_name}*\n"
+                 . "الوحدة: *{$m->unit_number}*\n"
+                 . "الموضوع: *{$poll->title}*\n"
+                 . ($poll->estimated_cost > 0 ? "التكلفة التقديرية: " . number_format($poll->estimated_cost, 2) . " ر.س\n" : "")
+                 . "\n🔗 اضغط على الرابط التالي لاختيار رقم وحدتك والتصويت (سيصلك كود تحقق من 4 أرقام على جوالك لاعتماد صوتك):\n"
+                 . $voteUrl;
+
+            if (CompanyErpController::dispatchWhatsappMessage($cleanPhone, $msg, $officeId)) {
+                $sentCount++;
+            }
+        }
+
+        if ($sentCount > 0) {
+            return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+                ->with('success', "📲 تم إرسال رابط التصويت الإلكتروني مباشرة عبر الواتساب إلى ({$sentCount}) من مستأجري وأعضاء العمارة بنجاح!");
+        }
+
+        // في حال عدم تفعيل توكن الـ API، نفتح واتساب ويب لأول مستأجر مع نسخ الرابط
+        if ($firstPhone !== '') {
+            $intlPhone = ltrim(CompanyErpController::formatSaudiPhone($firstPhone), '+');
+            $fallbackMsg = "🗳️ دعوة للتصويت الإلكتروني ({$poll->association_name})\nالموضوع: {$poll->title}\nالرابط المباشر للتصويت:\n{$voteUrl}";
+            return redirect()->away("https://wa.me/{$intlPhone}?text=" . urlencode($fallbackMsg));
+        }
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+            ->with('success', 'تم تجهيز رابط التصويت للمستأجرين.');
+    }
+
+    public function deleteMullakPoll($id)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        CompanyErpController::ensureMullakVotingTables();
+        DB::table('mullak_poll_votes')->where('poll_id', $id)->delete();
+        DB::table('mullak_polls')->where('id', $id)->where('office_id', $officeId)->delete();
+
+        return redirect()->route('office.dashboard', ['tab' => 'mullak', 'open_polls' => 1])
+            ->with('success', 'تم حذف قرار التصويت الإلكتروني.');
+    }
+
+    /**
+     * حفظ إعدادات الهوية البصرية والشعار وأماكن ظهوره في المستندات ولون القائمة الجانبية (بدون الدومين المخصص)
+     */
+    public function saveOfficeBranding(Request $request)
+    {
+        $officeId = $this->getCurrentOfficeId();
+        app(CompanyErpController::class)->ensureOfficePlansTable();
+
+        $office = DB::table('offices')->where('id', $officeId)->first();
+        if (!$office) {
+            return back();
+        }
+
+        $logoUrl = $office->logo_url ?? '';
+        if ($request->input('remove_logo') == '1') {
+            $logoUrl = '';
+        } elseif ($request->hasFile('logo_file') && $request->file('logo_file')->isValid()) {
+            $file = $request->file('logo_file');
+            $ext = strtolower($file->extension() ?: $file->getClientOriginalExtension());
+            if (in_array($ext, ['png', 'jpg', 'jpeg', 'webp', 'svg'], true)) {
+                $dir = public_path('uploads/branding');
+                if (!is_dir($dir)) @mkdir($dir, 0775, true);
+                $fname = 'office_logo_' . $officeId . '_' . time() . '.' . $ext;
+                $file->move($dir, $fname);
+                $logoUrl = '/uploads/branding/' . $fname;
+            }
+        }
+
+        $targets = $request->input('logo_targets', []);
+        if (!is_array($targets)) {
+            $targets = [];
+        }
+
+        DB::table('offices')->where('id', $officeId)->update([
+            'name'                => trim($request->input('office_display_name', $office->name)) ?: $office->name,
+            'logo_url'            => $logoUrl,
+            'brand_sidebar_color' => trim($request->input('brand_sidebar_color', '#0f172a')),
+            'logo_enabled'        => $request->has('logo_enabled') ? 1 : 0,
+            'logo_targets_json'   => json_encode(array_values(array_unique($targets)), JSON_UNESCAPED_UNICODE),
+            'updated_at'          => now(),
+        ]);
+
+        return redirect()->route('office.dashboard', ['tab' => 'staff'])
+            ->with('success', '🎨 تم حفظ الهوية البصرية ولون القائمة الجانبية وإعدادات إظهار الشعار في المستندات بنجاح.');
     }
 }

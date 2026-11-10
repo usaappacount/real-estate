@@ -627,54 +627,111 @@
 </head>
 <body class="text-slate-800 flex min-h-screen">
 
-    <!-- النوافذ العامة لنظام الإدارة المركزية (الفحص، سجل الأخطاء، النسخ الاحتياطي، أنواع الحسابات، ومعاينة السند) -->
-    <div id="systemDiagnosticsModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
-        <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
-            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 mb-4">
+    <!-- النوافذ العامة المطورة لنظام الإدارة المركزية (الفحص الأوتوماتيكي الشامل 22 اختباراً + سجل الأخطاء الذكي المطور) -->
+    @php
+        $diagList = $diagnosticRuns ?? collect();
+        $diagTotal = $diagList->count();
+        $diagPassed = $diagList->where('status', 'passed')->count();
+        $diagWarning = $diagList->where('status', 'warning')->count();
+        $diagFailed = $diagList->where('status', 'failed')->count();
+        $diagHealthPct = $diagTotal > 0 ? round(($diagPassed / $diagTotal) * 100) : 100;
+
+        $logsList = $systemLogs ?? collect();
+        $logsTotal = $logsList->count();
+        $logsErrCount = $logsList->where('level', 'ERROR')->count();
+        $logsWarnCount = $logsList->where('level', 'WARNING')->count();
+    @endphp
+
+    <div id="systemDiagnosticsModal" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-5xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] flex flex-col space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
                 <div>
-                    <h3 class="font-bold text-base text-slate-900">🤖 الفحص الأوتوماتيكي الشامل لجميع بوابات النظام</h3>
-                    <p class="text-xs text-slate-500">يختبر قاعدة البيانات، الشجرة المحاسبية، السندات، المكاتب، الملاك، والعقود تلقائياً</p>
+                    <h3 class="font-bold text-base text-slate-900">🤖 الفحص الأوتوماتيكي الشامل لجميع خصائص وبوابات النظام (22 اختباراً حقيقياً)</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">يختبر تلقائياً الـ 29 جدولاً، شجرة الحسابات، الباقات، الـ SEO، المكاتب، الملاك، العقود، الدفعات، الفوترة الضريبية ZATCA، اتحاد الملاك، الـ OCR، والواتساب</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                     <form action="{{ route('erp.system.diagnostics') }}" method="POST">
                         @csrf
                         <button type="submit" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow">
-                            ⚡ تشغيل الفحص الشامل الآن
+                            ⚡ تشغيل الفحص الشامل الآن (22 اختباراً)
                         </button>
                     </form>
+                    <button type="button" onclick="exportTableToCSV('systemDiagnosticsTable', 'تقرير_الفحص_الأوتوماتيكي_الشامل.xlsx')"
+                            class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                        📊 تصدير Excel
+                    </button>
                     <button type="button" onclick="closeModal('systemDiagnosticsModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                 </div>
             </div>
+
+            <!-- شريط ملخص صحة النظام والفلترة الفورية -->
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div onclick="filterDiagnosticsRows('all')" class="cursor-pointer p-3 rounded-2xl bg-slate-900 text-white text-center">
+                    <span class="text-[11px] text-slate-300 block">إجمالي الاختبارات</span>
+                    <b class="text-lg font-mono text-white">{{ $diagTotal }}</b>
+                </div>
+                <div onclick="filterDiagnosticsRows('passed')" class="cursor-pointer p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-center">
+                    <span class="text-[11px] text-emerald-800 font-bold block">ناجح ✔</span>
+                    <b class="text-lg font-mono text-emerald-700">{{ $diagPassed }}</b>
+                </div>
+                <div onclick="filterDiagnosticsRows('warning')" class="cursor-pointer p-3 rounded-2xl bg-amber-50 border border-amber-200 text-center">
+                    <span class="text-[11px] text-amber-800 font-bold block">تنبيه ⚠️</span>
+                    <b class="text-lg font-mono text-amber-700">{{ $diagWarning }}</b>
+                </div>
+                <div onclick="filterDiagnosticsRows('failed')" class="cursor-pointer p-3 rounded-2xl bg-rose-50 border border-rose-200 text-center">
+                    <span class="text-[11px] text-rose-800 font-bold block">فشل ✖</span>
+                    <b class="text-lg font-mono text-rose-700">{{ $diagFailed }}</b>
+                </div>
+                <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200 text-center">
+                    <span class="text-[11px] text-slate-600 font-bold block">مؤشر كفاءة النظام</span>
+                    <b class="text-lg font-mono text-emerald-700">{{ $diagHealthPct }}%</b>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <input type="text" id="diagModalSearchInp" oninput="filterDiagnosticsRows()"
+                       placeholder="🔍 ابحث باسم الميزة أو الوحدة (مثال: ZATCA، اتحاد الملاك، الدفعات، الشجرة)..."
+                       class="flex-1 rounded-xl border border-slate-300 px-3.5 py-2 text-xs bg-slate-50 font-semibold">
+                <select id="diagModalStatusSelect" onchange="filterDiagnosticsRows()" class="rounded-xl border border-slate-300 px-3 py-2 text-xs bg-white font-bold">
+                    <option value="all">جميع الحالات ({{ $diagTotal }})</option>
+                    <option value="passed">الناجحة فقط ({{ $diagPassed }})</option>
+                    <option value="warning">التنبيهات فقط ({{ $diagWarning }})</option>
+                    <option value="failed">الفاشلة فقط ({{ $diagFailed }})</option>
+                </select>
+            </div>
+
             <div class="overflow-y-auto flex-1 rounded-2xl border border-slate-200">
-                <table class="w-full text-xs text-right">
-                    <thead class="bg-slate-50 text-slate-600 border-b">
+                <table class="w-full text-xs text-right" id="systemDiagnosticsTable">
+                    <thead class="bg-slate-50 text-slate-600 border-b sticky top-0">
                         <tr>
                             <th class="py-3 px-4">الميزة / الاختبار</th>
-                            <th class="py-3 px-4">الوحدة</th>
-                            <th class="py-3 px-4">الحالة</th>
-                            <th class="py-3 px-4">التفاصيل</th>
-                            <th class="py-3 px-4">الزمن</th>
+                            <th class="py-3 px-4">الوحدة / البوابة</th>
+                            <th class="py-3 px-4 text-center">الحالة</th>
+                            <th class="py-3 px-4">التفاصيل ونتيجة المحاكاة</th>
+                            <th class="py-3 px-4 text-center">زمن التنفيذ</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-100">
-                        @forelse(($diagnosticRuns ?? collect()) as $run)
-                            <tr>
+                    <tbody id="systemDiagnosticsTbody" class="divide-y divide-slate-100">
+                        @forelse($diagList as $run)
+                            <tr class="diag-item-row hover:bg-slate-50"
+                                data-status="{{ $run->status }}"
+                                data-search="{{ mb_strtolower($run->feature_name . ' ' . $run->module . ' ' . $run->details) }}">
                                 <td class="py-3 px-4 font-bold text-slate-900">{{ $run->feature_name }}</td>
-                                <td class="py-3 px-4 text-slate-600">{{ $run->module }}</td>
-                                <td class="py-3 px-4">
+                                <td class="py-3 px-4"><span class="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 font-bold text-[11px]">{{ $run->module }}</span></td>
+                                <td class="py-3 px-4 text-center">
                                     @if($run->status === 'passed')
-                                        <span class="px-2.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">ناجح ✔</span>
+                                        <span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold">ناجح ✔</span>
                                     @elseif($run->status === 'warning')
-                                        <span class="px-2.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">تنبيه ⚠️</span>
+                                        <span class="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 font-bold">تنبيه ⚠️</span>
                                     @else
-                                        <span class="px-2.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">فشل ✖</span>
+                                        <span class="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 font-bold">فشل ✖</span>
                                     @endif
                                 </td>
-                                <td class="py-3 px-4 text-slate-600">{{ $run->details }}</td>
-                                <td class="py-3 px-4 font-mono text-slate-400">{{ $run->execution_ms }}</td>
+                                <td class="py-3 px-4 text-slate-700 leading-relaxed">{{ $run->details }}</td>
+                                <td class="py-3 px-4 text-center font-mono text-slate-500">{{ $run->execution_ms }}</td>
                             </tr>
                         @empty
-                            <tr><td colspan="5" class="py-8 text-center text-slate-400">اضغط على "تشغيل الفحص الشامل الآن" لبدء اختبار النظام.</td></tr>
+                            <tr><td colspan="5" class="py-10 text-center text-slate-400 font-bold">اضغط على "⚡ تشغيل الفحص الشامل الآن (22 اختباراً)" بالأعلى لبدء فحص واختبار كافة خصائص المنظومة.</td></tr>
                         @endforelse
                     </tbody>
                 </table>
@@ -682,15 +739,23 @@
         </div>
     </div>
 
-    <div id="systemLogsModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
-        <div class="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
-            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 mb-4">
+    <div id="systemLogsModal" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+        <div class="bg-white rounded-3xl max-w-5xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] flex flex-col space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
                 <div>
-                    <h3 class="font-bold text-base text-slate-900">🚨 سجل الأخطاء والتنبيهات التقنية (System Logs)</h3>
-                    <p class="text-xs text-slate-500">يعرض أي أخطاء برمجية مسجلة في النظام مع إمكانية تصفير السجل</p>
+                    <h3 class="font-bold text-base text-slate-900">🚨 سجل الأخطاء والتشخيص التقني الذكي (Smart System Logs)</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">يلتقط الأخطاء تلقائياً من قاعدة البيانات وملف <span class="font-mono">laravel.log</span> مع تحديد الملف والسطر واقتراح الحل الفوري</p>
                 </div>
-                <div class="flex items-center gap-2">
-                    <form action="{{ route('erp.system.clear_logs') }}" method="POST" onsubmit="return confirm('تصفير سجل الأخطاء؟');">
+                <div class="flex flex-wrap items-center gap-2">
+                    <a href="{{ route('erp.dashboard', ['tab' => $tab ?? 'overview', 'sync_logs' => 1]) }}"
+                       class="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold">
+                        🔄 مزامنة ملف laravel.log
+                    </a>
+                    <button type="button" onclick="exportTableToCSV('systemLogsTable', 'سجل_أخطاء_النظام_والتشخيص.xlsx')"
+                            class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                        📊 تصدير السجل Excel
+                    </button>
+                    <form action="{{ route('erp.system.clear_logs') }}" method="POST" onsubmit="return confirm('تصفير سجل الأخطاء وتنظيف ملف الـ Log؟');">
                         @csrf
                         <button type="submit" class="px-4 py-2 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white border border-rose-200 text-xs font-bold">
                             🗑️ تصفير السجل
@@ -699,32 +764,119 @@
                     <button type="button" onclick="closeModal('systemLogsModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                 </div>
             </div>
+
+            <!-- ملخص وفلاتر سجل الأخطاء -->
+            <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <button type="button" onclick="filterSystemLogsRows('all')" class="px-3 py-1.5 rounded-xl bg-slate-900 text-white font-bold">
+                        الكل ({{ $logsTotal }})
+                    </button>
+                    <button type="button" onclick="filterSystemLogsRows('ERROR')" class="px-3 py-1.5 rounded-xl bg-rose-100 text-rose-800 font-bold">
+                        أخطاء حرجة ERROR ({{ $logsErrCount }})
+                    </button>
+                    <button type="button" onclick="filterSystemLogsRows('WARNING')" class="px-3 py-1.5 rounded-xl bg-amber-100 text-amber-900 font-bold">
+                        تنبيهات WARNING ({{ $logsWarnCount }})
+                    </button>
+                </div>
+                <div class="flex-1 min-w-[240px]">
+                    <input type="text" id="sysLogsSearchInp" oninput="filterSystemLogsRows()"
+                           placeholder="🔍 ابحث في نص الخطأ، المصدر، اسم الملف، أو اقتراح الحل..."
+                           class="w-full rounded-xl border border-slate-300 px-3.5 py-1.5 text-xs bg-white font-semibold">
+                </div>
+            </div>
+
             <div class="overflow-y-auto flex-1 rounded-2xl border border-slate-200">
-                <table class="w-full text-xs text-right">
-                    <thead class="bg-slate-50 text-slate-600 border-b">
+                <table class="w-full text-xs text-right" id="systemLogsTable">
+                    <thead class="bg-slate-50 text-slate-600 border-b sticky top-0">
                         <tr>
-                            <th class="py-3 px-4">المستوى</th>
-                            <th class="py-3 px-4">المصدر</th>
-                            <th class="py-3 px-4">الرسالة</th>
-                            <th class="py-3 px-4">التاريخ</th>
+                            <th class="py-3 px-3 text-center">المستوى والتكرار</th>
+                            <th class="py-3 px-3">المصدر والملف</th>
+                            <th class="py-3 px-4">تفاصيل الرسالة التقنية</th>
+                            <th class="py-3 px-4">💡 التشخيص واقتراح الحل الذكي</th>
+                            <th class="py-3 px-3 text-center">المستخدم والتاريخ</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-100">
-                        @forelse(($systemLogs ?? collect()) as $lg)
-                            <tr>
-                                <td class="py-3 px-4 font-mono font-bold {{ $lg->level === 'ERROR' ? 'text-rose-600' : 'text-amber-600' }}">{{ $lg->level }}</td>
-                                <td class="py-3 px-4 font-semibold">{{ $lg->source }}</td>
-                                <td class="py-3 px-4 text-slate-700 max-w-md break-words">{{ $lg->message }}</td>
-                                <td class="py-3 px-4 font-mono text-slate-400" dir="ltr">{{ $lg->created_at }}</td>
+                    <tbody id="systemLogsTbody" class="divide-y divide-slate-100">
+                        @forelse($logsList as $lg)
+                            @php
+                                $occ = (int) ($lg->occurrences_count ?? 1);
+                            @endphp
+                            <tr class="sys-log-row hover:bg-slate-50"
+                                data-level="{{ $lg->level }}"
+                                data-search="{{ mb_strtolower(($lg->level ?? '') . ' ' . ($lg->source ?? '') . ' ' . ($lg->message ?? '') . ' ' . ($lg->file_line ?? '') . ' ' . ($lg->suggestion ?? '')) }}">
+                                <td class="py-3 px-3 text-center">
+                                    <span class="px-2.5 py-1 rounded-lg font-mono font-bold {{ $lg->level === 'ERROR' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-800' }}">
+                                        {{ $lg->level }}
+                                    </span>
+                                    @if($occ > 1)
+                                        <span class="block mt-1 text-[10px] font-mono text-slate-500">تكرر {{ $occ }} مرات</span>
+                                    @endif
+                                </td>
+                                <td class="py-3 px-3">
+                                    <div class="font-bold text-slate-900">{{ $lg->source }}</div>
+                                    @if(!empty($lg->file_line))
+                                        <div class="font-mono text-[10px] text-indigo-700 mt-0.5" dir="ltr">{{ $lg->file_line }}</div>
+                                    @endif
+                                </td>
+                                <td class="py-3 px-4 text-slate-800 max-w-md break-words font-mono text-[11px] leading-relaxed">
+                                    {{ $lg->message }}
+                                </td>
+                                <td class="py-3 px-4">
+                                    @if(!empty($lg->suggestion))
+                                        <div class="p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-200 text-emerald-950 font-semibold leading-relaxed">
+                                            🛠️ {{ $lg->suggestion }}
+                                        </div>
+                                    @else
+                                        <span class="text-slate-400">-</span>
+                                    @endif
+                                </td>
+                                <td class="py-3 px-3 text-center">
+                                    <div class="font-semibold text-slate-700 text-[11px]">{{ $lg->user_info ?? 'النظام' }}</div>
+                                    <div class="font-mono text-[10px] text-slate-400 mt-0.5" dir="ltr">{{ $lg->updated_at ?? $lg->created_at }}</div>
+                                </td>
                             </tr>
                         @empty
-                            <tr><td colspan="4" class="py-8 text-center text-emerald-600 font-bold">لا توجد أخطاء مسجلة، النظام يعمل بكفاءة عالية ✔</td></tr>
+                            <tr><td colspan="5" class="py-10 text-center text-emerald-600 font-bold">🎉 لا توجد أخطاء مسجلة، كافة بوابات ومحركات النظام تعمل بكفاءة عالية ✔</td></tr>
                         @endforelse
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
+
+    <script>
+        window.currentLogsLevelFilter = 'all';
+
+        window.filterDiagnosticsRows = function(forcedStatus) {
+            const stSel = document.getElementById('diagModalStatusSelect');
+            if (forcedStatus && stSel) stSel.value = forcedStatus;
+            const status = stSel ? stSel.value : 'all';
+            const q = (document.getElementById('diagModalSearchInp')?.value || '').trim().toLowerCase();
+
+            document.querySelectorAll('.diag-item-row').forEach(row => {
+                const rStatus = row.getAttribute('data-status') || '';
+                const rSearch = (row.getAttribute('data-search') || '').toLowerCase();
+                let show = true;
+                if (status !== 'all' && rStatus !== status) show = false;
+                if (q && !rSearch.includes(q)) show = false;
+                row.style.display = show ? '' : 'none';
+            });
+        };
+
+        window.filterSystemLogsRows = function(forcedLevel) {
+            if (forcedLevel) window.currentLogsLevelFilter = forcedLevel;
+            const q = (document.getElementById('sysLogsSearchInp')?.value || '').trim().toLowerCase();
+
+            document.querySelectorAll('.sys-log-row').forEach(row => {
+                const rLevel = row.getAttribute('data-level') || '';
+                const rSearch = (row.getAttribute('data-search') || '').toLowerCase();
+                let show = true;
+                if (window.currentLogsLevelFilter !== 'all' && rLevel !== window.currentLogsLevelFilter) show = false;
+                if (q && !rSearch.includes(q)) show = false;
+                row.style.display = show ? '' : 'none';
+            });
+        };
+    </script>
 
     <div id="systemBackupModal" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
         <div class="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-5">
@@ -2871,6 +3023,10 @@
                                         </div>
 
                                         <div class="flex flex-wrap items-center gap-5 pt-2">
+                                            <label class="flex items-center gap-2 text-xs font-bold text-indigo-800 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-200 cursor-pointer">
+                                                <input type="checkbox" name="allow_white_label" value="1" {{ !empty($plan->allow_white_label) ? 'checked' : '' }}>
+                                                <span>🎨 تفعيل تخصيص الهوية البصرية والدومين (White-Labeling) في صفحة إعدادات المكتب والموظفين</span>
+                                            </label>
                                             <label class="flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer">
                                                 <input type="checkbox" name="show_on_landing" value="1" {{ $plan->show_on_landing ? 'checked' : '' }}>
                                                 <span>🌐 عرض هذه الباقة في الصفحة الرئيسية للموقع</span>
@@ -2983,10 +3139,97 @@
                     </div>
                 </div>
 
-                <!-- قسم إدارة محركات البحث (SEO) ومحتوى الواجهة الرئيسية المدمج في صفحة الباقات -->
+                <!-- قسم إدارة محركات البحث (SEO) + التحكم في الفترة التجريبية ووضع التجربة الحية للزوار (Live Demo Sandbox) -->
                 @php
                     $ls = $landingSettings ?? \App\Http\Controllers\CompanyErpController::getLandingSettings();
                 @endphp
+
+                <div class="bg-white rounded-3xl border-2 border-slate-900 shadow-sm p-6 mt-6 space-y-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900">🎮 إدارة التسجيل الذاتي والفترة التجريبية + وضع العرض التفاعلي للزوار (Live Demo Sandbox)</h3>
+                            <p class="text-xs text-slate-500 mt-0.5">تحكم بتفعيل أو إيقاف زر "جرّب النظام الآن بدون تسجيل" وتحديد الصفحات المسموحة للزائر، وتعديل مدة الفترة التجريبية للمكاتب المسجلة ذاتياً</p>
+                        </div>
+                        <a href="{{ route('public.live_demo') }}" target="_blank" class="px-4 py-2 rounded-xl bg-amber-500 text-slate-950 text-xs font-extrabold">
+                            🎮 معاينة حساب المكتب التجريبي الحي الآن
+                        </a>
+                    </div>
+
+                    <form action="{{ route('erp.saas_growth.save') }}" method="POST" class="space-y-6">
+                        @csrf
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- 1. إعدادات التسجيل الذاتي للمكاتب والفترة التجريبية -->
+                            <div class="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                                <div class="flex items-center justify-between border-b pb-2.5">
+                                    <h4 class="font-bold text-sm text-slate-900">✨ أولاً: بوابة التسجيل الذاتي والفترة التجريبية للمكاتب</h4>
+                                    <label class="flex items-center gap-2 text-xs font-extrabold text-emerald-700 cursor-pointer">
+                                        <input type="checkbox" name="self_registration_enabled" value="1" {{ !empty($ls['self_registration_enabled']) ? 'checked' : '' }}>
+                                        <span>تفعيل التسجيل الذاتي بالواجهة</span>
+                                    </label>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">مدة الفترة التجريبية (بالأيام) *</label>
+                                        <input type="number" name="trial_days" value="{{ $ls['trial_days'] ?? 14 }}" min="1" max="365" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">الحد الأقصى للعقارات بالتجربة</label>
+                                        <input type="number" name="trial_max_properties" value="{{ $ls['trial_max_properties'] ?? 5 }}" min="1" max="500" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                    </div>
+                                </div>
+                                <label class="flex items-center gap-2 text-xs font-bold text-indigo-800 cursor-pointer">
+                                    <input type="checkbox" name="trial_allow_white_label" value="1" {{ !empty($ls['trial_allow_white_label']) ? 'checked' : '' }}>
+                                    <span>🎨 السماح للمكتب التجريبي بتجربة تخصيص الهوية البصرية والدومين</span>
+                                </label>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1.5">الصفحات المتاحة للمكتب خلال الفترة التجريبية:</label>
+                                    <div class="grid grid-cols-2 gap-1.5 p-3 rounded-xl bg-white border max-h-40 overflow-y-auto">
+                                        @foreach(($availableOfficeTabs ?? []) as $tKey => $tLabel)
+                                            <label class="flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer">
+                                                <input type="checkbox" name="trial_allowed_tabs[]" value="{{ $tKey }}"
+                                                       {{ in_array($tKey, $ls['trial_allowed_tabs'] ?? []) || $tKey === 'overview' ? 'checked' : '' }}>
+                                                <span>{{ $tLabel }}</span>
+                                            </label>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 2. إعدادات وضع العرض التفاعلي للزوار (Live Demo Sandbox) -->
+                            <div class="p-5 rounded-2xl bg-amber-50/50 border border-amber-200 space-y-4">
+                                <div class="flex items-center justify-between border-b border-amber-200 pb-2.5">
+                                    <h4 class="font-bold text-sm text-slate-900">🎮 ثانياً: زر "جرّب النظام الآن بدون تسجيل" (Sandbox)</h4>
+                                    <label class="flex items-center gap-2 text-xs font-extrabold text-amber-900 cursor-pointer">
+                                        <input type="checkbox" name="demo_sandbox_enabled" value="1" {{ !empty($ls['demo_sandbox_enabled']) ? 'checked' : '' }}>
+                                        <span>إظهار وتفعيل زر التجربة للزوار</span>
+                                    </label>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">إعادة الضبط التلقائي للمكتب التجريبي كل (دقيقة) *</label>
+                                    <input type="number" name="demo_reset_minutes" value="{{ $ls['demo_reset_minutes'] ?? 60 }}" min="15" max="1440" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-mono font-bold">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1.5">حدد الصفحات المعروضة القابلة للتجربة أمام الزائر:</label>
+                                    <div class="grid grid-cols-2 gap-1.5 p-3 rounded-xl bg-white border max-h-44 overflow-y-auto">
+                                        @foreach(($availableOfficeTabs ?? []) as $tKey => $tLabel)
+                                            <label class="flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer">
+                                                <input type="checkbox" name="demo_allowed_tabs[]" value="{{ $tKey }}"
+                                                       {{ in_array($tKey, $ls['demo_allowed_tabs'] ?? []) || $tKey === 'overview' ? 'checked' : '' }}>
+                                                <span>{{ $tLabel }}</span>
+                                            </label>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-end">
+                            <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 text-white font-bold text-xs shadow-lg">
+                                💾 حفظ إعدادات الفترة التجريبية ووضع التجربة الحية (Sandbox)
+                            </button>
+                        </div>
+                    </form>
+                </div>
                 <div class="bg-white rounded-3xl border border-slate-200/80 shadow-sm p-6 mt-6">
                     <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-6">
                         <div>
@@ -4207,53 +4450,90 @@
                     </div>
                 </div>
 
-                <!-- نوافذ تعديل السندات -->
+                <!-- نوافذ تعديل السندات الشاملة (تعديل كافة الحقول والحسابات) -->
                 @foreach($vouchers as $v)
                     @php $vMethodAr = \App\Http\Controllers\CompanyErpController::translatePaymentMethod($v->payment_method); @endphp
-                    <div id="editVoucherModal_{{ $v->id }}" class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
-                        <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+                    <div id="editVoucherModal_{{ $v->id }}" class="fixed inset-0 bg-slate-950/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+                        <div class="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto">
                             <div class="flex items-center justify-between pb-4 border-b mb-4">
-                                <h3 class="font-bold text-base text-slate-900">تعديل السند: <span class="font-mono text-emerald-700">{{ $v->voucher_number }}</span></h3>
+                                <h3 class="font-bold text-base text-slate-900">✏️ تعديل شامل للسند: <span class="font-mono text-emerald-700">{{ $v->voucher_number }}</span></h3>
                                 <button type="button" onclick="closeModal('editVoucherModal_{{ $v->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
                             </div>
                             <form action="{{ route('erp.vouchers.update', $v->id) }}" method="POST" class="space-y-4">
                                 @csrf
-                                <div class="grid grid-cols-2 gap-3">
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-slate-50 border">
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 mb-1">المكتب المرتبط</label>
-                                        <select name="office_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white">
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم السند *</label>
+                                        <input type="text" name="voucher_number" value="{{ $v->voucher_number }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold bg-white">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">نوع السند *</label>
+                                        <select name="voucher_type" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            <option value="receipt" {{ $v->voucher_type == 'receipt' ? 'selected' : '' }}>📥 سند قبض (RV)</option>
+                                            <option value="payment" {{ $v->voucher_type == 'payment' ? 'selected' : '' }}>📤 سند صرف (SA)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">المكتب المرتبط</label>
+                                        <select name="office_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
                                             <option value="">-- عام للشركة --</option>
                                             @foreach($offices as $off)
                                                 <option value="{{ $off->id }}" {{ $v->office_id == $off->id ? 'selected' : '' }}>{{ $off->name }}</option>
                                             @endforeach
                                         </select>
                                     </div>
+                                </div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-emerald-50/50 border border-emerald-200">
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 mb-1">المبلغ (ر.س) *</label>
-                                        <input type="number" step="0.01" name="amount" value="{{ $v->amount }}" required class="w-full rounded-xl border px-3 py-2 text-sm font-bold">
+                                        <label class="block text-xs font-bold text-slate-800 mb-1">من حساب (المدين - Debit) *</label>
+                                        <select name="debit_account_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            @foreach($accounts->where('is_group', 0) as $acc)
+                                                <option value="{{ $acc->id }}" {{ $v->debit_account_id == $acc->id ? 'selected' : '' }}>{{ $acc->code }} - {{ $acc->name }}</option>
+                                            @endforeach
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-800 mb-1">إلى حساب (الدائن - Credit) *</label>
+                                        <select name="credit_account_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
+                                            @foreach($accounts->where('is_group', 0) as $acc)
+                                                <option value="{{ $acc->id }}" {{ $v->credit_account_id == $acc->id ? 'selected' : '' }}>{{ $acc->code }} - {{ $acc->name }}</option>
+                                            @endforeach
+                                        </select>
                                     </div>
                                 </div>
-                                <div class="grid grid-cols-2 gap-3">
+
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 mb-1">تاريخ السند *</label>
-                                        <input type="date" name="voucher_date" value="{{ $v->voucher_date }}" required class="w-full rounded-xl border px-3 py-2 text-xs">
+                                        <label class="block text-xs font-bold text-emerald-700 mb-1">المبلغ (ر.س) *</label>
+                                        <input type="number" step="0.01" name="amount" value="{{ $v->amount }}" required class="w-full rounded-xl border px-3 py-2 text-sm font-mono font-extrabold text-emerald-700">
                                     </div>
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 mb-1">طريقة الدفع</label>
-                                        <select name="payment_method" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-semibold">
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">طريقة الدفع *</label>
+                                        <select name="payment_method" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">
                                             @foreach($paymentMethods as $pm)
                                                 <option value="{{ $pm->name }}" {{ ($vMethodAr == $pm->name || $v->payment_method == $pm->code) ? 'selected' : '' }}>{{ $pm->name }}</option>
                                             @endforeach
                                         </select>
                                     </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">رقم المرجع / الحوالة</label>
+                                        <input type="text" name="reference_number" value="{{ $v->reference_number ?? '' }}" placeholder="اختياري..." class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-700 mb-1">تاريخ السند *</label>
+                                        <input type="date" name="voucher_date" value="{{ $v->voucher_date }}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono">
+                                    </div>
                                 </div>
+
                                 <div>
-                                    <label class="block text-xs font-semibold text-slate-700 mb-1">البيان *</label>
-                                    <input type="text" name="notes" value="{{ $v->notes }}" required class="w-full rounded-xl border px-3.5 py-2 text-sm">
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">البيان والتفاصيل *</label>
+                                    <input type="text" name="notes" value="{{ $v->notes }}" required class="w-full rounded-xl border px-3.5 py-2 text-sm font-bold">
                                 </div>
+
                                 <div class="flex justify-end gap-2 pt-3 border-t">
                                     <button type="button" onclick="closeModal('editVoucherModal_{{ $v->id }}')" class="px-4 py-2 rounded-xl bg-slate-100 text-xs font-semibold">إلغاء</button>
-                                    <button type="submit" class="px-6 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">حفظ التعديلات وتحديث الرصيد</button>
+                                    <button type="submit" class="px-6 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow">💾 حفظ كافة التعديلات وتحديث الرصيد</button>
                                 </div>
                             </form>
                         </div>

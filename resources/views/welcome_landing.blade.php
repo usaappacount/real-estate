@@ -131,21 +131,97 @@
                 {{ $landing['hero_subtitle'] }}
             </p>
 
-            <div class="pt-4 flex flex-wrap items-center justify-center gap-4">
+            @if($errors->any())
+                <div class="max-w-lg mx-auto p-3.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs font-bold">
+                    ⚠️ {{ $errors->first() }}
+                </div>
+            @endif
+
+            <div class="pt-4 flex flex-wrap items-center justify-center gap-3.5">
                 <a href="{{ route('login') }}"
-                   class="px-8 py-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-xl shadow-emerald-600/25 transition flex items-center gap-2">
+                   class="px-7 py-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-xl shadow-emerald-600/25 transition flex items-center gap-2">
                     <span>🚀 {{ $landing['cta_primary_text'] }}</span>
                 </a>
 
+                @if(!empty($landing['demo_sandbox_enabled']))
+                    <a href="{{ route('public.live_demo') }}"
+                       class="px-7 py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-amber-500/20 transition flex items-center gap-2">
+                        <span>🎮 جرّب النظام الآن بدون تسجيل</span>
+                    </a>
+                @endif
+
+                @if(!empty($landing['self_registration_enabled']))
+                    <button type="button" onclick="document.getElementById('selfRegisterTrialModal').classList.remove('hidden'); document.getElementById('selfRegisterTrialModal').classList.add('flex');"
+                            class="px-7 py-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm shadow-xl shadow-sky-600/20 transition flex items-center gap-2">
+                        <span>✨ سجّل مكتبك مجاناً (تجربة {{ $landing['trial_days'] ?? 14 }} يوم)</span>
+                    </button>
+                @endif
+
                 @if(!empty($landing['contact_whatsapp']))
                     <a href="https://wa.me/{{ $landing['contact_whatsapp'] }}" target="_blank" rel="noopener"
-                       class="px-7 py-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold text-sm transition flex items-center gap-2">
+                       class="px-6 py-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold text-sm transition flex items-center gap-2">
                         <span>💬 {{ $landing['cta_secondary_text'] }}</span>
                     </a>
                 @endif
             </div>
         </div>
     </section>
+
+    <!-- نافذة التسجيل الذاتي للمكاتب العقارية مع فترة تجريبية مجانية (Self-Onboarding Modal) -->
+    @if(!empty($landing['self_registration_enabled']))
+        <div id="selfRegisterTrialModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+            <div class="bg-slate-900 border-2 border-emerald-500 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 text-right">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div>
+                        <span class="px-2.5 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 text-[11px] font-bold">فترة تجريبية مجانية لمدة {{ $landing['trial_days'] ?? 14 }} يوم</span>
+                        <h3 class="font-extrabold text-base text-white mt-1">🏢 تسجيل مكتب عقاري جديد وتفعيل البوابة فوراً</h3>
+                    </div>
+                    <button type="button" onclick="document.getElementById('selfRegisterTrialModal').classList.add('hidden'); document.getElementById('selfRegisterTrialModal').classList.remove('flex');" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 font-bold">✕</button>
+                </div>
+
+                <form action="{{ route('public.register_office_trial') }}" method="POST" class="space-y-3.5 text-xs">
+                    @csrf
+                    <div>
+                        <label class="block text-slate-300 font-bold mb-1">اسم المكتب أو الشركة العقارية *</label>
+                        <input type="text" name="office_name" required placeholder="مثال: مكتب آفاق نجد للعقارات" class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3.5 py-2.5 text-white font-bold">
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-slate-300 font-bold mb-1">رقم السجل التجاري (اختياري)</label>
+                            <input type="text" name="cr_number" placeholder="1010XXXXXX" class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-slate-300 font-bold mb-1">رقم رخصة فال (اختياري)</label>
+                            <input type="text" name="fal_license" placeholder="12000XXXXX" class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-white font-mono">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-emerald-400 font-bold mb-1">رقم الجوال للواتساب (10 أرقام) *</label>
+                            <input type="tel" name="phone" maxlength="10" required dir="ltr" placeholder="05XXXXXXXX" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 10);" class="w-full text-left rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-white font-mono font-bold">
+                        </div>
+                        <div>
+                            <label class="block text-slate-300 font-bold mb-1">المدينة</label>
+                            <input type="text" name="city" value="الرياض" class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-white">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
+                        <div>
+                            <label class="block text-slate-300 font-bold mb-1">اسم المستخدم للدخول *</label>
+                            <input type="text" name="username" required placeholder="my_office" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-slate-300 font-bold mb-1">كلمة المرور *</label>
+                            <input type="password" name="password" required placeholder="••••••" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white">
+                        </div>
+                    </div>
+                    <button type="submit" class="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm shadow-lg">
+                        🚀 إنشاء حساب المكتب والبدء فوراً ({{ $landing['trial_days'] ?? 14 }} يوم مجاناً)
+                    </button>
+                </form>
+            </div>
+        </div>
+    @endif
 
     <!-- عرض الأقسام المرتبة ديناميكياً حسب اختيار الأدمن -->
     @php

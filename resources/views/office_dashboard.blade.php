@@ -20,6 +20,17 @@
     </style>
 
     <style id="modern-minimal-ui">
+        /* الحل الجذري لمنع ظهور أي جدول مكرر لمدة ثانية في صفحة مولد الإنذارات وجميع الصفحات */
+        #masterTabSectionActive ~ * {
+            display: none !important;
+        }
+        :root {
+            --office-brand-primary: {{ $office->brand_primary_color ?? '#0f172a' }};
+            --office-brand-sidebar: {{ $office->brand_sidebar_color ?? '#0f172a' }};
+        }
+        .office-sidebar {
+            background: var(--office-brand-sidebar) !important;
+        }
         /* تنسيق جدول البحث والاختيار الموحد العصري بدون أي قص للأعمدة */
         .erp-picker-host { position: relative !important; width: 100% !important; }
         .erp-picker-trigger {
@@ -163,12 +174,28 @@
 </head>
 <body class="text-slate-800 flex min-h-screen">
 
+    <!-- تطبيق لون القائمة الجانبية المخصص للمكتب بأولوية قصوى -->
+    @if(!empty($office->brand_sidebar_color))
+        <style id="office-custom-sidebar-override">
+            aside.office-sidebar {
+                background: {{ $office->brand_sidebar_color }} !important;
+                background-color: {{ $office->brand_sidebar_color }} !important;
+                background-image: none !important;
+            }
+        </style>
+    @endif
+
     <!-- القائمة الجانبية لبوابة المكتب -->
-    <aside class="w-72 office-sidebar text-white flex flex-col shrink-0 shadow-2xl sticky top-0 h-screen no-print">
+    <aside class="w-72 office-sidebar text-white flex flex-col shrink-0 shadow-2xl sticky top-0 h-screen no-print"
+           style="background: {{ $office->brand_sidebar_color ?? '#0f172a' }} !important;">
         <div class="p-6 border-b border-white/10 flex items-center gap-3.5">
-            <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20 shrink-0 font-bold text-lg">
-                🏢
-            </div>
+            @if(!empty($office->logo_url))
+                <img src="{{ $office->logo_url }}" alt="{{ $office->name }}" class="w-11 h-11 rounded-xl object-contain bg-white p-1 shrink-0 shadow">
+            @else
+                <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20 shrink-0 font-bold text-lg">
+                    🏢
+                </div>
+            @endif
             <div>
                 <h1 class="font-bold text-sm tracking-tight text-white">{{ $office->name }}</h1>
             </div>
@@ -284,7 +311,7 @@
                 @if(in_array('staff', $allowedTabsList))
                     <a href="{{ route('office.dashboard', ['tab' => 'staff']) }}"
                        class="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all {{ $tab == 'staff' ? 'bg-white text-slate-900 font-bold shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white' }}">
-                        <span> الموظفين والصلاحيات </span>
+                        <span>⚙️ إعدادات المكتب والموظفين</span>
                     </a>
                 @endif
 
@@ -1953,9 +1980,158 @@
                     document.querySelectorAll('.erp-picker-trigger').forEach(t => t.classList.remove('active'));
                 });
 
+                // تطوير نوافذ تعديل السندات في بوابة المكتب لتتيح تعديل كل شيء في السند بمرونة كاملة
+                window.enhanceEditVoucherModals = function() {
+                    const vouchersMap = {};
+                    (window.officeVouchersMaster || []).forEach(v => { vouchersMap[String(v.id)] = v; });
+
+                    document.querySelectorAll('form[action*="/vouchers/"][action*="/update"]').forEach(form => {
+                        if (form.dataset.fullEditEnhanced === '1') return;
+                        form.dataset.fullEditEnhanced = '1';
+
+                        const match = form.action.match(/\/vouchers\/(\d+)\/update/);
+                        if (!match) return;
+                        const vId = match[1];
+                        const v = vouchersMap[String(vId)];
+                        if (!v) return;
+
+                        const modalBox = form.closest('.max-w-lg, .max-w-md, .max-w-xl');
+                        if (modalBox) {
+                            modalBox.classList.remove('max-w-lg', 'max-w-md', 'max-w-xl');
+                            modalBox.classList.add('max-w-3xl', 'max-h-[92vh]', 'overflow-y-auto');
+                        }
+
+                        const csrfInput = form.querySelector('input[name="_token"]');
+                        const csrfVal = csrfInput ? csrfInput.value : '{{ csrf_token() }}';
+
+                        const tenantsOpts = ['<option value="">-- بدون مستأجر / اختر المستأجر --</option>'].concat(
+                            (window.officeTenantsMaster || []).map(t => `<option value="${t.id}" ${String(v.tenant_id || '') === String(t.id) ? 'selected' : ''}>${t.name}</option>`)
+                        ).join('');
+
+                        const ownersOpts = ['<option value="">-- بدون مالك / اختر المالك --</option>'].concat(
+                            (window.officeOwnersMaster || []).map(o => `<option value="${o.id}" ${String(v.owner_id || '') === String(o.id) ? 'selected' : ''}>${o.name}</option>`)
+                        ).join('');
+
+                        const propsOpts = ['<option value="">-- بدون عقار / اختر العقار --</option>'].concat(
+                            (window.officePropertiesMaster || []).map(p => `<option value="${p.id}" ${String(v.property_id || '') === String(p.id) ? 'selected' : ''}>${p.title}</option>`)
+                        ).join('');
+
+                        const unitsOpts = ['<option value="">-- بدون وحدة / اختر الوحدة --</option>'].concat(
+                            (window.officeUnitsMaster || []).map(u => `<option value="${u.id}" ${String(v.property_unit_id || '') === String(u.id) ? 'selected' : ''}>${u.unit_number} - ${u.property_title || ''}</option>`)
+                        ).join('');
+
+                        const contractsOpts = ['<option value="">-- بدون عقد / اختر العقد --</option>'].concat(
+                            (window.officeContractsMaster || []).map(c => `<option value="${c.id}" ${String(v.lease_contract_id || '') === String(c.id) ? 'selected' : ''}>${c.contract_number} - ${c.tenant_name}</option>`)
+                        ).join('');
+
+                        const leafAccs = (window.officeAccountsMaster || []).filter(a => !a.is_group);
+                        const debitOpts = leafAccs.map(a => `<option value="${a.id}" ${String(v.debit_account_id) === String(a.id) ? 'selected' : ''}>${a.code} - ${a.name}</option>`).join('');
+                        const creditOpts = leafAccs.map(a => `<option value="${a.id}" ${String(v.credit_account_id) === String(a.id) ? 'selected' : ''}>${a.code} - ${a.name}</option>`).join('');
+
+                        const pmList = (window.officePaymentMethodsMaster || []);
+                        const pmOpts = pmList.map(pm => {
+                            const isSel = (v.payment_method === pm.name || v.payment_method === pm.code);
+                            return `<option value="${pm.name}" ${isSel ? 'selected' : ''}>${pm.name}</option>`;
+                        }).join('');
+
+                        const modalId = form.closest('[id*="Modal"]')?.id || ('editVoucherModal_' + v.id);
+                        const safeNotes = String(v.notes || '').replace(/"/g, '&quot;');
+                        const safeRef = String(v.reference_number || '').replace(/"/g, '&quot;');
+                        const safeVNo = String(v.voucher_number || '').replace(/"/g, '&quot;');
+
+                        form.innerHTML = `
+                            <input type="hidden" name="_token" value="${csrfVal}">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">رقم السند *</label>
+                                    <input type="text" name="voucher_number" value="${safeVNo}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono font-bold bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">نوع السند *</label>
+                                    <select name="voucher_type" class="w-full rounded-xl border px-3 py-2 text-xs font-bold bg-white">
+                                        <option value="receipt" ${v.voucher_type === 'receipt' ? 'selected' : ''}>📥 سند قبض (Receipt)</option>
+                                        <option value="payment" ${v.voucher_type === 'payment' ? 'selected' : ''}>📤 سند صرف (Payment)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">تاريخ السند *</label>
+                                    <input type="date" name="voucher_date" value="${v.voucher_date || ''}" required class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-emerald-50/50 border border-emerald-200">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">👤 المستأجر المرتبط (جدول بحث موحد)</label>
+                                    <select name="tenant_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">${tenantsOpts}</select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">👑 المالك المرتبط (جدول بحث موحد)</label>
+                                    <select name="owner_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">${ownersOpts}</select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">🏢 العقار المرتبط</label>
+                                    <select name="property_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-semibold">${propsOpts}</select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">🚪 الوحدة العقارية</label>
+                                    <select name="property_unit_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-semibold">${unitsOpts}</select>
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">📝 عقد الإيجار المرتبط</label>
+                                    <select name="lease_contract_id" class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-semibold">${contractsOpts}</select>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-blue-50/50 border border-blue-200">
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">🌳 من حساب / المدين (Debit Account) *</label>
+                                    <select name="debit_account_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">${debitOpts}</select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-800 mb-1">🌳 إلى حساب / الدائن (Credit Account) *</label>
+                                    <select name="credit_account_id" required class="w-full rounded-xl border px-3 py-2 text-xs bg-white font-bold">${creditOpts}</select>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <div>
+                                    <label class="block text-xs font-bold text-emerald-700 mb-1">💰 المبلغ (ر.س) *</label>
+                                    <input type="number" step="0.01" name="amount" value="${v.amount || 0}" required class="w-full rounded-xl border px-3 py-2 text-sm font-mono font-extrabold text-emerald-700 bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">💳 طريقة الدفع *</label>
+                                    <select name="payment_method" class="w-full rounded-xl border px-3 py-2 text-xs font-bold bg-white">${pmOpts}</select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">🔢 رقم المرجع / الحوالة</label>
+                                    <input type="text" name="reference_number" value="${safeRef}" placeholder="اختياري..." class="w-full rounded-xl border px-3 py-2 text-xs font-mono bg-white">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-slate-700 mb-1">📌 حالة السند</label>
+                                    <select name="approval_status" class="w-full rounded-xl border px-3 py-2 text-xs font-bold bg-white">
+                                        <option value="approved" ${(v.approval_status || 'approved') === 'approved' ? 'selected' : ''}>✅ معتمد ومرحّل</option>
+                                        <option value="pending" ${v.approval_status === 'pending' ? 'selected' : ''}>⏳ معلق بانتظار الاعتماد</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-bold text-slate-700 mb-1">📋 البيان والتفاصيل (وذلك عن...) *</label>
+                                <input type="text" name="notes" value="${safeNotes}" required class="w-full rounded-xl border px-3.5 py-2.5 text-xs font-bold bg-white">
+                            </div>
+
+                            <div class="flex justify-end gap-2 pt-3 border-t">
+                                <button type="button" onclick="closeModal('${modalId}')" class="px-5 py-2.5 rounded-xl bg-slate-100 text-xs font-bold">إلغاء</button>
+                                <button type="submit" class="px-7 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-extrabold shadow-lg">💾 حفظ كافة تعديلات السند وتحديث الأرصدة</button>
+                            </div>
+                        `;
+                    });
+                };
+
                 document.addEventListener('DOMContentLoaded', function() {
                     window.enforceAllowedSidebarTabs();
                     window.enhanceEditJournalModals();
+                    window.enhanceEditVoucherModals();
                     window.initUnifiedTablePickers(document);
                     window.initAllTablesPagination();
                     if (document.querySelectorAll('.stmt-movement-row').length > 0) {
@@ -1970,6 +2146,674 @@
                 });
             </script>
 
+<!-- شريط تنبيه وضع التجربة الحية للزوار (Live Demo Sandbox Banner) -->
+            @if(!empty($office->is_demo_sandbox))
+                <div class="p-4 rounded-2xl bg-amber-500 text-slate-950 font-bold text-xs flex flex-wrap items-center justify-between gap-3 shadow-sm no-print">
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg">🎮</span>
+                        <span>أنت تتصفح الآن <b>وضع العرض التفاعلي المباشر (Live Demo Sandbox)</b> — يمكنك تجربة كافة المميزات بحرية، ويتم إعادة ضبط البيانات تلقائياً كل ساعة.</span>
+                    </div>
+                    <a href="{{ route('landing') }}" class="px-4 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-extrabold">
+                        🚀 سجّل مكتبك العقاري الخاص الآن
+                    </a>
+                </div>
+            @endif
+
+            <!-- ========================================================================= -->
+            <!-- أ. كاشف الوحدات الراكدة (Stagnant Vacancy Alert) في صفحة العقارات والوحدات -->
+            <!-- ========================================================================= -->
+            @if(($tab ?? '') === 'properties')
+                @php
+                    $stagnantList = $stagnantVacantUnits ?? collect();
+                @endphp
+                <div class="bg-white rounded-3xl border-2 border-amber-400 shadow-sm p-5 space-y-4 no-print">
+                    <div class="flex flex-wrap items-center justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center text-xl font-bold">🕸️</div>
+                            <div>
+                                <h3 class="font-extrabold text-base text-slate-900">كاشف الوحدات الشاغرة والراكدة الذكي (Stagnant Vacancy Alert)</h3>
+                                <p class="text-xs text-slate-500">يعرض جميع الوحدات الشاغرة فقط (دون الوحدات المؤجرة ودون تكرار الوحدة) مرتبة من الفترة الشاغرة الأكبر في الأعلى نزولاً للأقل، مع اقتراحات ذكية عند الضغط</p>
+                            </div>
+                        </div>
+                        <button type="button" onclick="toggleStagnantVacancyTable()" id="btnShowStagnantVacancy"
+                                class="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold shadow flex items-center gap-2">
+                            <span>🔍 عرض جدول كاشف الوحدات الراكدة ({{ $stagnantList->count() }} وحدة شاغرة)</span>
+                        </button>
+                    </div>
+
+                    <div id="stagnantVacancyTableSection" class="hidden space-y-4 pt-3 border-t border-slate-200">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div class="relative flex-1 min-w-[260px]">
+                                <input type="text" id="stagnantUnitsInstantSearch" oninput="filterTableRows('stagnantUnitsInstantSearch', 'stagnantUnitsTbody')"
+                                       placeholder="🔍 ابحث باسم العمارة، رقم الوحدة، العنوان، أو فترة الشغور..."
+                                       class="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-2 text-xs font-bold focus:bg-white">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button type="button" onclick="exportTableToCSV('stagnantUnitsMainTable', 'كشف_الوحدات_الشاغرة_والراكدة.xlsx')"
+                                        class="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                    📊 تصدير Excel
+                                </button>
+                                <button type="button" onclick="exportElementToPDF('stagnantUnitsPrintableArea', 'كشف_الوحدات_الشاغرة_والراكدة.pdf')"
+                                        class="px-3.5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">
+                                    📥 تصدير PDF
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="stagnantUnitsPrintableArea" class="overflow-x-auto rounded-2xl border border-slate-200">
+                            <table class="w-full text-xs text-right" id="stagnantUnitsMainTable">
+                                <thead class="bg-slate-900 text-white">
+                                    <tr>
+                                        <th class="py-3 px-4">#</th>
+                                        <th class="py-3 px-4">العمارة (العقار)</th>
+                                        <th class="py-3 px-4">الوحدة (غير مكررة)</th>
+                                        <th class="py-3 px-4">العنوان</th>
+                                        <th class="py-3 px-4">الإيجار السنوي الحالي</th>
+                                        <th class="py-3 px-4 text-center">الفترة الشاغرة (تنازلياً) ⬇</th>
+                                        <th class="py-3 px-4 text-center no-print">الاقتراحات التسويقية الذكية</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stagnantUnitsTbody" class="divide-y divide-slate-100">
+                                    @forelse($stagnantList as $idx => $su)
+                                        @php
+                                            $days = (int) $su->days_vacant;
+                                            $badgeClass = $days >= 60 ? 'bg-rose-100 text-rose-800 border-rose-300' : ($days >= 30 ? 'bg-amber-100 text-amber-900 border-amber-300' : 'bg-emerald-50 text-emerald-800 border-emerald-200');
+                                        @endphp
+                                        <tr class="hover:bg-amber-50/40 cursor-pointer transition"
+                                            onclick="openStagnantUnitSuggestionsModal({
+                                                unit_id: '{{ $su->unit_id }}',
+                                                building: '{{ addslashes($su->building_name) }}',
+                                                unit: '{{ addslashes($su->unit_number) }}',
+                                                address: '{{ addslashes($su->address) }}',
+                                                rent: {{ (float)$su->default_rent_price }},
+                                                days: {{ $days }},
+                                                since: '{{ $su->vacant_since }}'
+                                            })"
+                                            data-search="{{ mb_strtolower($su->building_name . ' ' . $su->unit_number . ' ' . $su->address . ' ' . $days . ' يوم') }}">
+                                            <td class="py-3 px-4 font-mono font-bold text-slate-400">{{ $idx + 1 }}</td>
+                                            <td class="py-3 px-4 font-extrabold text-slate-900">🏢 {{ $su->building_name }}</td>
+                                            <td class="py-3 px-4 font-bold text-emerald-700">🚪 {{ $su->unit_number }} <span class="text-[10px] text-slate-400">(دور {{ $su->floor_number }} | {{ $su->area }} م²)</span></td>
+                                            <td class="py-3 px-4 text-slate-600">📍 {{ $su->address }}</td>
+                                            <td class="py-3 px-4 font-mono font-bold text-slate-900">{{ number_format($su->default_rent_price, 2) }} ر.س</td>
+                                            <td class="py-3 px-4 text-center">
+                                                <span class="px-3 py-1 rounded-xl border font-mono font-extrabold {{ $badgeClass }}">
+                                                    {{ $days }} يوم شاغرة (منذ {{ $su->vacant_since }})
+                                                </span>
+                                            </td>
+                                            <td class="py-3 px-4 text-center no-print">
+                                                <button type="button" class="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px]">
+                                                    💡 عرض الاقتراحات الذكية
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr><td colspan="7" class="py-8 text-center text-emerald-600 font-bold">🎉 ممتاز! لا توجد أي وحدات شاغرة أو راكدة حالياً، نسبة الإشغال 100%.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- نافذة الاقتراحات الذكية للوحدة الشاغرة/الراكدة عند الضغط عليها -->
+                <div id="stagnantUnitSuggestionsModal" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+                    <div class="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border-2 border-amber-400 space-y-4">
+                        <div class="flex items-center justify-between border-b pb-3">
+                            <div>
+                                <span class="px-2.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[11px] font-bold" id="sug_days_badge">شاغرة</span>
+                                <h3 class="font-extrabold text-base text-slate-900 mt-1" id="sug_unit_title">💡 توصيات معالجة ركود الوحدة</h3>
+                            </div>
+                            <button type="button" onclick="closeModal('stagnantUnitSuggestionsModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                        </div>
+                        <div id="sug_recommendations_body" class="space-y-3 text-xs leading-relaxed"></div>
+                        <div class="flex justify-end gap-2 pt-3 border-t">
+                            <button type="button" onclick="closeModal('stagnantUnitSuggestionsModal')" class="px-5 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold">إغلاق</button>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    window.toggleStagnantVacancyTable = function() {
+                        const sec = document.getElementById('stagnantVacancyTableSection');
+                        if (!sec) return;
+                        sec.classList.toggle('hidden');
+                    };
+
+                    window.openStagnantUnitSuggestionsModal = function(d) {
+                        document.getElementById('sug_unit_title').innerText = `💡 توصيات تأجير: ${d.building} — (${d.unit})`;
+                        document.getElementById('sug_days_badge').innerText = `⏱️ فترة الشغور: ${d.days} يوماً (منذ ${d.since})`;
+
+                        const rent = parseFloat(d.rent || 0);
+                        const discount5  = Math.round(rent * 0.95);
+                        const discount10 = Math.round(rent * 0.90);
+                        const monthlyRent = Math.round((discount5 / 12) * 100) / 100;
+                        const dailyLoss = Math.round((rent / 365) * d.days);
+
+                        document.getElementById('sug_recommendations_body').innerHTML = `
+                            <div class="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900">
+                                <b>📉 تكلفة الفرصة الضائعة بسبب الشغور (${d.days} يوم):</b>
+                                فقد العقار ما يقارب <b class="font-mono">${dailyLoss.toLocaleString()} ر.س</b> من العائد المحتمل خلال فترة الشغور الحالية.
+                            </div>
+                            <div class="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 space-y-1.5">
+                                <div class="font-extrabold text-emerald-950">🎯 1. اقتراح التسعير المرن الذكي:</div>
+                                <div>• السعر الحالي: <b class="font-mono">${rent.toLocaleString()} ر.س / سنوياً</b></div>
+                                <div>• اقتراح خصم تحفيزي (5%) للسداد السنوي/النصف سنوي: <b class="font-mono text-emerald-700">${discount5.toLocaleString()} ر.س</b></div>
+                                ${d.days >= 45 ? `<div>• نظراً لتجاوز الشغور 45 يوماً، يُنصح بعرض سعر تنافسي (-10%): <b class="font-mono text-rose-700">${discount10.toLocaleString()} ر.س</b> لجذب مستأجر فوري وتعويض أيام الركود.</div>` : ''}
+                            </div>
+                            <div class="p-3.5 rounded-2xl bg-sky-50 border border-sky-200 space-y-1">
+                                <div class="font-extrabold text-sky-950">📅 2. اقتراح تيسير دفعات الإيجار:</div>
+                                <div>• طرح خيار الإيجار الشهري الميسر بقيمة <b class="font-mono">${monthlyRent.toLocaleString()} ر.س / شهرياً</b> يرفع فرصة التأجير بنسبة 65%.</div>
+                                <div>• منح المستأجر الجديد <b>فترة سماح وتجهيز (15 يوماً مجاناً)</b> عند توقيع العقد هذا الأسبوع.</div>
+                            </div>
+                            <div class="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                                <div class="font-extrabold text-slate-900">📢 3. خطة التسويق الفوري للوحدة (${d.address}):</div>
+                                <div>• إرسال عرض الوحدة لقائمة عملاء المكتب عبر حملة واتساب مركزة مع إبراز جاهزية عدادات الوحدة وموقعها في (${d.address}).</div>
+                            </div>
+                        `;
+                        openModal('stagnantUnitSuggestionsModal');
+                    };
+                </script>
+            @endif
+
+            <!-- ========================================================================= -->
+            <!-- ب. زر وجدول نظام التصويت الإلكتروني لقرارات جمعيات اتحاد الملاك (في تبويب mullak) -->
+            <!-- ========================================================================= -->
+            @if(($tab ?? '') === 'mullak')
+                @php
+                    $pollsList = $mullakPolls ?? collect();
+                    $votesByPoll = $mullakPollVotes ?? collect();
+                    $openPollsByDefault = request()->has('open_polls');
+                @endphp
+                <div class="bg-white rounded-3xl border-2 border-indigo-500 shadow-sm p-5 space-y-4 no-print">
+                    <div class="flex flex-wrap items-center justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-indigo-100 text-indigo-800 flex items-center justify-center text-xl font-bold">🗳️</div>
+                            <div>
+                                <h3 class="font-extrabold text-base text-slate-900">نظام التصويت الإلكتروني الموثق لقرارات جمعيات اتحاد الملاك</h3>
+                                <p class="text-xs text-slate-500">اضغط على الزر لعرض جدول القرارات، إنشاء قرار، اعتماده أو إلغائه، ومشاركة الرابط مباشرة للمستأجرين عبر الواتساب (بتحقق OTP من 4 أرقام)</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="document.getElementById('mullakPollsTableSection').classList.toggle('hidden')"
+                                    class="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold shadow flex items-center gap-2">
+                                <span>🗳️ فتح جدول التصويت الإلكتروني للقرارات ({{ $pollsList->count() }} قرار)</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- جدول إدارة قرارات التصويت الإلكتروني (يظهر عند الضغط على الزر) -->
+                    <div id="mullakPollsTableSection" class="{{ $openPollsByDefault ? '' : 'hidden' }} space-y-4 pt-4 border-t border-slate-200">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <input type="text" id="mullakPollsInstantSearch" oninput="filterTableRows('mullakPollsInstantSearch', 'mullakPollsTbody')"
+                                   placeholder="🔍 ابحث في قرارات التصويت باسم العمارة أو عنوان القرار..."
+                                   class="flex-1 min-w-[240px] rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-2 text-xs font-bold">
+                            <button type="button" onclick="openModal('createMullakPollModal')"
+                                    class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shadow">
+                                ➕ إضافة / طرح قرار تصويت جديد
+                            </button>
+                        </div>
+
+                        <div class="overflow-x-auto rounded-2xl border border-slate-200">
+                            <table class="w-full text-xs text-right" id="mullakPollsMainTable">
+                                <thead class="bg-slate-900 text-white">
+                                    <tr>
+                                        <th class="py-3 px-3">#</th>
+                                        <th class="py-3 px-4">العمارة / جمعية اتحاد الملاك</th>
+                                        <th class="py-3 px-4">موضوع القرار والتفاصيل</th>
+                                        <th class="py-3 px-3">التكلفة التقديرية</th>
+                                        <th class="py-3 px-4 text-center">نتائج تصويت الوحدات (الموثق بـ OTP)</th>
+                                        <th class="py-3 px-3 text-center">حالة التصويت</th>
+                                        <th class="py-3 px-4 text-center">إجراءات (مشاركة واتساب للمستأجرين / اعتماد / إلغاء)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mullakPollsTbody" class="divide-y divide-slate-100">
+                                    @forelse($pollsList as $idx => $pl)
+                                        @php
+                                            $pVotes = $votesByPoll[$pl->id] ?? collect();
+                                            $approveCount = $pVotes->where('vote_choice', 'approve')->count();
+                                            $rejectCount  = $pVotes->where('vote_choice', 'reject')->count();
+                                            $abstainCount = $pVotes->where('vote_choice', 'abstain')->count();
+                                            $totalVotes   = $pVotes->count();
+                                            $approvePct   = $totalVotes > 0 ? round(($approveCount / $totalVotes) * 100, 1) : 0;
+                                            $publicVoteUrl = route('public.mullak_vote', ['id' => $pl->id, 'token' => $pl->public_token]);
+                                        @endphp
+                                        <tr class="hover:bg-slate-50"
+                                            data-search="{{ mb_strtolower($pl->association_name . ' ' . $pl->title . ' ' . ($pl->description ?? '')) }}">
+                                            <td class="py-3 px-3 font-mono font-bold text-slate-400">{{ $idx + 1 }}</td>
+                                            <td class="py-3 px-4 font-extrabold text-slate-900">🏢 {{ $pl->association_name }}</td>
+                                            <td class="py-3 px-4">
+                                                <div class="font-extrabold text-slate-900">{{ $pl->title }}</div>
+                                                @if(!empty($pl->description))
+                                                    <div class="text-[11px] text-slate-500 mt-0.5">{{ $pl->description }}</div>
+                                                @endif
+                                                <div class="text-[10px] font-mono text-slate-400 mt-0.5">النصاب المطلوب: {{ $pl->required_quorum_pct }}% | يغلق: {{ $pl->closes_at }}</div>
+                                            </td>
+                                            <td class="py-3 px-3 font-mono font-bold text-amber-800">{{ number_format($pl->estimated_cost, 2) }} ر.س</td>
+                                            <td class="py-3 px-4 text-center">
+                                                <div class="flex items-center justify-center gap-1.5 flex-wrap">
+                                                    <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">✔ موافق: {{ $approveCount }} ({{ $approvePct }}%)</span>
+                                                    <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">✖ رافض: {{ $rejectCount }}</span>
+                                                    @if($abstainCount > 0)
+                                                        <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">متحفظ: {{ $abstainCount }}</span>
+                                                    @endif
+                                                </div>
+                                                @if($totalVotes > 0)
+                                                    <button type="button" onclick="openModal('pollVotesDetailModal_{{ $pl->id }}')" class="text-[11px] text-indigo-700 font-bold underline mt-1">
+                                                        عرض سجل الوحدات المصوتة ({{ $totalVotes }})
+                                                    </button>
+                                                @endif
+                                            </td>
+                                            <td class="py-3 px-3 text-center">
+                                                @if($pl->status === 'approved')
+                                                    <span class="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-extrabold">✅ معتمد رسمياً</span>
+                                                @elseif($pl->status === 'cancelled')
+                                                    <span class="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-800 font-extrabold">🚫 ملغي</span>
+                                                @else
+                                                    <span class="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-800 font-extrabold">🟢 مفتوح للتصويت</span>
+                                                @endif
+                                            </td>
+                                            <td class="py-3 px-4 text-center">
+                                                <div class="flex items-center justify-center gap-1.5 flex-wrap">
+                                                    <!-- إرسال الرابط مباشرة لجميع المستأجرين في العمارة عبر الواتساب -->
+                                                    <form action="{{ route('office.mullak.poll.share_whatsapp', $pl->id) }}" method="POST">
+                                                        @csrf
+                                                        <button type="submit" class="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow" title="إرسال رابط التصويت مباشرة لجميع المستأجرين المسجلين في هذه العمارة عبر الواتساب">
+                                                            💬 مشاركة الرابط للمستأجرين واتساب
+                                                        </button>
+                                                    </form>
+
+                                                    <a href="{{ $publicVoteUrl }}" target="_blank" class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-bold">
+                                                        🔗 معاينة الرابط
+                                                    </a>
+
+                                                    @if($pl->status !== 'approved')
+                                                        <form action="{{ route('office.mullak.poll.status', $pl->id) }}" method="POST">
+                                                            @csrf
+                                                            <input type="hidden" name="status" value="approved">
+                                                            <button type="submit" class="px-2.5 py-1.5 rounded-xl bg-slate-900 text-white text-[11px] font-bold">
+                                                                ✅ اعتماد
+                                                            </button>
+                                                        </form>
+                                                    @endif
+
+                                                    @if($pl->status !== 'cancelled')
+                                                        <form action="{{ route('office.mullak.poll.status', $pl->id) }}" method="POST">
+                                                            @csrf
+                                                            <input type="hidden" name="status" value="cancelled">
+                                                            <button type="submit" class="px-2.5 py-1.5 rounded-xl bg-amber-100 text-amber-900 text-[11px] font-bold">
+                                                                🚫 إلغاء التصويت
+                                                            </button>
+                                                        </form>
+                                                    @else
+                                                        <form action="{{ route('office.mullak.poll.status', $pl->id) }}" method="POST">
+                                                            @csrf
+                                                            <input type="hidden" name="status" value="open">
+                                                            <button type="submit" class="px-2.5 py-1.5 rounded-xl bg-sky-100 text-sky-900 text-[11px] font-bold">
+                                                                🔓 إعادة فتح
+                                                            </button>
+                                                        </form>
+                                                    @endif
+
+                                                    <form action="{{ route('office.mullak.poll.delete', $pl->id) }}" method="POST" onsubmit="return confirm('حذف هذا القرار نهائياً؟');">
+                                                        @csrf
+                                                        <button type="submit" class="px-2 py-1.5 rounded-xl bg-rose-50 text-rose-600 text-[11px] font-bold">🗑️</button>
+                                                    </form>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    @empty
+                                        <tr><td colspan="7" class="py-8 text-center text-slate-400">لا توجد قرارات تصويت مضافة بعد. اضغط على "➕ إضافة / طرح قرار تصويت جديد" للبدء.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- نوافذ عرض تفاصيل أصوات الوحدات لكل قرار -->
+                @foreach($pollsList as $pl)
+                    @php $pVotes = $votesByPoll[$pl->id] ?? collect(); @endphp
+                    <div id="pollVotesDetailModal_{{ $pl->id }}" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+                        <div class="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+                            <div class="flex items-center justify-between border-b pb-3">
+                                <h3 class="font-extrabold text-base text-slate-900">🗳️ سجل الوحدات المصوتة (الموثقة بكود OTP): {{ $pl->title }}</h3>
+                                <button type="button" onclick="closeModal('pollVotesDetailModal_{{ $pl->id }}')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                            </div>
+                            <div class="max-h-80 overflow-y-auto rounded-2xl border border-slate-200">
+                                <table class="w-full text-xs text-right">
+                                    <thead class="bg-slate-900 text-white">
+                                        <tr>
+                                            <th class="py-2.5 px-3">رقم الشقة / الوحدة</th>
+                                            <th class="py-2.5 px-3">اسم الساكن (يظهر للإدارة فقط)</th>
+                                            <th class="py-2.5 px-3 text-center">التصويت</th>
+                                            <th class="py-2.5 px-3">الملاحظات</th>
+                                            <th class="py-2.5 px-3">وقت التصويت</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        @foreach($pVotes as $vt)
+                                            <tr>
+                                                <td class="py-2.5 px-3 font-bold text-emerald-700">{{ $vt->unit_number }}</td>
+                                                <td class="py-2.5 px-3 font-bold">{{ $vt->member_name }}</td>
+                                                <td class="py-2.5 px-3 text-center">
+                                                    @if($vt->vote_choice === 'approve')
+                                                        <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">✔ موافق</span>
+                                                    @elseif($vt->vote_choice === 'reject')
+                                                        <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">✖ غير موافق</span>
+                                                    @else
+                                                        <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">⚖️ متحفظ</span>
+                                                    @endif
+                                                </td>
+                                                <td class="py-2.5 px-3">{{ $vt->comment ?: '-' }}</td>
+                                                <td class="py-2.5 px-3 font-mono text-[10px]" dir="ltr">{{ $vt->updated_at }}</td>
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                @endforeach
+
+                <!-- نافذة طرح قرار جديد للتصويت الإلكتروني -->
+                <div id="createMullakPollModal" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden items-center justify-center p-4 no-print">
+                    <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+                        <div class="flex items-center justify-between border-b pb-3">
+                            <h3 class="font-extrabold text-base text-slate-900">🗳️ طرح قرار جديد للتصويت الإلكتروني</h3>
+                            <button type="button" onclick="closeModal('createMullakPollModal')" class="w-8 h-8 rounded-full bg-slate-100 font-bold">✕</button>
+                        </div>
+                        <form action="{{ route('office.mullak.poll.store') }}" method="POST" class="space-y-3.5 text-xs">
+                            @csrf
+                            <div>
+                                <label class="block font-bold text-slate-700 mb-1">اختر جمعية / عمارة اتحاد الملاك *</label>
+                                <select name="mullak_building_id" required class="w-full rounded-xl border px-3 py-2.5 bg-white font-bold">
+                                    @foreach(($mullakBuildings ?? collect()) as $mb)
+                                        <option value="{{ $mb->id }}">{{ $mb->association_name }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold text-slate-700 mb-1">عنوان القرار المطروح للتصويت *</label>
+                                <input type="text" name="title" required placeholder="مثال: الموافقة على تجديد دهان الواجهة وصيانة المصعد" class="w-full rounded-xl border px-3 py-2 font-bold">
+                            </div>
+                            <div>
+                                <label class="block font-bold text-slate-700 mb-1">تفاصيل ومبررات القرار</label>
+                                <textarea name="description" rows="2" placeholder="شرح مختصر للأعضاء..." class="w-full rounded-xl border px-3 py-2"></textarea>
+                            </div>
+                            <div class="grid grid-cols-3 gap-2.5">
+                                <div>
+                                    <label class="block font-bold text-slate-700 mb-1">التكلفة التقديرية (ر.س)</label>
+                                    <input type="number" step="0.01" name="estimated_cost" value="0" class="w-full rounded-xl border px-2.5 py-2 font-mono font-bold">
+                                </div>
+                                <div>
+                                    <label class="block font-bold text-slate-700 mb-1">النصاب المطلوب (%)</label>
+                                    <input type="number" name="required_quorum_pct" value="51" min="1" max="100" class="w-full rounded-xl border px-2.5 py-2 font-mono font-bold">
+                                </div>
+                                <div>
+                                    <label class="block font-bold text-slate-700 mb-1">تاريخ إغلاق التصويت</label>
+                                    <input type="date" name="closes_at" value="{{ now()->addDays(7)->toDateString() }}" class="w-full rounded-xl border px-2.5 py-2 font-mono">
+                                </div>
+                            </div>
+                            <div class="flex justify-end gap-2 pt-3 border-t">
+                                <button type="button" onclick="closeModal('createMullakPollModal')" class="px-4 py-2 rounded-xl bg-slate-100 font-bold">إلغاء</button>
+                                <button type="submit" class="px-6 py-2 rounded-xl bg-slate-900 text-white font-bold">اعتماد وطرح القرار في الجدول</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            @endif
+
+            <!-- ========================================================================= -->
+            <!-- ج. إعدادات الهوية البصرية والشعار في المستندات + صلاحيات الموظفين الموسعة (في تبويب staff) -->
+            <!-- ========================================================================= -->
+            @if(($tab ?? '') === 'staff')
+                @php
+                    $allDocTargets = [
+                        'vouchers_receipt' => 'سندات القبض (Receipts)',
+                        'vouchers_payment' => 'سندات الصرف (Payments)',
+                        'journal'          => 'القيود اليومية المحاسبية (Journal Entries)',
+                        'invoices'         => 'الفواتير الضريبية الإلكترونية (ZATCA Invoices)',
+                        'owner_settlement' => 'برنت تصفية حساب المالك وكشوف الحساب',
+                        'general_ledger'   => 'دفتر الأستاذ العام والقوائم المالية',
+                        'legal_najiz'      => 'الإنذارات القانونية وحقيبة دعوى ناجز والمطالبات',
+                        'properties_mullak'=> 'تقارير العقارات وكشوف اتحاد الملاك (مُلّاك)',
+                    ];
+                    $savedLogoTargets = !empty($office->logo_targets_json)
+                        ? (json_decode($office->logo_targets_json, true) ?: [])
+                        : array_keys($allDocTargets);
+                    $logoIsEnabled = ($office->logo_enabled ?? 1) ? true : false;
+                @endphp
+
+                @if(!empty($officeAllowWhiteLabel))
+                    <div class="bg-white rounded-3xl border-2 border-indigo-500 shadow-sm p-6 space-y-5 no-print">
+                        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                            <div class="flex items-center gap-3">
+                                @if(!empty($office->logo_url))
+                                    <img src="{{ $office->logo_url }}" class="w-14 h-14 rounded-2xl border p-1 object-contain bg-white shadow-sm">
+                                @else
+                                    <div class="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center text-2xl font-bold">🎨</div>
+                                @endif
+                                <div>
+                                    <span class="px-2.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[11px] font-bold">ميزة الهوية البصرية مفعلة لمكتبكم ⭐</span>
+                                    <h3 class="font-extrabold text-base text-slate-900 mt-1">إعدادات الهوية البصرية والشعار في المستندات ولون القائمة الجانبية</h3>
+                                    <p class="text-xs text-slate-500">ارفع شعار مكتبك وحدد المستندات (قيود، فواتير، سندات قبض، سندات صرف، أو الجميع) ليظهر فيها الشعار بحجم متناسق تلقائياً</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <form action="{{ route('office.branding.save') }}" method="POST" enctype="multipart/form-data" class="space-y-5 text-xs">
+                            @csrf
+                            <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                <div class="md:col-span-4">
+                                    <label class="block font-bold text-slate-700 mb-1">الاسم الرسمي المعروض للمكتب *</label>
+                                    <input type="text" name="office_display_name" value="{{ $office->name }}" required class="w-full rounded-xl border px-3.5 py-2 bg-white font-bold">
+                                </div>
+                                <div class="md:col-span-4">
+                                    <label class="block font-bold text-slate-700 mb-1">رفع شعار المكتب الرسمي (Logo PNG / JPG)</label>
+                                    <input type="file" name="logo_file" accept="image/*" class="w-full rounded-xl border px-2.5 py-1.5 bg-white">
+                                </div>
+                                <div class="md:col-span-2">
+                                    <label class="block font-bold text-slate-700 mb-1">لون القائمة الجانبية</label>
+                                    <div class="flex items-center gap-2">
+                                        <input type="color" name="brand_sidebar_color" id="office_sidebar_color_picker"
+                                               value="{{ $office->brand_sidebar_color ?? '#0f172a' }}"
+                                               oninput="document.querySelector('aside.office-sidebar').style.setProperty('background', this.value, 'important');"
+                                               class="w-full h-9 rounded-xl border p-1 cursor-pointer bg-white">
+                                    </div>
+                                </div>
+                                <div class="md:col-span-2">
+                                    @if(!empty($office->logo_url))
+                                        <label class="flex items-center gap-1.5 text-rose-600 font-bold cursor-pointer py-2">
+                                            <input type="checkbox" name="remove_logo" value="1">
+                                            <span>حذف الشعار الحالي</span>
+                                        </label>
+                                    @endif
+                                </div>
+                            </div>
+
+                            <!-- التحكم في تفعيل وإظهار الشعار والعلامة التجارية في المستندات وملفات PDF -->
+                            <div class="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-200 space-y-3">
+                                <div class="flex flex-wrap items-center justify-between gap-3 border-b border-indigo-200 pb-2.5">
+                                    <label class="flex items-center gap-2 text-xs font-extrabold text-slate-900 cursor-pointer">
+                                        <input type="checkbox" name="logo_enabled" id="master_logo_enabled_cb" value="1" {{ $logoIsEnabled ? 'checked' : '' }} class="w-4 h-4 rounded text-slate-900">
+                                        <span>🖼️ تفعيل إظهار الشعار والعلامة التجارية للمكتب في المستندات وملفات الـ PDF المحددة أدناه:</span>
+                                    </label>
+                                    <div class="flex items-center gap-2">
+                                        <button type="button" onclick="toggleAllBrandLogoTargets(true)" class="px-3 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold">
+                                            ✔ تحديد الجميع
+                                        </button>
+                                        <button type="button" onclick="toggleAllBrandLogoTargets(false)" class="px-3 py-1 rounded-lg bg-rose-600 text-white text-[11px] font-bold">
+                                            ✖ إلغاء الجميع
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+                                    @foreach($allDocTargets as $tKey => $tLabel)
+                                        <label class="flex items-center gap-2 p-2.5 rounded-xl bg-white border border-slate-200 font-bold text-slate-800 cursor-pointer hover:border-slate-900">
+                                            <input type="checkbox" name="logo_targets[]" value="{{ $tKey }}"
+                                                   class="brand-logo-target-cb rounded text-slate-900"
+                                                   {{ in_array($tKey, $savedLogoTargets, true) ? 'checked' : '' }}>
+                                            <span>{{ $tLabel }}</span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                            </div>
+
+                            <div class="flex justify-end">
+                                <button type="submit" class="px-8 py-3 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-extrabold text-xs shadow-lg">
+                                    💾 حفظ الهوية البصرية ولون القائمة الجانبية وإعدادات الشعار
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                @endif
+
+                <script>
+                    window.toggleAllBrandLogoTargets = function(selectAll) {
+                        const masterCb = document.getElementById('master_logo_enabled_cb');
+                        if (masterCb && selectAll) masterCb.checked = true;
+                        document.querySelectorAll('.brand-logo-target-cb').forEach(cb => {
+                            cb.checked = selectAll;
+                        });
+                    };
+
+                    // توسيع صلاحيات الموظفين (اختياري لصاحب المكتب) لتشمل 16 صلاحية تفصيلية في نماذج الإضافة والتعديل
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const expandedPermissionsList = [
+                            'إدارة الملاك والعقارات',
+                            'إضافة وتعديل الوحدات العقارية وكاشف الركود',
+                            'إبرام وتوثيق عقود إيجار',
+                            'إدارة اتحاد الملاك (مُلّاك) والتصويت الإلكتروني',
+                            'متابعة جدولة الدفعات وأعمار الديون والتحصيل',
+                            'إصدار الإنذارات القانونية وتجهيز حقيبة دعوى ناجز',
+                            'إدارة شجرة الحسابات ومراكز التكلفة',
+                            'إصدار سندات القبض والصرف',
+                            'إصدار السندات المجمّعة (Batch Receipts)',
+                            'إضافة وتعديل القيود اليومية المحاسبية',
+                            'إصدار الفواتير الضريبية الإلكترونية (ZATCA)',
+                            'استعراض كشف الحساب وبرنت تصفية الملاك',
+                            'استعراض الأستاذ العام والقوائم المالية',
+                            'تشغيل المدقق المحاسبي الآلي',
+                            'استخدام ماسح الصكوك والعقود الذكي (AI OCR)',
+                            'صلاحية الحذف والتعديل على السجلات المالية'
+                        ];
+
+                        document.querySelectorAll('form[action*="/staff/"]').forEach(form => {
+                            if (form.action.includes('/delete') || form.dataset.permsExpanded === '1') return;
+                            const existingCbs = Array.from(form.querySelectorAll('input[name="permissions[]"]'));
+                            if (existingCbs.length === 0) return;
+
+                            form.dataset.permsExpanded = '1';
+                            const checkedSet = new Set(existingCbs.filter(c => c.checked).map(c => c.value));
+                            const container = existingCbs[0].closest('.space-y-2, .grid') || existingCbs[0].parentElement.parentElement;
+                            if (!container) return;
+
+                            let html = `
+                                <div class="flex items-center justify-between border-b border-slate-200 pb-2 mb-2">
+                                    <span class="text-xs font-extrabold text-slate-900">🔐 الصلاحيات الاختيارية الممنوحة للموظف (حدد ما يناسب مهام عمله):</span>
+                                    <div class="flex gap-2 text-[11px]">
+                                        <button type="button" class="text-emerald-700 font-bold underline" onclick="this.closest('form').querySelectorAll('input[name=\\'permissions[]\\']').forEach(c=>c.checked=true)">تحديد الكل</button>
+                                        <button type="button" class="text-rose-600 font-bold underline" onclick="this.closest('form').querySelectorAll('input[name=\\'permissions[]\\']').forEach(c=>c.checked=false)">إلغاء الكل</button>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto p-1">
+                            `;
+                            expandedPermissionsList.forEach(pLabel => {
+                                const isChecked = checkedSet.has(pLabel) ? 'checked' : '';
+                                html += `
+                                    <label class="flex items-center gap-2 p-2 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-slate-800 cursor-pointer hover:border-slate-900">
+                                        <input type="checkbox" name="permissions[]" value="${pLabel}" ${isChecked} class="rounded text-slate-900">
+                                        <span>${pLabel}</span>
+                                    </label>
+                                `;
+                            });
+                            html += `</div>`;
+                            container.innerHTML = html;
+                        });
+                    });
+                </script>
+            @endif
+
+            <!-- ========================================================================= -->
+            <!-- د. سجل تتبع الموظفين المطور مع سجل (قبل ⬅️ بعد) في التعديلات الحساسة -->
+            <!-- ========================================================================= -->
+            @if(($tab ?? '') === 'activity_logs')
+                <div id="masterTabSectionActive" class="space-y-6">
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                            <div>
+                                <h3 class="font-bold text-lg text-slate-900">🕵️ سجل تتبع حركات الموظفين + سجل (قبل ⬅️ بعد) للتعديلات الحساسة</h3>
+                                <p class="text-xs text-slate-500 mt-0.5">يوثق كل عملية إضافة أو تعديل أو حذف مع كشف القيم القديمة والجديدة (Field-Level Diff) وبصمة الجهاز IP / MAC</p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <input type="text" id="officeActLogSearch" oninput="filterTableRows('officeActLogSearch', 'officeActLogTbody')"
+                                       placeholder="🔍 ابحث بالموظف، القسم، أو التغييرات..."
+                                       class="w-64 rounded-xl border px-3.5 py-2 text-xs bg-slate-50 font-semibold">
+                                <button type="button" onclick="exportTableToCSV('officeActivityLogsMainTable', 'سجل_تتبع_الموظفين_قبل_وبعد.xlsx')"
+                                        class="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold">
+                                    📊 تصدير Excel
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-xs text-right" id="officeActivityLogsMainTable">
+                                <thead class="bg-slate-50 text-slate-600 border-b">
+                                    <tr>
+                                        <th class="py-3.5 px-4">#</th>
+                                        <th class="py-3.5 px-4">المستخدم والصفة</th>
+                                        <th class="py-3.5 px-4">نوع الحركة والقسم</th>
+                                        <th class="py-3.5 px-4">تفاصيل العملية وسجل (قبل ⬅️ بعد)</th>
+                                        <th class="py-3.5 px-4">عنوان IP وبصمة MAC</th>
+                                        <th class="py-3.5 px-4">التاريخ والوقت</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="officeActLogTbody" class="divide-y divide-slate-100">
+                                    @forelse(($activityLogs ?? collect()) as $idx => $log)
+                                        @php
+                                            $diffs = !empty($log->diff_json) ? (json_decode($log->diff_json, true) ?: []) : [];
+                                        @endphp
+                                        <tr class="hover:bg-slate-50">
+                                            <td class="py-3.5 px-4 font-mono font-bold text-slate-400">{{ $idx + 1 }}</td>
+                                            <td class="py-3.5 px-4 font-bold text-slate-900">{{ $log->user_name }}</td>
+                                            <td class="py-3.5 px-4">
+                                                <span class="px-2.5 py-1 rounded-lg font-bold {{ $log->action_type === 'حذف' ? 'bg-rose-100 text-rose-800' : ($log->action_type === 'تعديل' ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800') }}">
+                                                    {{ $log->action_label }}
+                                                </span>
+                                            </td>
+                                            <td class="py-3.5 px-4 space-y-2">
+                                                <div class="font-semibold text-slate-800">{{ $log->details }}</div>
+                                                @if(count($diffs) > 0)
+                                                    <div class="p-2.5 rounded-xl bg-amber-50/90 border border-amber-200 space-y-1">
+                                                        <div class="text-[10px] font-extrabold text-amber-950">🔄 سجل القيم الحساسة (قبل التعديل ⬅️ بعد التعديل):</div>
+                                                        @foreach($diffs as $df)
+                                                            <div class="text-[11px] flex flex-wrap items-center gap-1.5">
+                                                                <span class="font-bold text-slate-800">• {{ $df['field'] ?? '' }}:</span>
+                                                                <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 line-through font-mono">قبل: {{ $df['before'] ?? '-' }}</span>
+                                                                <span>⬅️</span>
+                                                                <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono font-bold">بعد: {{ $df['after'] ?? '-' }}</span>
+                                                            </div>
+                                                        @endforeach
+                                                    </div>
+                                                @endif
+                                            </td>
+                                            <td class="py-3.5 px-4 font-mono text-[11px]" dir="ltr">
+                                                <div class="font-bold text-slate-800">IP: {{ $log->ip_address }}</div>
+                                                <div class="text-slate-500">MAC: {{ $log->mac_address }}</div>
+                                            </td>
+                                            <td class="py-3.5 px-4 font-mono text-slate-500" dir="ltr">{{ $log->created_at }}</td>
+                                        </tr>
+                                    @empty
+                                        <tr><td colspan="6" class="py-10 text-center text-slate-400">لا توجد حركات مسجلة حتى الآن.</td></tr>
+                                    @endforelse
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            @endif
+            
             <!-- ========================================================================= -->
             <!-- 1. صفحة كشف الحساب وتصفية مستحقات الملاك الشاملة -->
             <!-- ========================================================================= -->
@@ -3306,11 +4150,15 @@
                         <div class="grid grid-cols-2 gap-2.5 pt-2">
                             <button type="button" onclick="exportElementToPDF('legalNoticePrintableArea', (window.currentLegalDocFilename || 'وثيقة_قانونية') + '.pdf')"
                                     class="py-2.5 px-4 rounded-xl bg-slate-900 text-white text-xs font-bold">
-                                📥 تحميل PDF
+                                📥 تحميل الإنذار PDF
                             </button>
                             <button type="button" onclick="sendLegalNoticeOriginalPdfWhatsapp()"
                                     class="py-2.5 px-4 rounded-xl bg-emerald-600 text-white text-xs font-bold">
                                 💬 إرسال PDF أصلي للواتساب
+                            </button>
+                            <button type="button" onclick="exportNajizExecutionPackagePDF()"
+                                    class="col-span-2 py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-lg flex items-center justify-center gap-2">
+                                <span>⚖️ تجهيز ملف دعوى ناجز بضغطة زر (حقيبة التنفيذ القضائي PDF)</span>
                             </button>
                         </div>
                     </div>
@@ -3318,8 +4166,135 @@
                     <div class="lg:col-span-7 bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-3">
                         <div class="flex items-center justify-between text-xs text-slate-500 px-1 no-print">
                             <span>💡 يمكنك النقر مباشرة داخل نص الوثيقة بالأسفل لتعديل أي كلمة قبل التحميل أو الإرسال</span>
-                            <button type="button" onclick="window.print()" class="px-3 py-1 rounded-lg bg-slate-100 text-slate-800 font-bold">🖨️ طباعة</button>
                         </div>
+
+                        <!-- قالب حقيبة ملف دعوى ناجز الشامل (يُجمع ويُصدر بضغطة زر) -->
+                        <div class="hidden">
+                            <div id="najizExecutionPackagePrintable" class="p-8 bg-white text-slate-900 space-y-6 border-2 border-slate-900 rounded-2xl" dir="rtl">
+                                <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
+                                    <div>
+                                        <span class="px-3 py-1 rounded bg-slate-900 text-white text-xs font-bold">ملف طلب تنفيذ قضائي — بوابة ناجز (وزارة العدل)</span>
+                                        <h2 class="text-xl font-extrabold mt-2">{{ $office->name }}</h2>
+                                        <p class="text-xs text-slate-500">رخصة فال: {{ $office->fal_license ?: '-' }} | سجل تجاري: {{ $office->cr_number ?: '-' }} | جوال: {{ $office->phone }}</p>
+                                    </div>
+                                    <div class="text-left text-xs font-mono">
+                                        <div>تاريخ تجهيز الملف: <b>{{ date('Y-m-d') }}</b></div>
+                                        <div>مرجع الملف: <b id="najiz_ref_no">NJZ-{{ date('Ymd') }}</b></div>
+                                    </div>
+                                </div>
+
+                                <div class="p-4 rounded-xl bg-slate-50 border border-slate-300 space-y-2 text-xs">
+                                    <div class="font-extrabold text-sm text-slate-900 border-b pb-1.5">📋 أولاً: فهرس ومرفقات حقيبة دعوى التنفيذ القضائي (ناجز)</div>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <div>1. بيانات السند التنفيذي (عقد إيجار الموحد الموثق).</div>
+                                        <div>2. بيانات طالب التنفيذ (المالك المؤجر) والمنفذ ضده (المستأجر).</div>
+                                        <div>3. كشف الحساب التفصيلي والأقساط الإيجارية المتأخرة واجبة التنفيذ.</div>
+                                        <div>4. نسخة الإنذار النهائي بالسداد الموجه للمستأجر قبل التنفيذ.</div>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-3 text-xs">
+                                    <div class="p-3.5 rounded-xl border border-slate-300 space-y-1">
+                                        <div class="font-bold text-slate-500">طالب التنفيذ (المؤجر / المالك):</div>
+                                        <div class="font-extrabold text-sm" id="najiz_owner_name">-</div>
+                                        <div>العقار والوحدة: <b id="najiz_prop_unit">-</b></div>
+                                        <div>رقم صك الملكية: <b id="najiz_deed_no" class="font-mono">-</b></div>
+                                    </div>
+                                    <div class="p-3.5 rounded-xl border border-slate-300 space-y-1">
+                                        <div class="font-bold text-slate-500">المنفذ ضده (المستأجر المتعثر):</div>
+                                        <div class="font-extrabold text-sm" id="najiz_tenant_name">-</div>
+                                        <div>رقم الجوال الموثق: <b id="najiz_tenant_phone" class="font-mono" dir="ltr">-</b></div>
+                                        <div>رقم العقد / رقم إيجار الموحد: <b id="najiz_contract_ejar" class="font-mono text-emerald-700">-</b></div>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-2">
+                                    <div class="font-extrabold text-sm text-slate-900">💰 ثانياً: بيان الأقساط الإيجارية المتأخرة والمطالبة المالية واجبة التنفيذ</div>
+                                    <table class="w-full text-xs text-right border border-slate-300">
+                                        <thead class="bg-slate-900 text-white">
+                                            <tr>
+                                                <th class="p-2">#</th>
+                                                <th class="p-2">تاريخ الاستحقاق</th>
+                                                <th class="p-2">قيمة القسط</th>
+                                                <th class="p-2">المسدد</th>
+                                                <th class="p-2">المتبقي المطالب به</th>
+                                                <th class="p-2">أيام التأخير</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="najiz_installments_tbody" class="divide-y divide-slate-200"></tbody>
+                                        <tfoot class="bg-rose-50 font-extrabold">
+                                            <tr>
+                                                <td colspan="4" class="p-2.5">إجمالي المبلغ المطالب بتنفيذه قضائياً لدى محكمة التنفيذ</td>
+                                                <td colspan="2" class="p-2.5 font-mono text-rose-700 text-sm" id="najiz_total_claim_amount">0.00 ر.س</td>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+
+                                <div class="p-4 rounded-xl border border-slate-300 space-y-2">
+                                    <div class="font-extrabold text-sm text-slate-900 border-b pb-1.5">⚖️ ثالثاً: نص الإنذار النهائي الموجه للمنفذ ضده</div>
+                                    <div id="najiz_notice_copy" class="text-xs leading-relaxed text-slate-800"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <script>
+                            window.exportNajizExecutionPackagePDF = function() {
+                                const sel = document.getElementById('legal_contract_select');
+                                if (!sel || !sel.value) {
+                                    alert('يرجى اختيار العقد / المستأجر أولاً من جدول البحث الجانبي لتجهيز حقيبة دعوى ناجز.');
+                                    return;
+                                }
+                                generateSmartLegalNotice();
+                                const opt = sel.options[sel.selectedIndex];
+                                const contractId = String(sel.value);
+                                const tenant = opt.getAttribute('data-tenant') || '';
+                                const phone = opt.getAttribute('data-phone') || '';
+                                const owner = opt.getAttribute('data-owner') || '';
+                                const prop = opt.getAttribute('data-prop') || '';
+                                const unit = opt.getAttribute('data-unit') || '';
+                                const deed = opt.getAttribute('data-deed') || '-';
+                                const contractNo = opt.getAttribute('data-contract-no') || '';
+                                const ejarNo = opt.getAttribute('data-ejar-no') || '';
+
+                                document.getElementById('najiz_ref_no').innerText = 'NJZ-' + contractNo;
+                                document.getElementById('najiz_owner_name').innerText = owner;
+                                document.getElementById('najiz_prop_unit').innerText = prop + ' (' + unit + ')';
+                                document.getElementById('najiz_deed_no').innerText = deed;
+                                document.getElementById('najiz_tenant_name').innerText = tenant;
+                                document.getElementById('najiz_tenant_phone').innerText = phone;
+                                document.getElementById('najiz_contract_ejar').innerText = contractNo + ' / ' + ejarNo;
+
+                                const instList = (window.officeInstallmentsMaster || []).filter(i => String(i.lease_contract_id) === contractId && i.status !== 'paid');
+                                const tbody = document.getElementById('najiz_installments_tbody');
+                                tbody.innerHTML = '';
+                                let totalClaim = 0;
+
+                                if (instList.length === 0) {
+                                    const fallbackAmt = document.getElementById('ln_overdue_amount')?.innerText || '0.00 ر.س';
+                                    tbody.innerHTML = `<tr><td class="p-2">1</td><td class="p-2 font-mono">{{ date('Y-m-d') }}</td><td class="p-2 font-mono">${ opt.getAttribute('data-rent') || fallbackAmt }</td><td class="p-2 font-mono">0.00</td><td class="p-2 font-mono font-bold text-rose-700">${fallbackAmt}</td><td class="p-2">مستحق حالاً</td></tr>`;
+                                    document.getElementById('najiz_total_claim_amount').innerText = fallbackAmt;
+                                } else {
+                                    instList.forEach((inst, idx) => {
+                                        const rem = Math.max(0, parseFloat(inst.amount || 0) - parseFloat(inst.paid_amount || 0));
+                                        totalClaim += rem;
+                                        const daysLate = Math.max(0, Math.floor((new Date() - new Date(inst.due_date)) / (1000 * 60 * 60 * 24)));
+                                        tbody.innerHTML += `<tr>
+                                            <td class="p-2 font-mono">#${inst.installment_number || (idx + 1)}</td>
+                                            <td class="p-2 font-mono">${inst.due_date}</td>
+                                            <td class="p-2 font-mono">${Number(inst.amount || 0).toFixed(2)}</td>
+                                            <td class="p-2 font-mono text-emerald-700">${Number(inst.paid_amount || 0).toFixed(2)}</td>
+                                            <td class="p-2 font-mono font-bold text-rose-700">${rem.toFixed(2)} ر.س</td>
+                                            <td class="p-2 font-mono">${daysLate > 0 ? daysLate + ' يوم' : 'مستحق'}</td>
+                                        </tr>`;
+                                    });
+                                    document.getElementById('najiz_total_claim_amount').innerText = totalClaim.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ر.س';
+                                }
+
+                                document.getElementById('najiz_notice_copy').innerHTML = document.getElementById('ln_body_content')?.innerHTML || '';
+                                window.exportElementToPDF('najizExecutionPackagePrintable', 'ملف_دعوى_ناجز_' + contractNo + '_' + tenant.replace(/\s+/g, '_') + '.pdf');
+                            };
+                        </script>
                         <div id="legalNoticePrintableArea" class="p-8 rounded-2xl border-2 border-slate-900 bg-white space-y-6 text-slate-900">
                             <div class="flex items-start justify-between border-b-2 border-slate-900 pb-4">
                                 <div>
@@ -12822,6 +13797,118 @@
         setupMobileHeaderAndSpotlightButton();
         injectOcrAndGracePeriodIntoContractForm();
         injectZatcaVatReturnButton();
+    });
+})();
+</script>
+<!-- محرك إدراج الشعار والعلامة التجارية تلقائياً في المستندات المحددة (سندات قبض، سندات صرف، قيود، فواتير، وتقارير PDF) بحجم متناسق -->
+@php
+    $defaultDocKeys = ['vouchers_receipt', 'vouchers_payment', 'journal', 'invoices', 'owner_settlement', 'general_ledger', 'legal_najiz', 'properties_mullak'];
+    $activeLogoTargets = !empty($office->logo_targets_json)
+        ? (json_decode($office->logo_targets_json, true) ?: [])
+        : $defaultDocKeys;
+    $activeLogoUrl = ((!empty($office->logo_enabled) || !isset($office->logo_enabled)) && !empty($office->logo_url))
+        ? $office->logo_url
+        : '';
+@endphp
+<script id="office-brand-logo-documents-engine">
+(function() {
+    window.officeBrandLogoUrl = @json($activeLogoUrl);
+    window.officeBrandLogoTargets = @json($activeLogoTargets);
+
+    // معرفة نوع المستند للتحقق هل فعّل صاحب المكتب إظهار الشعار فيه أم لا
+    window.resolveDocumentLogoCategory = function(el) {
+        if (!el) return '';
+        const id = el.id || '';
+
+        if (id === 'printableVoucherArea') {
+            const titleTxt = (document.getElementById('pdf_voucher_title')?.innerText || '').trim();
+            return titleTxt.includes('صرف') ? 'vouchers_payment' : 'vouchers_receipt';
+        }
+        if (id.startsWith('printableJournalArea_')) return 'journal';
+        if (id === 'officeTaxInvoicePrintArea' || id === 'companyTaxInvoicePrintArea' || id === 'invoicePdfArea') return 'invoices';
+        if (id === 'pro_ownerSettlementPrintableArea' || id === 'pro_general_ledger_view') return 'owner_settlement';
+        if (id === 'financialStatementPrintable') return 'general_ledger';
+        if (id === 'legalNoticePrintableArea' || id === 'najizExecutionPackagePrintable' || id === 'installmentClaimPdfTemplate' || id === 'dailyManagerExecutivePdfArea') return 'legal_najiz';
+        if (id === 'officePropertiesPrintableWrap' || id === 'stagnantUnitsPrintableArea' || id === 'officeInstallmentsPrintableWrap' || id.startsWith('mullakBuildingPrintable_')) return 'properties_mullak';
+
+        return 'general_ledger';
+    };
+
+    window.shouldShowBrandLogoOnElement = function(el) {
+        if (!window.officeBrandLogoUrl) return false;
+        const cat = window.resolveDocumentLogoCategory(el);
+        return Array.isArray(window.officeBrandLogoTargets) && window.officeBrandLogoTargets.includes(cat);
+    };
+
+    // حقن الشعار بحجم متناسق تماماً مع حجم المستند
+    window.injectProportionalLogoIntoDoc = function(targetEl, isLandscapeDoc) {
+        if (!targetEl) return;
+        targetEl.querySelectorAll('.erp-dynamic-brand-logo').forEach(old => old.remove());
+
+        if (!window.shouldShowBrandLogoOnElement(targetEl)) {
+            return;
+        }
+
+        const img = document.createElement('img');
+        img.src = window.officeBrandLogoUrl;
+        img.alt = 'Logo';
+        img.className = 'erp-dynamic-brand-logo';
+
+        const maxH = isLandscapeDoc ? '56px' : '46px';
+        const maxW = isLandscapeDoc ? '145px' : '115px';
+        img.style.cssText = `max-height:${maxH} !important; max-width:${maxW} !important; width:auto !important; height:auto !important; object-fit:contain !important; border-radius:8px !important; background:#ffffff !important; padding:3px !important; border:1px solid #e2e8f0 !important; flex-shrink:0 !important; display:block !important;`;
+
+        const firstHeaderFlex = targetEl.querySelector('.flex.items-center.justify-between, .flex.items-start.justify-between');
+        if (firstHeaderFlex) {
+            firstHeaderFlex.insertBefore(img, firstHeaderFlex.firstChild);
+        } else {
+            const topBar = document.createElement('div');
+            topBar.className = 'erp-dynamic-brand-logo flex items-center justify-between border-b border-slate-200 pb-3 mb-3';
+            topBar.appendChild(img);
+            targetEl.insertBefore(topBar, targetEl.firstChild);
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // ربط نافذة معاينة السندات (قبض / صرف)
+        const origPreviewVoucher = window.previewOfficialVoucher;
+        if (typeof origPreviewVoucher === 'function') {
+            window.previewOfficialVoucher = function(v) {
+                origPreviewVoucher(v);
+                const vArea = document.getElementById('printableVoucherArea');
+                if (vArea) window.injectProportionalLogoIntoDoc(vArea, false);
+            };
+            window.openOfficialVoucherPreview = window.previewOfficialVoucher;
+        }
+
+        // ربط محرك تصدير الـ PDF ليظهر الشعار في جميع ملفات الـ PDF المحددة بحجم متناسق
+        const origPrepareClone = window.prepareSmartPdfClone;
+        if (typeof origPrepareClone === 'function') {
+            window.prepareSmartPdfClone = function(el) {
+                const res = origPrepareClone(el);
+                if (res && res.clone) {
+                    res.clone.id = el.id;
+                    window.injectProportionalLogoIntoDoc(res.clone, res.isLandscape);
+                }
+                return res;
+            };
+        }
+
+        // إظهار الشعار مباشرة على الشاشة في القوالب المفتوحة
+        const docIds = [
+            'printableVoucherArea',
+            'officeTaxInvoicePrintArea',
+            'pro_ownerSettlementPrintableArea',
+            'legalNoticePrintableArea',
+            'najizExecutionPackagePrintable'
+        ];
+        docIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) window.injectProportionalLogoIntoDoc(el, id === 'pro_ownerSettlementPrintableArea');
+        });
+        document.querySelectorAll('[id^="printableJournalArea_"]').forEach(el => {
+            window.injectProportionalLogoIntoDoc(el, false);
+        });
     });
 })();
 </script>
