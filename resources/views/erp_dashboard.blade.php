@@ -8864,5 +8864,52 @@
         header.insertBefore(btn, header.firstChild);
     });
 </script>
+<!-- محرك التسريع العالمي الحديث (W3C Speculation Rules API + Instant Link Prefetching) -->
+<script type="speculationrules">
+{
+  "prerender": [
+    {
+      "where": {
+        "and": [
+          { "href_matches": "/*" },
+          { "not": { "href_matches": "/logout*" } },
+          { "not": { "href_matches": "*delete*" } },
+          { "not": { "href_matches": "*clear*" } },
+          { "not": { "href_matches": "*backup*" } }
+        ]
+      },
+      "eagerness": "moderate"
+    }
+  ],
+  "prefetch": [
+    {
+      "where": {
+        "and": [
+          { "href_matches": "/*" },
+          { "not": { "href_matches": "/logout*" } }
+        ]
+      },
+      "eagerness": "conservative"
+    }
+  ]
+}
+</script>
+<script id="erp-ultra-fast-navigation">
+    // تحميل مسبق فوري لأي تبويب في القائمة الجانبية بمجرد اقتراب الماوس منه (0.05s Transition)
+    document.addEventListener('DOMContentLoaded', function() {
+        const prefetchedUrls = new Set();
+        document.querySelectorAll('aside nav a[href]').forEach(link => {
+            link.addEventListener('mouseenter', function() {
+                const url = this.href;
+                if (!url || prefetchedUrls.has(url) || url.includes('logout')) return;
+                prefetchedUrls.add(url);
+                const pre = document.createElement('link');
+                pre.rel = 'prefetch';
+                pre.href = url;
+                document.head.appendChild(pre);
+            }, { passive: true });
+        });
+    });
+</script>
 </body>
 </html>

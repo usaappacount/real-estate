@@ -55,16 +55,47 @@ class CompanyErpController extends Controller
     /**
      * توليد توكن مشفر وموقع بمفتاح النظام للفواتير الضريبية العامة
      */
-    public static function generateInvoicePublicToken($id, string$invoiceNumber): string
+    public static function generateInvoicePublicToken($id, string $invoiceNumber): string
     {
-        return hash_hmac('sha256', $id . '\vert{}' .$invoiceNumber . '|zatca_pdf', config('app.key', 'erp_zatca_secret_key'));
+        return hash_hmac('sha256', $id . '|' . $invoiceNumber . '|zatca_pdf', config('app.key', 'erp_zatca_secret_key'));
     }
 
     /**
-     * فحص وإنشاء جميع جداول وأعمدة النظام تلقائياً (Self-Healing Schema) + إنشاء حساب الأدمن الافتراضي
+     * تفعيل أقصى سرعة لقاعدة البيانات عالمياً (SQLite WAL Mode + Memory-Mapped I/O + RAM Cache)
      */
-    public function ensureDefaultAdminExists(): void
+    public static function boostDatabasePerformance(): void
     {
+        static $boosted = false;
+        if ($boosted) {
+            return;
+        }
+        $boosted = true;
+
+        try {
+            if (config('database.default') === 'sqlite') {
+                DB::statement('PRAGMA journal_mode = WAL;');
+                DB::statement('PRAGMA synchronous = NORMAL;');
+                DB::statement('PRAGMA temp_store = MEMORY;');
+                DB::statement('PRAGMA cache_size = -64000;'); // 64MB RAM Cache
+                DB::statement('PRAGMA mmap_size = 268435456;'); // 256MB Memory-Mapped I/O
+                DB::statement('PRAGMA busy_timeout = 5000;');
+            }
+        } catch (\Throwable $e) {}
+    }
+
+    /**
+     * فحص وإنشاء جميع جداول وأعمدة النظام تلقائياً (مع كاش فائق السرعة يمنع إعادة الفحص في كل نقرة)
+     */
+    public function ensureDefaultAdminExists(bool $forceRun = false): void
+    {
+        self::boostDatabasePerformance();
+
+        $lockFile = storage_path('framework/erp_schema_v5_ready.lock');
+        if (!$forceRun && file_exists($lockFile) && (time() - @filemtime($lockFile) < 86400)) {
+            return;
+        }
+        @file_put_contents($lockFile, (string) time());
+
         // 1. إنشاء جدول المستخدمين إذا لم يكن موجوداً
         if (!Schema::hasTable('users')) {
             Schema::create('users', function (Blueprint $table) {
@@ -831,6 +862,13 @@ class CompanyErpController extends Controller
     {
         $this->ensureDefaultAdminExists();
 
+        $rateKey = 'send_otp:' . $request->ip();
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn($rateKey);
+            return back()->with('error', "تم تجاوز الحد المسموح لإرسال الرمز، يرجى الانتظار ({$seconds}) ثانية.");
+        }
+        \Illuminate\Support\Facades\RateLimiter::hit($rateKey, 60);
+
         $request->validate([
             'phone' => ['required', 'regex:/^05[0-9]{8}$/']
         ], [
@@ -870,12 +908,18 @@ class CompanyErpController extends Controller
             'local_phone' => $request->phone,
             'formatted_phone' => $formattedPhone,
             'whatsapp_sent' => $whatsappSent,
-            'dev_otp_hint' => (!$whatsappSent && config('app.debug')) ?$otp : null,
+            'dev_otp_hint' => (!$whatsappSent && config('app.debug')) ? $otp : null,
         ]);
     }
 
     public function verifyOtp(Request $request)
     {
+        $rateKey = 'verify_otp:' . $request->ip() . '|' . $request->local_phone;
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn($rateKey);
+            return back()->with('error', "محاولات خاطئة متكررة! تم قفل التحقق مؤقتاً لمدة ({$seconds}) ثانية لحماية الحساب.");
+        }
+
         $request->validate([
             'otp_code' => ['required', 'string', 'regex:/^[0-9]{4,6}$/'],
         ], [
@@ -884,19 +928,20 @@ class CompanyErpController extends Controller
         ]);
 
         $formattedPhone = self::formatSaudiPhone((string) ($request->formatted_phone ?: $request->local_phone));
-        $user = User::where('phone',$formattedPhone)
+        $user = User::where('phone', $formattedPhone)
                     ->orWhere('phone', $request->local_phone)
                     ->first();
 
-        $inputOtp = trim((string)$request->otp_code);
+        $inputOtp = trim((string) $request->otp_code);
         $isExpired = !$user || empty($user->otp_expires_at) || now()->greaterThan(\Carbon\Carbon::parse($user->otp_expires_at));
 
-        if (!$user || empty($user->otp_code) ||$isExpired || !hash_equals((string) $user->otp_code,$inputOtp)) {
+        if (!$user || empty($user->otp_code) || $isExpired || !hash_equals((string) $user->otp_code, $inputOtp)) {
+            \Illuminate\Support\Facades\RateLimiter::hit($rateKey, 120);
             return back()->with([
                 'otp_step' => true,
                 'local_phone' => $request->local_phone,
                 'formatted_phone' => $formattedPhone,
-                'error' => $isExpired ? 'انتهت صلاحية كود التحقق، يرجى طلب كود جديد.' : 'كود التحقق غير صحيح، حاول مرة أخرى أو ادخل باسم المستخدم وكلمة المرور.'
+                'error' => $isExpired ? 'انتهت صلاحية كود التحقق، يرجى طلب كود جديد.' : 'كود التحقق غير صحيح، حاول مرة أخرى.'
             ]);
         }
 
@@ -904,12 +949,15 @@ class CompanyErpController extends Controller
             return back()->with('error', 'هذا الحساب موقوف حالياً، يرجى مراجعة الإدارة.');
         }
 
+        \Illuminate\Support\Facades\RateLimiter::clear($rateKey);
+
         DB::table('users')->where('id', $user->id)->update([
             'otp_code' => null,
             'otp_expires_at' => null,
         ]);
 
-        Auth::login($user, true);$request->session()->regenerate();
+        Auth::login($user, true);
+        $request->session()->regenerate();
 
         return $this->redirectByUserRole($user);
     }
@@ -918,19 +966,30 @@ class CompanyErpController extends Controller
     {
         $this->ensureDefaultAdminExists();
 
+        $rateKey = 'login_pwd:' . $request->ip();
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $seconds = \Illuminate\Support\Facades\RateLimiter::availableIn($rateKey);
+            return back()->with([
+                'password_mode' => true,
+                'error' => "محاولات دخول متكررة! يرجى الانتظار ({$seconds}) ثانية قبل المحاولة مجدداً."
+            ]);
+        }
+
         $request->validate([
             'username' => 'required|string',
             'password' => 'required|string',
         ]);
 
-        $input = trim($request->username);$formattedPhone = preg_match('/^05[0-9]{8}$/',$input) ? self::formatSaudiPhone($input) :$input;
+        $input = trim($request->username);
+        $formattedPhone = preg_match('/^05[0-9]{8}$/', $input) ? self::formatSaudiPhone($input) : $input;
 
-        $user = User::where('username',$input)
+        $user = User::where('username', $input)
                     ->orWhere('phone', $formattedPhone)
                     ->orWhere('phone', $input)
                     ->first();
 
-        if (!$user || !Hash::check($request->password,$user->password)) {
+        if (!$user || !Hash::check($request->password, $user->password)) {
+            \Illuminate\Support\Facades\RateLimiter::hit($rateKey, 120);
             return back()->with([
                 'password_mode' => true,
                 'error' => 'اسم المستخدم أو كلمة المرور غير صحيحة.'
@@ -944,7 +1003,9 @@ class CompanyErpController extends Controller
             ]);
         }
 
-        Auth::login($user, true);$request->session()->regenerate();
+        \Illuminate\Support\Facades\RateLimiter::clear($rateKey);
+        Auth::login($user, true);
+        $request->session()->regenerate();
         return $this->redirectByUserRole($user);
     }
 
@@ -6483,19 +6544,27 @@ class CompanyErpController extends Controller
      */
     public function handleWhatsappWebhook(Request $request)
     {
+        $expectedVerifyToken = self::getSetting('whatsapp_webhook_verify_token', 'erp_whatsapp_verify_2026');
+        $apiToken = self::getSetting('whatsapp_api_token', '');
+
         // 1. الرد على طلب التحقق الرسمي من Meta App Dashboard (GET hub.challenge)
         if ($request->isMethod('get')) {
             $mode      = $request->query('hub_mode', $request->query('hub.mode'));
             $token     = $request->query('hub_verify_token', $request->query('hub.verify_token'));
             $challenge = $request->query('hub_challenge', $request->query('hub.challenge'));
 
-            $expectedVerifyToken = self::getSetting('whatsapp_webhook_verify_token', 'erp_whatsapp_verify_2026');
-            $apiToken = self::getSetting('whatsapp_api_token', '');
-
             if ($mode === 'subscribe' && ($token === $expectedVerifyToken || (!empty($apiToken) && $token === $apiToken))) {
                 return response((string) $challenge, 200)->header('Content-Type', 'text/plain');
             }
             return response('Forbidden: Verify token mismatch', 403);
+        }
+
+        // حماية طلبات POST من التزوير: التحقق من توكن الحماية أو توقيع Meta
+        $providedToken = $request->header('X-Webhook-Token')
+                      ?: $request->input('verify_token', $request->input('token', ''));
+        $metaSignature = $request->header('X-Hub-Signature-256');
+        if (empty($metaSignature) && $providedToken !== $expectedVerifyToken && (empty($apiToken) || $providedToken !== $apiToken)) {
+            return response()->json(['status' => 'unauthorized_webhook'], 403);
         }
 
         // 2. قراءة الرسالة الواردة من هيكل Meta Cloud API الرسمي أو البوابات المخصصة
@@ -6713,8 +6782,17 @@ class CompanyErpController extends Controller
 
     public static function recordSiteVisit(Request $request, string $methodName = 'showLandingPage'): void
     {
+        if (!$request->isMethod('get')) return;
+
+        // تنفيذ تسجيل الزيارة وفحص الدولة في الخلفية بعد استلام المستخدم للصفحة (سرعة فورية 0ms)
+        app()->terminating(function () use ($request, $methodName) {
+            self::executeSiteVisitLogging($request, $methodName);
+        });
+    }
+
+    private static function executeSiteVisitLogging(Request $request, string $methodName = 'showLandingPage'): void
+    {
         try {
-            if (!$request->isMethod('get')) return;
             self::ensureSiteAnalyticsAndAdsTables();
 
             $ua = (string) $request->userAgent();

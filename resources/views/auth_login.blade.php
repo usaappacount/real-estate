@@ -118,20 +118,19 @@
         <!-- الحالة 3: الدخول الاحتياطي باسم المستخدم وكلمة المرور -->
         <div id="passwordSection" class="{{ session('password_mode') ? '' : 'hidden' }}">
             <div class="mb-4 p-3 rounded-2xl bg-slate-800/80 border border-slate-700 text-xs text-slate-300">
-                الدخول الاحتياطي السريع (في حال تعطل الواتساب).<br>
-                <span class="text-emerald-400">بيانات الأدمن الافتراضية:</span> اسم المستخدم <b>admin</b> | كلمة المرور <b>123456</b>
+                الدخول باسم المستخدم (أو رقم الجوال) وكلمة المرور الخاصة بحسابك.
             </div>
 
-            <form action="{{ route('auth.login_password') }}" method="POST" class="space-y-4">
+            <form action="{{ route('auth.login_password') }}" method="POST" class="space-y-4" autocomplete="on">
                 @csrf
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 mb-1.5">اسم المستخدم (أو رقم الجوال 10 أرقام)</label>
-                    <input type="text" name="username" value="admin" required
+                    <input type="text" name="username" value="{{ old('username') }}" required placeholder="أدخل اسم المستخدم أو 05XXXXXXXX"
                            class="w-full bg-slate-800 border border-slate-700 text-white rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500">
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 mb-1.5">كلمة المرور</label>
-                    <input type="password" name="password" value="123456" required
+                    <input type="password" name="password" required placeholder="••••••••"
                            class="w-full bg-slate-800 border border-slate-700 text-white rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500">
                 </div>
                 <button type="submit" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-2xl shadow-lg transition">

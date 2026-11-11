@@ -32,14 +32,28 @@ class OfficeErpController extends Controller
             'updateStaff',
             'deleteStaff',
             'saveSmartOfficeSettings',
+            'saveOfficeBranding',
+            'saveDailyReportSettings',
             'approvePendingVoucher',
             'closeFiscalYear',
             'updateOfficeWhatsappSettings',
             'updateOfficeWhatsapp',
+            'storeOfficeAccountType',
+            'updateOfficeAccountType',
+            'deleteOfficeAccountType',
         ];
 
-        if ($user->user_type === 'office_staff' && in_array($method, $officeAdminOnlyMethods, true)) {
-            abort(403, 'هذا الإجراء مخصص لمدير المكتب العقاري فقط.');
+        if ($user->user_type === 'office_staff') {
+            if (in_array($method, $officeAdminOnlyMethods, true)) {
+                abort(403, 'هذا الإجراء مخصص لمدير المكتب العقاري فقط.');
+            }
+            // التحقق من صلاحية الحذف والتعديل للموظف العادي
+            if (str_starts_with($method, 'delete')) {
+                $perms = json_decode($user->custom_permissions ?? '[]', true) ?: [];
+                if (!in_array('صلاحية الحذف والتعديل على السجلات المالية', $perms, true)) {
+                    abort(403, 'ليس لديك صلاحية لحذف السجلات، يرجى مراجعة مدير المكتب.');
+                }
+            }
         }
 
         CompanyErpController::capturePreActionSnapshot(request());
@@ -273,10 +287,21 @@ class OfficeErpController extends Controller
         $defaultVatRate = (float) CompanyErpController::getSetting('default_vat_rate', '15');
         $activityLogs = CompanyErpController::getFilteredActivityLogs($officeId, null, 'office');
 
-        // توليد وتحديث جدول الدفعات تلقائياً لجميع العقود وتحديث حالتها (مستحق، متأخر جزئي، متأخر، مسدد)
+        // توليد وتحديث جدول الدفعات تلقائياً بعملية مجمّعة فائقة السرعة (Batch Check بدون N+1)
         CompanyErpController::ensureContractInstallmentsTable();
-        foreach ($contracts as $cntItem) {
-            CompanyErpController::generateInstallmentsForContract($cntItem);
+        if ($contracts->count() > 0) {
+            $existingContractIdsWithInst = DB::table('contract_installments')
+                ->where('office_id', $officeId)
+                ->distinct()
+                ->pluck('lease_contract_id')
+                ->flip()
+                ->all();
+
+            foreach ($contracts as $cntItem) {
+                if (!isset($existingContractIdsWithInst[$cntItem->id])) {
+                    CompanyErpController::generateInstallmentsForContract($cntItem);
+                }
+            }
         }
 
         $todayStr = date('Y-m-d');
